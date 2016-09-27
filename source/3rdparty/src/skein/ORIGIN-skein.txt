@@ -1,0 +1,6 @@
+https://github.com/wernerd/Skein3Fish
+
+copy to the CredaCash-dependents/skein directory:
+
+c/src
+c/src/include

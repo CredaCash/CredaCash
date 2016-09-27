@@ -1,0 +1,5 @@
+https://github.com/open-source-parsers/jsoncpp
+
+cd jsoncpp-master
+python amalgamate.py
+copy dist/* to CredaCash-dependents/jsoncpp

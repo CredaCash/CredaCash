@@ -1,0 +1,15 @@
+https://github.com/gvanas/KeccakCodePackage
+
+copy to the CredaCash-dependents/keccak directory:
+
+KeccakHash.h
+KeccakHash.c
+KeccakSponge.h
+KeccakSponge.h
+SnP/*.*
+SnP/KeccakF-1600/KeccakF-1600-interface.h
+SnP/KeccakF-1600/Optimized/KeccakF-1600-64.macros
+SnP/KeccakF-1600/Optimized/KeccakF-1600-unrolling.macros
+SnP/KeccakF-1600/Optimized64/SnP-interface.h
+SnP/KeccakF-1600/Optimized64/KeccakF-1600-opt64.c
+SnP/KeccakF-1600/Optimized64/LCu6/KeccakF-1600-opt64-settings.h

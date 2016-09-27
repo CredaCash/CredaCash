@@ -1,0 +1,3 @@
+http://www.sqlite.org/download.html
+
+download sqlite-amalgamation-xxxxxxxx.zip

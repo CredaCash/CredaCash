@@ -1,0 +1,15 @@
+https://github.com/emboss/siphash-c
+
+in subdirectory src, edit siphash.h to add:
+
+#define HAVE_UINT64_T 1
+
+#if defined(__cplusplus)
+extern "C" {
+#endif
+
+#if defined(__cplusplus)
+}
+#endif
+
+for siphash24(), add "const" to input params
