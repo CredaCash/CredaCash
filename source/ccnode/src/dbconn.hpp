@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * dbconn.hpp
 */
@@ -19,10 +19,10 @@
 #include <boost/thread/shared_mutex.hpp>
 #include <boost/thread/locks.hpp>
 
-//#define TEST_EXPLAIN_DB_QUERIES	1	// for testing
+//!#define TEST_EXPLAIN_DB_QUERIES	1
 
 //#define TEST_RANDOM_DB_ERRORS		63
-//#define TEST_DELAY_DB_RESET		31
+//!#define TEST_DELAY_DB_RESET		31
 
 #ifndef TEST_EXPLAIN_DB_QUERIES
 #define TEST_EXPLAIN_DB_QUERIES		0	// don't test
@@ -58,13 +58,14 @@
 #define TEMP_SERIALS_WITNESS_BLOCKP	2
 #define TEMP_SERIALS_SPECIAL_BLOCKP	TEMP_SERIALS_WITNESS_BLOCKP
 
+#define CLEAR_DB_POINTERS(lo, hi)	memset(&(lo), 0, sizeof(hi) + (uintptr_t)&(hi) - (uintptr_t)&(lo))
 
 class DbConnBasePersistData
 {
 public:
 	sqlite3 *Persistent_db;
 
-	void OpenDb();
+	void OpenDb(bool create = false);
 	void DeInit();
 
 	DbConnBasePersistData()
@@ -83,7 +84,7 @@ class DbConnBaseTempSerials
 public:
 	sqlite3 *Temp_Serials_db;
 
-	void OpenDb();
+	void OpenDb(bool create = false);
 	void DeInit();
 
 	DbConnBaseTempSerials()
@@ -102,7 +103,7 @@ class DbConnBaseRelayObjs
 public:
 	sqlite3 *Relay_Objs_db;
 
-	void OpenDb();
+	void OpenDb(bool create = false);
 	void DeInit();
 
 	DbConnBaseRelayObjs()
@@ -121,7 +122,7 @@ class DbConnBaseProcessQ
 public:
 	array<sqlite3*, PROCESS_Q_N> Process_Q_db;
 
-	void OpenDb(unsigned type);
+	void OpenDb(unsigned type, bool create = false);
 	void DeInit();
 
 	DbConnBaseProcessQ()
@@ -141,7 +142,7 @@ class DbConnBaseValidObjs
 public:
 	sqlite3 *Valid_Objs_db;
 
-	void OpenDb();
+	void OpenDb(bool create = false);
 	void DeInit();
 
 	DbConnBaseValidObjs()
@@ -203,13 +204,19 @@ class DbConnPersistData : protected DbConnBasePersistData
 	sqlite3_stmt *Blockchain_select_max;
 	sqlite3_stmt *Blockchain_select;
 	sqlite3_stmt *Serialnum_insert;
-	sqlite3_stmt *Serialnum_check;
+	sqlite3_stmt *Serialnum_select;
 	sqlite3_stmt *Commit_Tree_insert;
 	sqlite3_stmt *Commit_Tree_select;
 	sqlite3_stmt *Commit_Roots_insert;
-	sqlite3_stmt *Commit_Roots_select;
+	sqlite3_stmt *Commit_Roots_Level_select;
+	sqlite3_stmt *Commit_Roots_Commitnum_select;
 	sqlite3_stmt *Tx_Outputs_insert;
 	sqlite3_stmt *Tx_Outputs_select;
+
+	void ClearDbPointers()
+	{
+		CLEAR_DB_POINTERS(Persistent_Data_begin_read, Tx_Outputs_select);
+	};
 
 	static WalDB Persistent_Wal;
 
@@ -227,18 +234,19 @@ public:
 	void ReleaseMutex();
 
 	int ParameterInsert(int key, int subkey, void *value, unsigned valsize);
-	int ParameterSelect(int key, int subkey, void *value, unsigned bufsize, unsigned *retsize = NULL);
+	int ParameterSelect(int key, int subkey, void *value, unsigned bufsize, bool add_terminator = false, unsigned *retsize = NULL);
 	int BlockchainInsert(uint64_t level, SmartBuf smartobj);
 	int BlockchainSelect(uint64_t level, SmartBuf *retobj);
 	int BlockchainSelectMax(uint64_t& level);
-	int SerialnumInsert(const void *serial, unsigned size);
-	int SerialnumCheck(const void *serial, unsigned size);
+	int SerialnumInsert(const void *serialnum, unsigned serialnum_size, const void *hashkey, unsigned hashkey_size);
+	int SerialnumSelect(const void *serialnum, unsigned serialnum_size, void *hashkey = NULL, unsigned *hashkey_size = NULL);
 	int CommitTreeInsert(unsigned height, uint64_t offset, const void *data, unsigned datasize);
 	int CommitTreeSelect(unsigned height, uint64_t offset, void *data, unsigned datasize);
-	int CommitRootsInsert(uint64_t level, uint64_t timestamp, const void *hash, unsigned hashsize);
-	int CommitRootsSelect(uint64_t level, bool or_greater, uint64_t& timestamp, void *hash, unsigned hashsize);
-	int TxOutputsInsert(const void *addr, unsigned addrsize, uint64_t value_enc, uint64_t param_level, const void *commitment, unsigned commitsize, uint64_t offset);
-	int TxOutputsSelect(const void *addr, unsigned addrsize, uint64_t commitnum_start, uint64_t commitnum_end, uint64_t *value_enc, char *commitment_iv, unsigned commitment_ivsize, char *commitment, unsigned commitsize, uint64_t *commitnums, unsigned limit = 1, bool *have_more = NULL);
+	int CommitRootsInsert(uint64_t level, uint64_t timestamp, uint64_t next_commitnum, const void *hash, unsigned hashsize);
+	int CommitRootsSelectLevel(uint64_t level, bool or_greater, uint64_t& timestamp, uint64_t& next_commitnum, void *hash, unsigned hashsize);
+	int CommitRootsSelectCommitnum(uint64_t commitnum, uint64_t& level, uint64_t& timestamp, void *hash, unsigned hashsize);
+	int TxOutputsInsert(const void *addr, unsigned addrsize, uint32_t pool, uint64_t asset_enc, uint64_t amount_enc, uint64_t param_level, uint64_t commitnum);
+	int TxOutputsSelect(const void *addr, unsigned addrsize, uint64_t commitnum_start, uint32_t *pool, uint64_t *asset_enc, uint64_t *amount_enc, char *commitiv, unsigned ivsize, char *commitment, unsigned commitsize, uint64_t *commitnum, unsigned limit, bool *have_more);
 
 	static void TestConcurrency();
 
@@ -274,14 +282,19 @@ class DbConnTempSerials : protected DbConnBaseTempSerials
 	sqlite3_stmt *Temp_Serials_clear;
 	sqlite3_stmt *Temp_Serials_prune;
 
+	void ClearDbPointers()
+	{
+		CLEAR_DB_POINTERS(Temp_Serials_insert, Temp_Serials_prune);
+	};
+
 public:
 	DbConnTempSerials();
 	~DbConnTempSerials();
 	void DoTempSerialsFinish();
 
-	int TempSerialnumInsert(const void *serial, unsigned size, const void* blockp);
-	//int TempSerialnumDelete(const void *serial, unsigned size, const void* blockp);
-	int TempSerialnumSelect(const void *serial, unsigned size, const void* last_blockp, void *output[], unsigned bufsize);
+	int TempSerialnumInsert(const void *serialnum, unsigned serialnum_size, const void* blockp);
+	//int TempSerialnumDelete(const void *serialnum, unsigned serialnum_size, const void* blockp);
+	int TempSerialnumSelect(const void *serialnum, unsigned serialnum_size, const void* last_blockp, void *output[], unsigned bufsize);
 	int TempSerialnumUpdate(const void* old_blockp, const void* new_blockp, uint64_t level);
 	int TempSerialnumClear(const void* blockp);
 	int TempSerialnumPruneLevel(uint64_t level);
@@ -306,13 +319,18 @@ class DbConnRelayObjs : protected DbConnBaseRelayObjs
 	sqlite3_stmt *Relay_Peers_delete_seqnum;
 	sqlite3_stmt *Relay_Peers_delete_peer;
 
+	void ClearDbPointers()
+	{
+		CLEAR_DB_POINTERS(Relay_Objs_begin, Relay_Peers_delete_peer);
+	};
+
 public:
 	DbConnRelayObjs();
 	~DbConnRelayObjs();
 	void DoRelayObjsFinish(bool rollback);
 
 	void RelayObjsInsert(unsigned peer, unsigned type, const relay_request_wire_params_t& req_params, unsigned obj_status, unsigned peer_status);
-	int RelayObjsFindDownloads(unsigned conn_index, uint64_t tx_level_max, uint8_t *output, unsigned bufsize, relay_request_param_buf_t& req_params, int maxobjs, int64_t bytes_pending, unsigned &nobjs, unsigned &nbytes);
+	int RelayObjsFindDownloads(unsigned conn_index, uint64_t tx_level_max, uint8_t *output, unsigned bufsize, relay_request_param_buf_t& req_params, int maxobjs, int64_t bytes_pending, bool &have_blocks, unsigned &nobjs, unsigned &nbytes);
 	int RelayObjsSetStatus(const ccoid_t& oid, int obj_status, int timeout);
 	int RelayObjsDeletePeer(unsigned peer);
 
@@ -336,6 +354,11 @@ class DbConnProcessQ : protected DbConnBaseProcessQ
 	sqlite3_stmt *Process_Q_select_level[PROCESS_Q_N];
 	sqlite3_stmt *Process_Q_delete[PROCESS_Q_N];
 
+	void ClearDbPointers()
+	{
+		CLEAR_DB_POINTERS(Process_Q_insert, Process_Q_delete);
+	};
+
 public:
 	DbConnProcessQ();
 	~DbConnProcessQ();
@@ -345,8 +368,8 @@ public:
 	static void WaitForQueuedWork(unsigned type);
 	static void StopQueuedWork(unsigned type);
 
-	int ProcessQEnqueueValidate(unsigned type, SmartBuf smartobj, const ccoid_t *prior_oid, int64_t level, unsigned status, int64_t priority, unsigned conn_index, uint64_t callback_id);
-	int ProcessQGetNextValidateObj(unsigned type, SmartBuf *retobj, unsigned& conn_index, unsigned& callback_id);
+	int ProcessQEnqueueValidate(unsigned type, SmartBuf smartobj, const ccoid_t *prior_oid, int64_t level, unsigned status, int64_t priority, unsigned conn_index, uint32_t callback_id);
+	int ProcessQGetNextValidateObj(unsigned type, SmartBuf *retobj, unsigned& conn_index, uint32_t& callback_id);
 	int ProcessQUpdateSubsequentBlockStatus(unsigned type, const ccoid_t& oid);
 
 	int ProcessQUpdateValidObj(unsigned type, const ccoid_t& oid, int status, int64_t auxint);
@@ -363,10 +386,14 @@ class DbConnValidObjs : protected DbConnBaseValidObjs
 {
 	sqlite3_stmt *Valid_Objs_insert;
 	sqlite3_stmt *Valid_Objs_select_obj;
-	sqlite3_stmt *Valid_Objs_select_new;
-	sqlite3_stmt *Valid_Objs_select_oldest;
+	sqlite3_stmt *Valid_Objs_select_seqnums;
 	sqlite3_stmt *Valid_Objs_delete_seqnum;
 	sqlite3_stmt *Valid_Objs_delete_obj;
+
+	void ClearDbPointers()
+	{
+		CLEAR_DB_POINTERS(Valid_Objs_insert, Valid_Objs_delete_obj);
+	};
 
 public:
 	DbConnValidObjs();
@@ -377,7 +404,7 @@ public:
 
 	int ValidObjsInsert(SmartBuf smartobj);
 	int ValidObjsGetObj(const ccoid_t& oid, SmartBuf *retobj);
-	unsigned ValidObjsFindNew(int64_t& next_block_seqnum, int64_t& next_tx_seqnum, uint8_t *output, unsigned bufsize);
+	unsigned ValidObjsFindNew(int64_t& next_seqnum, unsigned limit, bool want_msgs, uint8_t *output, unsigned bufsize);
 
 	int ValidObjsDeleteObj(SmartBuf smartobj);
 	int ValidObjsDeleteSeqnum(int64_t seqnum);
@@ -397,6 +424,9 @@ public:
 	void OpenDbs();
 
 	void DeInit();
+
+	void InitDb();
+	void CheckDb();
 };
 
 void DbExplainQueryPlan(sqlite3_stmt *pStmt);

@@ -1,7 +1,7 @@
  #
  # CredaCash (TM) cryptocurrency and blockchain
  #
- # Copyright (C) 2015-2016 Creda Software, Inc.
+ # Copyright (C) 2015-2019 Creda Software, Inc.
  #
  # calc-basis.py
 #
@@ -13,14 +13,14 @@ wordm = (1 << 64) - 1
 print
 print "static const uint64_t hash_bases_prfkeys[] = {"
 
-for i in range(0, 16):
+for i in range(16):
 	h = hashlib.sha256()
 	s = "prfkey %02d" % i
 	h.update(s)
 	b = h.hexdigest()
 	x = int(b, 16)
 	line = "\t/* sha256(\"%s\") */\t" % s
-	for j in range(0, 2):
+	for j in range(2):
 		line += "0x%016x," % ((x >> (j*64)) & wordm)
 	print line
 
@@ -39,8 +39,8 @@ print
 
 print "static const mp_limb_t hash_bases[] = {"
 
-for i in range(0, 256 + 2048):
-	for j in range(0,99999):
+for i in range(256 + 2048):
+	for j in range(99999):
 		if i < 256:
 			x = 1 << i
 			line = "\t\t\t/* bit %03d */\t\t" % i
@@ -56,7 +56,7 @@ for i in range(0, 256 + 2048):
 			if (x < p):
 				line = "/* sha256(\"%s\") */\t" % s
 				break
-	for j in range(0, 4):
+	for j in range(4):
 		line += "0x%016x," % ((x >> (j*64)) & wordm)
 	print line
 

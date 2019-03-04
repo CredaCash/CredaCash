@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * ObjQueue.hpp
 */
@@ -42,33 +42,22 @@ public:
 		m_nextout = 0;
 	}
 
-	void increment(unsigned& val)
+	unsigned next_index(unsigned val) const
 	{
 		++val;
 
 		if (val >= m_maxelem)
 			val -= m_maxelem;
-	}
 
-	unsigned next(unsigned val)
-	{
-		increment(val);
 		return val;
 	}
 
-	bool empty()
+	bool empty() const
 	{
 		return m_nextin == m_nextout;
 	}
 
-	bool full()
-	{
-		auto nextin = next(m_nextin);
-
-		return nextin == m_nextout;
-	}
-
-	unsigned size()
+	unsigned size() const
 	{
 		int s = (int)m_nextin - (int)m_nextout;
 
@@ -78,14 +67,23 @@ public:
 		return s;
 	}
 
-	unsigned space()
+	unsigned space() const
 	{
 		return m_maxelem - 1 - size();
 	}
 
-	bool push(void *obj)
+	bool full() const
 	{
-		auto nextin = next(m_nextin);
+		auto nextin = next_index(m_nextin);
+
+		return nextin == m_nextout;
+	}
+
+	bool push(void *obj, unsigned size)
+	{
+		CCASSERT(size == m_objsize);
+
+		auto nextin = next_index(m_nextin);
 
 		if (nextin == m_nextout)
 			return true;
@@ -99,18 +97,30 @@ public:
 		return false;
 	}
 
-	uint8_t* pop()
+	uint8_t* next(unsigned size) const
 	{
-		if (m_nextin == m_nextout)
+		CCASSERT(size == m_objsize);
+
+		if (empty())
 			return NULL;
 
 		auto obj = m_buf + m_nextout * m_objsize;
 
-		//std::cerr << "ObjQueue::pop  pre-pop m_nextout " << m_nextout << " m_maxelem " << m_maxelem << std::endl;
+		return obj;
+	}
 
-		increment(m_nextout);
+	uint8_t* pop(unsigned size)
+	{
+		auto obj = next(size);
 
-		//std::cerr << "ObjQueue::pop post-pop m_nextout " << m_nextout << " m_maxelem " << m_maxelem << std::endl;
+		if (obj)
+		{
+			//std::cerr << "ObjQueue::pop  pre-pop m_nextout " << m_nextout << " m_maxelem " << m_maxelem << std::endl;
+
+			m_nextout = next_index(m_nextout);
+
+			//std::cerr << "ObjQueue::pop post-pop m_nextout " << m_nextout << " m_maxelem " << m_maxelem << std::endl;
+		}
 
 		return obj;
 	}

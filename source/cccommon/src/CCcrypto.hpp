@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * CCcrypto.hpp
 */
@@ -16,13 +16,8 @@ void CCRandom(void *data, unsigned nbytes);
 
 void CCPseudoRandom(void *data, unsigned nbytes);
 
+void PseudoRandomLetters(void *data, unsigned nbytes);
+
 #if defined(__cplusplus)
 }
-
-#include <string>
-
-std::string PseudoRandomLetters(unsigned len);
-
 #endif
-
-

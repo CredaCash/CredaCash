@@ -3,7 +3,7 @@ CredaCash(TM) Wallet Simulation Script
 
 Part of the CredaCash (TM) cryptocurrency and blockchain
 
-Copyright (C) 2015-2016 Creda Software, Inc.
+Copyright (C) 2015-2019 Creda Software, Inc.
 
 This program exercises the CredaCash network by simulating a wallet that sends
 and receives transactions. The differences between what this script does and
@@ -25,40 +25,36 @@ randomly flipped, and verifies these are always rejected and do not crash the se
 
 '''
 
-import ctypes
-import sys
-import json
-import random
-import hashlib
-import codecs
 import collections
-import time
-import socket
 
-hexencode = codecs.getencoder('hex')
+from cclib import *
+
+cclib.server_hostname = 'yof6li2bbjj6vcy4mliftk3svimiqyp37xc4ytlsioa5347ovis6iqad.onion'		# hostname of the Tx server @@!
 
 ####################################################################################
 #
 # Simulation Parameters (these can be changed)
 #
 
-# Maximum number of intput and output bills in each transaction
+# Maximum number of input and output bills in each transaction
 
-txmaxin = 2
-txmaxout = 4
+txmaxout = 5
+txmaxin = 4
+
+if 0: # !!! normally 0; for testing; values below must match zkproof key capacity limits
+	print '*** WARNING: OVERRIDING TX MAX IN/OUT ***'
+	txmaxout = 2
+	txmaxin = 1
+
+# This is the target number of unspent bills in the wallet for simulation purposes
+
+unspent_target = 10
 
 # More than one payment can be sent to each destination
 # This is the probability the simulation will create a new destination;
 #	otherwise, it will reuse the last destination
 
-prob_create_new_destination = 0.5
-
-# The Payor can send payments to paynum 0, or paynum 1, 2, 3, etc., or to a random paynum
-# This simulation will try paynum = 0 or paynum = random
-# This is the probability to sends a payment to paynum = 0;
-#	otherwise, it will send it to a random paynum
-
-prob_pay_to_paynum_zero = 0.5
+prob_create_new_destination = 0.2
 
 # After a transaction in submitted to the transaction server, this is the minimum amount of time
 # in seconds that will pass before the simulation checks to see if the transaction has cleared.
@@ -68,29 +64,17 @@ prob_pay_to_paynum_zero = 0.5
 
 cleared_check_time_lag = 0
 
-# This is the target number of unspent bills in the wallet for simulation purposes
-
-unspent_target = 5
-
 # These parameters are passed directly to the "tx-create" function
 
 skip_tx_precheck = 0
 test_use_larger_zkkey = 0
 
-# This is a hostname of a public transaction server
-
-server_hostname = 'vgadzkt75uulci7k.onion'
-
-# This parameters are used to connect to the Tx server
-
-net_timeout = 30
-
 # These are for testing
 
-extra_on_wire = False			# must match TEST_EXTRA_ON_WIRE in code
+extra_on_wire = 0				# must match TEST_EXTRA_ON_WIRE in code
 double_spend_probability = 0.5	# probability of attempting to double-spend a bill, if test_double_spends is True
 double_spend_wait_time = 60		# seconds that must elapse before deciding a double-spend attempt did not succeed
-test_nfuzz = 5					# number of times to fuzz a transaction, if test_fuzz_txs is True
+test_nfuzz = 20					# number of times to fuzz a transaction, if the test_bad_txs command line option is set
 
 test_spent_serialnums = {}		# to check for doubles-spends; a real wallet does not need this
 
@@ -101,295 +85,20 @@ test_spent_serialnums = {}		# to check for doubles-spends; a real wallet does no
 
 ####################################################################################
 #
-# Functions to interface with the CredaCash library
-#
-
-# DoJsonCmd
-#
-# DoJsonCmd calls the CredaCash library entry point:
-#		int32_t CCTx_JsonCmd(const char *json, char *buffer, const uint32_t bufsize)
-#
-# DoJsonCmd itself takes four parameters:
-#	jstr := string containing the JSON command and parameters
-#	binary := boolean indicating whether the JSON command will place binary data in the buffer if successful
-#	buf := data to place in the buffer before calling CCTx_JsonCmd; if None, CCTx_JsonCmd will be passed an empty buffer to use for its output
-#		This is intended to be used with JSON commands that take binary input data
-#	returnrc := boolean indicating whether to return a tuple consisting of the CCTx_JsonCmd return code, and the buffer contents
-#		If false, only the buffer contents are returned
-#		This is useful where the CCTx_JsonCmd return code is required to interpret the buffer contents
-
-CCTx_JsonCmd = ctypes.windll.cctx64.CCTx_JsonCmd
-CCTx_JsonCmd.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
-
-jsoncmd_bufsize = 40000			# size of buffer
-
-class CCCmdFailed(Exception):
-    pass
-
-def DoJsonCmd(jstr, binary = False, buf = None, returnrc = False):
-	if show_queries and not jstr.startswith('{"work-'):
-		print '>>>', jstr
-	input = ctypes.c_char_p(jstr)		# create ctypes buffer from JSON string
-	if buf:
-		buffer = ctypes.create_string_buffer(buf, jsoncmd_bufsize)	# create ctypes buffer from buf
-	else:
-		buffer = ctypes.create_string_buffer(jsoncmd_bufsize)		# create an empty ctypes buffer
-	bufsize = ctypes.c_uint(jsoncmd_bufsize)
-
-	sys.stdout.flush()				# prevents output from getting interleaved when the DLL writes to stdout
-	rc = CCTx_JsonCmd(input, buffer, bufsize)
-	#print 'CCTx_JsonCmd', rc
-	if rc and not returnrc:			# handle errors the function caller doesn't want returned
-		print 'CCTx_JsonCmd failed', rc
-		print '>>>', jstr
-		if not buf:
-			print '<<<', buffer.value
-		raise CCCmdFailed
-	if binary:
-		if returnrc:
-			return rc, buffer.raw	# return buffer as binary
-		return buffer.raw			# return buffer as binary
-	if show_queries and not jstr.startswith('{"work-'):
-		print '<<<', buffer.value
-	if returnrc:
-		return rc, buffer.value		# return buffer as string
-	return buffer.value				# return buffer as string
-
-####################################################################################
-#
-# Functions to interface with the transaction server
-#
-
-# RandomLetter and RandomString are used to create a random username for the Tor proxy
-# This causes Tor proxy to open a fresh circuit for increased privacy (although it takes longer, too)
-def RandomLetter():
-	c = random.randrange(52)
-	if c < 26:
-		return chr(ord('a') + c)
-	else:
-		return chr(ord('A') + c - 26)
-
-def RandomString(n):
-	string = ''
-	for i in range(n):
-		string += RandomLetter()
-	return string
-
-# Build a Socks4 connect string for the Tor proxy
-def SocksConnectString(server, proxyuser):
-	string = "\x04\x01\x01\xBB\x00\x00\x00\x01"	# the string is: Socks4, connect, port 443, ip 0.0.0.1
-	string += proxyuser							# add a Socks4 user id; Tor gives every user id it's own circuit
-	string += chr(0)
-	string += server
-	string += chr(0)
-	return string
-
-# Send binary data to a transaction server optionally via Tor proxy
-def SendServer(msg, proxyuser):
-	sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-	sock.settimeout(net_timeout)
-	sock.connect(('127.0.0.1', net_port))
-	if use_tor_proxy:
-		connstring = SocksConnectString(server_hostname, proxyuser)
-		#print hexencode(connstring)
-		#print connstring
-		sock.sendall(connstring)	# send Tor proxy a Socks4 connection string
-
-		data = sock.recv(32)
-		#print hexencode(data)
-		if len(data) != 8:			# Tor should always return 8 bytes
-			print 'reply', len(data), 'nbytes'
-			raise Exception
-		if ord(data[0]):
-			raise Exception
-		result = ord(data[1])		# second byte should be 90
-		if result != 90:
-			print 'Socks status', result
-			raise Exception
-
-	#time.sleep(20)	# for testing server timeout
-	sock.sendall(msg)			# send the binary data directed to the transaction server
-	reply = ''
-	while True:					# read reply from transaction server
-		data = sock.recv(4000)
-		if not data:
-			break
-		reply += data
-	#print 'server reply:', reply
-
-	sock.shutdown(socket.SHUT_RDWR)
-	sock.close()
-	return reply
-
-# GetMsgSize extracts the size from a binary message
-def GetMsgSize(msg):
-	size = 0
-	for i in range(3,-1,-1):					# size is 32-bit unsigned int in little-endian format
-		size = size * 256 + ord(msg[i])
-	return size
-
-# Add proof-of-work to a binary message
-def TryAddProofOfWork(msg, difficulty):
-	print 'adding proof-of-work...'
-
-	jstr = '{"work-reset" :'
-	jstr += ' {"timestamp" : "' + str(int(time.time()) + NetParams.clock_diff) + '"'
-	jstr += '}}'
-	msg = DoJsonCmd(jstr, True, msg)
-
-	for i in range(8):		# update all 8 nonces
-		while True:
-			jstr = '{"work-add" :'
-			jstr += ' {"index" : "' + str(i) + '"'
-			jstr += ', "iterations" : "' + str(1 << 34) + '"'	# do 2^34 iterations at a time, then come back here in case the user tries to stop the program
-			jstr += ', "difficulty" : "' + difficulty + '"'
-			jstr += '}}'
-
-			rc, msg = DoJsonCmd(jstr, True, msg, True)
-			if rc < 0:
-				print '"work-add" failed; retrying'
-				return False
-			if rc == 0:			# this nonce is now valid
-				break
-	return msg
-
-def AddProofOfWork(msg, difficulty):
-	while True:
-		rv = TryAddProofOfWork(msg, difficulty)
-		if rv == False:
-			continue	# keep retrying until success
-		return rv
-
-# This class holds the parameters needed to communicate with the transaction server
-class NetParams():
-	clock_diff = 0
-	query_work_difficulty = '0'
-	tx_work_difficulty = '0'
-
-	@staticmethod
-	def Update(reply, show = False):
-		NetParams.clock_diff = int(reply['timestamp'], 16) - int(time.time())
-		if show:
-			print 'clock_diff', NetParams.clock_diff
-		NetParams.query_work_difficulty = reply['query-work-difficulty']
-		if show:
-			print 'query-work-difficulty', NetParams.query_work_difficulty
-		NetParams.tx_work_difficulty = reply['tx-work-difficulty']
-		if show:
-			print 'tx-work-difficulty', NetParams.tx_work_difficulty
-
-	@staticmethod
-	def Query():
-		jstr = '{"tx-query-create": {"tx-parameters-query": {}}}'
-		query = DoJsonCmd(jstr, True)
-		retries = 0
-		while True:
-			print 'Fetching network parameters...'
-			reply = TryServer('query', query, RandomString(12))
-			if not reply.startswith('ERROR'):
-				if show_queries:
-					print '<<<', reply
-				break
-			print 'Server reply to parameter query:', reply
-			retries += 1
-			if retries > 20:
-				raise Exception
-			time.sleep(2)
-		try:
-			reply = json.loads(reply)
-			reply = reply['tx-parameters-query-results']
-		except:
-			print 'Parameter query unexpected reply:', reply
-			raise Exception
-		NetParams.Update(reply, True)
-
-# Try sending a message to the transaction server
-# If retry is true, it keeps retrying until it gets a response
-def TryServer(label, msg, proxyuser, isquery = True, retry = True):
-	nbytes = GetMsgSize(msg)
-	print label, 'length', nbytes, 'bytes'
-	#print hexencode(msg[:nbytes])
-
-	# add proof-of-work
-	if isquery:
-		difficulty = NetParams.query_work_difficulty	# query needs proof-of-work with query_work_difficulty
-	else:
-		difficulty = NetParams.tx_work_difficulty		# transaction needs proof-of-work with tx_work_difficulty
-	msg = AddProofOfWork(msg, difficulty)
-
-	# send msg to server
-	msg = msg[:nbytes]		# strip off the unused msg bytes
-	#print hexencode(msg)
-	while True:
-		try:
-			#print int(time.time()),
-			print 'Sending', label, 'to server...'
-			reply = SendServer(msg, proxyuser)
-			if len(reply) < 1 or (reply[0] == '{' and (len(reply) < 2 or reply[-1] != '}')):
-				print 'SubmitServer incomplete response length', len(reply)
-			else:
-				return reply
-		except Exception as e:
-			print 'SubmitServer exception', e
-			if retry:
-				time.sleep(10)	# pause so we don't overload tor
-		if not retry:
-			return 'SubmitServer failed'
-
-# Send a message to the transaction server
-# If retry is true and it gets a response that starts with ERROR, then it will retry 20 times before giving up
-def SubmitServer(label, msg, proxyuser, isquery = True, retry = True):
-	retries = 0
-	while True:
-		reply = TryServer(label, msg, proxyuser, isquery, retry)
-		if not reply.startswith('ERROR'):
-			if show_queries:
-				print '<<<', reply
-			return reply
-		print 'Server reply:', '"' + reply + '"'
-		if not retry:
-			return reply
-		retries += 1
-		if retries > 20:
-			raise Exception
-		time.sleep(2)
-		print 'Updating network parameters...'
-		NetParams.Query()
-		print 'Retrying server request'
-
-# used for testing to fuzz the server
-def flipbit(wire, nwire):
-	wire2 = bytearray(wire)
-	byte = random.randrange(nwire - 48)		# proof of work size = 48
-	#byte = 8								# for testing
-	#byte = nwire - 48 - 1					# for testing
-	if byte >= 8:							# 8 = header size (size and tag words)
-		byte += 48							# don't flip bit in proof of work because it might not make the tx invalid (bytes at offset 8-55 inclusive)
-	bit = random.randrange(8)
-	print 'flipping byte', byte, 'bit', bit, 'original value', hex(wire2[byte])
-	if byte < 0 or byte >= nwire:
-		print 'flipbit error byte', byte, 'nwire', nwire, 'msg size', GetMsgSize(wire)
-		raise Exception
-	wire2[byte] = wire2[byte] ^ (1 << bit)
-	if byte >= 56 and byte < 64:
-		return flipbit(wire, nwire)			# bit flipped in param_level, which might not make the tx invalid, so flip another bit to make sure
-	return str(wire2)
-
-####################################################################################
-#
 # Bill class -- stores all attributes associated with a bill
 #
 
 class Bill:
-	# For the purpose of debugging and reporting, this simulation assigns a sequential seqnum to each bill
+	# For the purpose of debugging and reporting, this simulation assigns a sequential billnum to each bill
 	# A real wallet doesn't have to do this, but might find it helpful.
-	next_bill_seqnum = 0
+	next_billnum = 0
 
-	def __init__(self, wallet, destnum, outvalmin, outvalmax, outvals_public):
+	def __init__(self, wallet, destnum, default_pool, amount, ismint):
 		self.wallet = wallet		# store a reference to the wallet because it generates the spend-secret
-		self.seqnum = Bill.next_bill_seqnum
+		self.billnum = Bill.next_billnum
 		self.already_spent = False
-		Bill.next_bill_seqnum += 1
+		self.ismint = int(ismint)
+		Bill.next_billnum += 1
 
 		# The destination number is chosen by the Payor to get different bill spend secrets which results in different payment destinations
 		#	which in turn results in different payment addresses. The payment address is the value that is publicly published in the blockchain.
@@ -397,59 +106,68 @@ class Bill:
 		# the destination number and payment number are sometimes reused so we can test and demonstrate handling multiple payments to the same address.
 		self.destnum = destnum
 
-		# The payment number should be chosen by the Payor using the "sequence-type" specified by the Payee when the payspec was generated.
-		# This simulation tests the range of sequence-type's by chosing a paynum of either zero or a random 128-bit number.
-		if random.random() < prob_pay_to_paynum_zero:
-			self.paynum = 0 	# if the payspec sequence-type is "1" and multiple payments are sent to the same payspec, the wallet should use a different sequential payment-number (0, 1, 2, etc) for each payment
+		# The payment number should start at 0 and increment for subsequent payments, up to a maximum of 2^TX_PAYNUM_BITS
+		# This simulation tests the range by chosing a random number.
+		if HasStaticAddress(self.Destination()) or random.getrandbits(1):
+			self.paynum = 0		# half of bills will have paynum = 0, to stress test multiple payments to same address
 		else:
-			self.paynum = random.getrandbits(128)	# a real wallet should do this whenever the payspec sequence-type is "9"
+			self.paynum = random.getrandbits(TX_PAYNUM_BITS)
 
-		# The bill value would normally be chosen by the Payor, possibly using the number suggested by the Payee and included in the payspec
-		# in this simulation, we chose a random 64 bit number scaled down so we can use the donation value to balance the transaction input and output values
-		maxval = min(outvalmax + 1, (1 << 59))
-		self.value = random.randrange(outvalmin, maxval)
+		# Test setting the pool attribute of the bills
+		if extra_on_wire:
+			self.pool = hex(random.getrandbits(TX_POOL_BITS))
+		else:
+			self.pool = default_pool
 
-		# Since we already know the payment-number, we can compute the address and value-xor now and save them for later
-		self.ComputeAddressAndValueEnc(outvals_public)
+		# The bill amount would normally be chosen by the Payor, possibly using the number suggested by the Payee and included in the payspec
+		self.amount = amount
+		self.amount_fp = Amounts.Encode(amount, 0, False)
 
-	def SpendSecret(self):
-		# The spend secret can be regenerated at anytime using the bill's destnum and the wallet_master_secret
-		return self.wallet.DestinationSpendSecret(self.destnum)
+		# Also test transactions in which the output amount is publicly published
+		if ismint:
+			self.encrypted = 0
+		elif extra_on_wire:
+			self.encrypted = random.getrandbits(1)
+		else:
+			self.encrypted = 1
 
-	def Seqnum(self):
-		return self.seqnum
+		# Since we already know the payment-number, we can compute the address and save them for later
+		self.ComputeAddress()
+
+	def Billnum(self):
+		return self.billnum
 
 	def Destnum(self):
 		return self.destnum
 
 	def Destination(self):
-		# The payment destination depends only on the bill's spend-secret
+		# The payment destination depend on the bill's spend-secret and the destination-number
 		# Normally, the Payee would use the spend-secret to generate a payspec and send it to the Payor who would decode it to determine the payment destination
 		# This simulation is both the Payee and Payor, so it both generates a payspec and decodes it to extract the payment desination.
 		jstr = '{"payspec-encode" :'
-		jstr += ' {"payspec" :'
-		jstr += ' {"sequence-type" : "0"'	# this simulation uses only sequence-type "0"; a real wallet would use "1" or "9"
-		jstr += ', "spend-secret" : "' + self.SpendSecret() + '"'
-		jstr += '}}}'
+		jstr += ' {"spend-secret" : "' + self.wallet.spend_secret + '"'
+		jstr += ', "destination-number" : "' + hex(self.Destnum()) + '"'
+		jstr += '}}'
 		payspec = DoJsonCmd(jstr)
 
 		# decode payspec and extract destination
-		jstr = '{"payspec-decode" : "' + payspec + '"}'
+		jstr = '{"payspec-decode" : ' + payspec + '}'
 		payspec = DoJsonCmd(jstr)
 		payspec = json.loads(payspec)
 		payspec = payspec['payspec']
-		return payspec['destination']		# this function only returns the destination; a real wallet would also need sequence-type and requested-amount
+		return payspec['destination']		# this function only returns the destination; a real wallet would also need the requested-amount
 
 	def Paynum(self):
 		return self.paynum
 
-	def ComputeAddressAndValueEnc(self, outvals_public):
-		# The address and value-xor depend only on the destination and the payment-number
-		# The Payee can computes the address using the "compute-address" function, or it can be provided by the Payor.
+	def ComputeAddress(self):
+		# The address depends on the destination and the payment-number
+		# The Payee can compute the address using the "compute-address" function, or it can be provided by the Payor.
 		# The Payor can get the address from "tx-to-json" after calling "tx-create".
 		# In this simulation, we do both and make sure they match
 		jstr = '{"compute-address" :'
 		jstr += ' {"destination" : "' + self.Destination() + '"'
+		jstr += ', "destination-chain" : "' + NetParams.blockchain + '"'
 		jstr += ', "payment-number" : "' + hex(self.Paynum()) + '"'
 		jstr += '}}'
 		results = DoJsonCmd(jstr)
@@ -457,39 +175,58 @@ class Bill:
 		results = json.loads(results)
 		#print results
 		self.address = results['address']
-		if outvals_public:
-			self.value_xor = 0
-		else:
-			self.value_xor = int(results['value-encode-xor'], 16)
+		#print 'address', self.address
+
+	def ComputeAmountXor(self):
+		# The amount-xor depends on the commitment_iv, the destination and the payment-number
+		# The Payee can compute the amount-xor using the "compute-amount-encryption" function, or it can be provided by the Payor.
+		jstr = '{"compute-amount-encryption" :'
+		jstr += ' {"commitment-iv" : "' + self.CommitIV() + '"'
+		jstr += ', "destination" : "' + self.Destination() + '"'
+		jstr += ', "payment-number" : "' + hex(self.Paynum()) + '"'
+		jstr += '}}'
+		results = DoJsonCmd(jstr)
+
+		results = json.loads(results)
+		#print results
+		self.asset_xor = toint(results['asset-encrypt-xor'])
+		self.amount_xor = toint(results['amount-encrypt-xor'])
+		#print 'address', self.address
 
 	def Address(self):
 		return self.address
 
-	def Value(self):
-		return self.value
+	def Amount(self):
+		return self.amount
+
+	def AmountFP(self):
+		return self.amount_fp
+
+	def Pool(self):
+		return self.pool
 
 	# Construct json string to publish this bill in a transaction
-	def ValueAndJson(self, input = False):
+	def OutputJson(self):
 		jstr = '{"destination" : "' + self.Destination() + '"'
 		jstr += ', "payment-number" : "' + hex(self.Paynum()) + '"'
-		value = self.Value()
-		jstr += ', "value" : "' + hex(value) + '"'
-		if input:
-			jstr += ', "commitment-iv" : "' + self.CommitIV() + '"'
-			jstr += ', "spend-secret" : "' + self.SpendSecret() + '"'
+		jstr += ', "pool" : "' + self.Pool() + '"'
+		amount_fp = self.AmountFP()
+		jstr += ', "amount" : "' + hex(amount_fp) + '"'
+		if self.encrypted:
+			jstr += ', "asset-mask" : "' + hex((1 << Amounts.asset_bits) - 1) + '"'
+			jstr += ', "amount-mask" : "' + hex((1 << Amounts.amount_bits) - 1) + '"'
+		else:
+			jstr += ', "asset-mask" : 0'
+			jstr += ', "amount-mask" : 0'
 		jstr += '}'
-		return value, jstr
+		return jstr
 
 	# These values are needed to spend the bill
-	def SetCommitment(self, address, value_enc, commitment_iv, commitment):
-		#print 'bill', self.seqnum, 'address', address, 'commitment-iv', commitment_iv, 'commitment', commitment
-		# check the values that come out of "compute-address" against the value from "tx-create"
+	def SetCommitment(self, address, commitment_iv, commitment):
+		#print 'SetCommitment bill', self.billnum, 'address', address, 'commitment-iv', commitment_iv, 'commitment', commitment
+		# check the address output by "compute-address" against the value from "tx-create"
 		if address != self.address:
-			print 'SetCommitment address mismatch', address, self.address
-			raise Exception
-		value_decrypted = int(value_enc, 16) ^ self.value_xor
-		if value_decrypted != self.value:
-			print 'SetCommitment value mismatch', value_enc, hex(self.value_xor), hex(value_decrypted), hex(self.value)
+			print 'tx-create address mismatch', address, self.address
 			raise Exception
 		self.commitment_iv = commitment_iv
 		self.commitment = commitment
@@ -501,7 +238,7 @@ class Bill:
 		return self.commitment
 
 	def SetCommitnum(self, commitnum):
-		#print 'SetCommitnum bill', self.seqnum, 'commitnum', commitnum
+		#print 'SetCommitnum bill', self.billnum, 'commitnum', commitnum
 		self.commitnum = commitnum
 
 	def Commitnum(self):
@@ -520,14 +257,14 @@ class TxOuts:
 		self.next_query_commitnum = 0
 	def AddBill(self, bill):
 		self.bills.append(bill)
-	def AddOutput(self, i, address, value_enc, commitment_iv, commitment):
-		self.bills[i].SetCommitment(address, value_enc, commitment_iv, commitment)
+	def AddOutput(self, i, address, commitment_iv, commitment):
+		self.bills[i].SetCommitment(address, commitment_iv, commitment)
 	def AddInputs(self, serialnums):
 		self.serialnums = serialnums
 	def NBills(self):
 		return len(self.bills)
-	def FirstSeqnum(self):
-		return self.bills[0].Seqnum()
+	def FirstBillnum(self):
+		return self.bills[0].Billnum()
 	def Bills(self):
 		return self.bills
 	def SetTime(self):
@@ -551,83 +288,79 @@ class Wallet:
 		self.bills_unspent = {}
 
 		passphrase_hash_milliseconds = 4000
+		passphrase_hash_memory_mb = 100
 
 		print
-		print 'Master secret target generation time =', passphrase_hash_milliseconds/1000, 'seconds'
+		print 'Master secret target generation time =', passphrase_hash_milliseconds/1000.0, 'seconds using', passphrase_hash_memory_mb, 'MB memory'
 
 		jstr = '{"master-secret-generate" :'
 		jstr += '{"milliseconds" : ' + str(passphrase_hash_milliseconds)
+		jstr += ',"memory" : ' + str(passphrase_hash_memory_mb)
 		jstr += '}}'
-		self.scrambled_master_secret = DoJsonCmd(jstr)
+		result = DoJsonCmd(jstr)
+		result = json.loads(result)
+		result = result['encrypted-master-secret']
+		self.encrypted_master_secret = result
 
-		print 'The scrambled master secret =', self.scrambled_master_secret
+		print 'The scrambled master secret =', self.encrypted_master_secret
 
 	def DecodeMasterSecret(self):
 		passphrase = "this is a test"		# this would normally be input by the user
 		print 'The wallet passphrase =', '"' + passphrase +'"'
 
-		jstr = '{"master-secret-descramble" :'
-		jstr += '{"scrambled-master-secret" : "' + self.scrambled_master_secret + '"'
+		jstr = '{"master-secret-decrypt" :'
+		jstr += '{"encrypted-master-secret" : "' + self.encrypted_master_secret + '"'
 		jstr += ',"passphrase" : "' + passphrase + '"'
 		jstr += '}}'
-		self.wallet_master_secret = DoJsonCmd(jstr)
+		result = DoJsonCmd(jstr)
+		result = json.loads(result)
+		result = result['master-secret']
+		self.master_secret = result
 
-		print 'The wallet master secret =', self.wallet_master_secret
+		print 'The wallet master secret =', self.master_secret
 
-	def DestinationSpendSecret(self, destnum):
-		# This wallet generates pseudorandom bill spend-secret's using the wallet_master_secret as a seed
-		# This function return the n'th spend-secret
-		hasher = hashlib.sha256()
-		hasher.update('ss' + str(destnum) + self.wallet_master_secret)
-		return '0x' + hasher.hexdigest()
+		jstr = '{"compute-spend-secret" : '
+		jstr += '{"master-secret" : "' + self.master_secret + '"'
+		jstr += '}}'
+		result = DoJsonCmd(jstr)
+		result = json.loads(result)
+		result = result['spend-secret']
+		self.spend_secret = result
+
+		print 'The wallet spend secret =', self.spend_secret
 
 	# Simulate a transation
+	# return True if this function should be called again to retry
 	def SimulateTx(self):
-		# chose random number of inputs and outputs
-		while True:
-			nout = random.randrange(txmaxout + 1)
-			nin = random.randrange(txmaxin + 1)
-			if len(self.bills_unspent) < unspent_target and nin > nout:
-				nin = min(nout, txmaxin)
-			if len(self.bills_unspent) > unspent_target and nin < nout:
-				nin = min(nout, txmaxin)
-			if nin > len(self.bills_unspent):
-				nin = len(self.bills_unspent)
-			if nout + nin > 0:
-				break
 
-		print
-		print
-		if nout > 1:
-			print 'Creating bills seqnum''s', Bill.next_bill_seqnum, '-', Bill.next_bill_seqnum + nout - 1,
-		elif nout == 1:
-			print 'Creating bill seqnum', Bill.next_bill_seqnum,
-		else:
-			print 'Creating transaction with no outputs',
-		print 'with unspent pool of', len(self.bills_unspent), 'bills'
+		print '\n'
 
 		inbills = []
-		insum = outsum = 0
-
-		inseqnums = []		# used only for trace/debugging output
+		insum = 0
 		invals = []			# used only for trace/debugging output
-		outvals = []		# used only for trace/debugging output
+		inbillnums = []		# used only for trace/debugging output
+
+		unspent = len(self.bills_unspent)
+
+		nin = random.randrange(txmaxin + 1)
+		if unspent < unspent_target:
+			nin -= random.randrange(unspent_target - unspent)
+			nin = max(nin, 0)
+		elif unspent > unspent_target:
+			nin += random.randrange(unspent - unspent_target)
+			nin = min(nin, txmaxin)
+		nin = min(nin, unspent)
+
+		#print 'nin', nin, 'bills_unspent', unspent, 'unspent_target', unspent_target, 'txmaxin', txmaxin
 
 		# figure out the transaction inputs
 		unspent_keys = self.bills_unspent.keys()
 		unspent_keys.sort()
-		double_spend_attempt = False
-		inputs = '{"tx-query-create" :'
-		inputs += ' {"tx-input-query" : ['
+		inputs = ''
 		for i in range(nin):
-			if i:
-				inputs += ', '
 			bill = self.bills_unspent[unspent_keys[i]]
 			del self.bills_unspent[unspent_keys[i]]
-			if bill.already_spent and not double_spend_attempt:
-				double_spend_attempt = True
-				print 'This transaction will be a double-spend attempt'
-			if not double_spend_attempt and test_double_spends and random.random() < double_spend_probability:
+			if test_double_spends and random.random() < double_spend_probability:
 				# requeue the bill to be spent again at a random time, possibly even in this same transaction
 				print 'Requeuing bill for a double-spend attempt'
 				spend_order = random.getrandbits(32)
@@ -636,159 +369,236 @@ class Wallet:
 				unspent_keys = self.bills_unspent.keys()
 				#unspent_keys.insert(0, 0)					# spend this bill in same tx
 				unspent_keys.sort()
-			bill.already_spent = True
-			inbills.append(bill)
-			inseqnums.append(bill.seqnum)
-			val, input = bill.ValueAndJson(True)
+			val = bill.Amount()
 			invals.append(val)
 			insum += val
-			inputs += ' {"address" : "' + bill.Address() + '"'
-			inputs += ', "commitment-number-start" : "' + hex(bill.Commitnum()) + '"'
-			inputs += '}'
-		inputs += ']}}'
-		#print inputs
 
-		query = DoJsonCmd(inputs, True)
-		print 'Fetching Merkle paths...'
-		rawreply = SubmitServer('query', query, RandomString(12))
-		try:
-			reply = json.loads(rawreply)
-			reply = reply['tx-input-query-report']
-		except:
-			print 'Input query unexpected reply:', rawreply
-			raise Exception
+			if not bill.already_spent:
+				bill.already_spent = 1
+			inbills.append(bill)
+			inbillnums.append(bill.billnum)
 
-		NetParams.Update(reply)
-		donation_per_tx = int(reply['donation-per-transaction'], 16)
-		donation_per_byte = int(reply['donation-per-byte'], 16)
-		donation_per_output = int(reply['donation-per-output'], 16)
-		donation_per_input = int(reply['donation-per-input'], 16)
+			if i:
+				inputs += ', '
+			inputs += '"' + hex(bill.Commitnum()) + '"'
 
-		inputs = reply['tx-input-query-results']
-		outvalmin = int(inputs['minimum-output-value'], 16)
-		outvalmax = int(inputs['maximum-output-value'], 16)
+		inputs = QueryInputs(inputs)
+
+		default_output_pool = inputs['default-output-pool']
 
 		for i in range(nin):
 			input = inputs['inputs'][i]
 			bill = inbills[i]
-			if input['address'] != bill.Address():
-				print 'address mismatch', bill.Seqnum(), input['address'], bill.Address()
+			if toint(input['commitment-number']) != toint(bill.Commitnum()):
+				print 'tx-input-query commitment-number mismatch', bill.Billnum(), input['commitment-number'], bill.Commitnum()
 				raise Exception
-			if input['commitment-iv'] != bill.CommitIV():
-				print 'commitment-iv mismatch', bill.Seqnum(), input['commitment-iv'], bill.CommitIV()
-				raise Exception
-			if input['commitment'] != bill.Commitment():
-				print 'commitment mismatch', bill.Seqnum(), input['commitment'], bill.Commitment()
-				raise Exception
-			if int(input['commitment-number'], 16) != bill.Commitnum():
-				print 'commitment-number mismatch', bill.Seqnum(), input['commitment-number'], int(input['commitment-number'], 16), bill.Commitnum()
-				raise Exception
-			# in the results returned by the server, the wallet needs to make some substitutions and additions...
-			del input['address']
-			del input['encrypted-value']
+			# the wallet needs to make some additions to the results returned by QueryInputs:
+			input['spend-secret'] = self.spend_secret
+			input['destination-number'] = hex(bill.Destnum())
 			input['payment-number'] = hex(bill.Paynum())
-			input['value'] = hex(bill.Value())
-			input['spend-secret'] = bill.SpendSecret()
+			input['pool'] = bill.Pool()
+			input['amount'] = hex(bill.AmountFP())
+			input['commitment-iv'] = bill.CommitIV()
+			input['commitment'] = bill.Commitment()
 		inputs = json.dumps(inputs)
 		inputs = inputs[1:-1]	# strip off outer brackets
 		#print inputs
 
-		if extra_on_wire:
-			outvals_public = random.getrandbits(1)
-			if outvals_public:
-				print 'outvals_public', outvals_public
-		else:
-			outvals_public = 0
+		outsum = None
 
-		# starting creating transaction in json format
-		jstr = '{"tx-create" : {"tx-pay" : {'
+		for attempt in range(20):
+			if outsum == insum:
+				break
+
+			# chose random number of outputs
+			if extra_on_wire:
+				nout = random.randrange(txmaxout + 1)
+			else:
+				nout = random.randrange(txmaxout) + 1
+			if len(self.bills_unspent) < unspent_target:
+				nout += random.randrange(unspent_target - len(self.bills_unspent))
+				nout = min(nout, txmaxout)
+			elif len(self.bills_unspent) > unspent_target:
+				nout -= random.randrange(len(self.bills_unspent) - unspent_target)
+				nout = max(nout, int(not extra_on_wire))
+			if nin == 0:
+				nout = TX_MINT_NOUT
+
+			est_txsize, donation = Amounts.ComputeDonation(nout, nin)
+			if donation is None:
+				raise Exception
+
+			if nin == 0:
+				insum = TX_CC_MINT_AMOUNT
+				donation = TX_CC_MINT_DONATION
+
+			suggested_donation = donation
+
+			if 0 and not random.getrandbits(3):	# quick test to make sure small donations are rejected by server
+				print '*** Reducing donation -- tx may fail'
+				donation = int(donation * 0.999)
+
+			print 'Trying transaction with', nout, 'output',
+			if nout == 1:
+				print 'bill',
+			else:
+				print 'bills',
+			print 'and', nin, 'input',
+			if nin == 1:
+				print 'bill',
+			else:
+				print 'bills',
+			print 'from unspent pool of', unspent,
+			if unspent == 1:
+				print 'bill;',
+			else:
+				print 'bills;',
+			print 'suggested donation', suggested_donation
+
+			# chose random amounts for output bills
+
+			for attempt2 in range(200):
+				outsum = donation
+				outvals = []
+
+				for i in range(nout):
+					if nout - i < 2:
+						r = insum - outsum
+					else:
+						r = random.randrange(insum - outsum) + 1
+						r = random.randrange(r) + 1
+					val = Amounts.Truncate(r, 0, False)
+					#print 'round up', insum - outsum, r, val
+					if val > insum - outsum:
+						val = Amounts.Truncate(r, 0, False)
+						#print 'round down', insum - outsum, r, val
+					outvals.append(val)
+					outsum += val
+
+				# adjust donation to balance tx
+				#print 'pre-adjusted', insum, outsum, insum - outsum, donation
+				if outsum <= insum:
+					new_donation = Amounts.Truncate(insum - (outsum - donation), 0, True)
+					#print 'adjusted', insum, outsum, insum - outsum, donation
+					if new_donation is not None and new_donation <= 4 * suggested_donation:
+						outsum += new_donation - donation
+						donation = new_donation
+						if outsum == insum:
+							break
+
+		if outsum != insum:
+			# return input billets to the unspent pool
+			for bill in inbills:
+				if bill.already_spent == 1:
+					bill.already_spent = False
+				spend_order = random.getrandbits(32)
+				self.bills_unspent[spend_order] = bill
+			return
+
+		double_spend_attempt = False
+		for bill in inbills:
+			if bill.already_spent:
+				bill.already_spent = True
+				double_spend_attempt = True
+
+		if double_spend_attempt:
+			print 'This transaction is a double-spend attempt'
+
+		print
+		if nout == 1:
+			print 'Creating bill numbered', Bill.next_billnum
+		elif nout > 1:
+			print 'Creating bills numbered', Bill.next_billnum, '-', Bill.next_billnum + nout - 1
+		else:
+			print 'Creating transaction with no outputs'
+
+		print 'The estimated transaction size is', est_txsize, 'bytes and the suggested donation is', suggested_donation
+
+		# create transaction in json format
+		jstr = '{"tx-create" : {'
+		if nin == 0:
+			jstr += '"mint" : {'
+		else:
+			jstr += '"tx-pay" : {'
 		jstr += '"no-precheck" : "' + str(random.getrandbits(1) | skip_tx_precheck) + '"'	# either skip randomly or skip always
-		jstr += ', "test-use-larger-zkkey" : "' + str(random.getrandbits(1) * test_use_larger_zkkey) + '"'
-		if outvals_public or random.getrandbits(1):
-			jstr += ', "outvals-public" : "' + hex(outvals_public) + '"'
-		if extra_on_wire and random.getrandbits(1):
-			jstr += ', "nonfinancial" : 1'
+		jstr += ', "test-use-larger-zkkey" : "' + str(random.getrandbits(1) * test_use_larger_zkkey * (nout > 0)) + '"'
+		jstr += ', "source-chain" : "' + NetParams.blockchain + '"'
+		jstr += ', "destination-chain" : "' + NetParams.blockchain + '"'
+		jstr += ', "donation" : "' + hex(Amounts.Encode(donation, 0, True)) + '"'
+
 		jstr += ', ' + inputs
 		jstr += ', "outputs" : ['
 
 		# figure out the transaction outputs
+		outsum = donation
 		if nout:
-			# note: this script only creates TxOuts and adds then to txs_unconfirmed when nout > 0
+			# note: this script only creates TxOuts and adds them to txs_unconfirmed when nout > 0
 			# that means tx's with no outputs will not be queried to see if/when they clear
 			txouts = TxOuts()
 			txouts.double_spend = None
-			self.txs_unconfirmed.append(txouts)
 			for i in range(nout):
+				val = outvals[i]
+				while True:
+					if not self.wallet_next_destnum or random.random() < prob_create_new_destination:
+						destnum = self.wallet_next_destnum
+						self.wallet_next_destnum += 1
+					else:
+						destnum = random.randrange(self.wallet_next_destnum)	# use any of prior destination numbers as a stress test
+					bill = Bill(self, destnum, default_output_pool, val, nin == 0)
+					if HasAcceptanceRequired(bill.Destination()):
+						# this destination requires acceptance, so pick a different one
+						if self.wallet_next_destnum < 20:
+							self.wallet_next_destnum += 1
+					else:
+						break
+
+				txouts.AddBill(bill)
+
 				if i:
 					jstr += ', '
-				if not self.wallet_next_destnum or random.random() < prob_create_new_destination:
-					destnum = self.wallet_next_destnum
-					self.wallet_next_destnum += 1
-				else:
-					destnum = random.randrange(self.wallet_next_destnum)
-				bill = Bill(self, destnum, outvalmin, outvalmax, outvals_public)
-				txouts.AddBill(bill)
-				val, output = bill.ValueAndJson()
-				outvals.append(val)
-				outsum += val
-				jstr += output
+				jstr += bill.OutputJson()
 		jstr += ']'
-
-		# compute suggested donation...
-		ninw = nin
-		est_txsize = 365 + nout * 72 + nin * 33 + (nin - ninw) * 32
-		donation = donation_per_tx + est_txsize * donation_per_byte + nout * donation_per_output + nin * donation_per_input
-		print 'The estimated transaction size is', est_txsize, 'bytes and the suggested donation is', donation
-
-		# ...but don't use it because this simulation uses the donation to balance the inputs and outputs
-		donation = insum - outsum
-
-		print 'Input bill sequence numbers:', inseqnums
-		print 'Input bill values:', invals
-		print 'Output bill values:', outvals
-		print 'Witness donation:', donation
-
-		jstr += ', "donation" : "' + hex(donation) + '"'
-
-		if extra_on_wire:
-			if len(outvals):
-				jstr += ', "minimum-output-value" : "' + hex(min(outvals)) + '"'
-				jstr += ', "maximum-output-value" : "' + hex(max(outvals)) + '"'
-			if len(invals):
-				jstr += ', "maximum-input-value" : "' + hex(max(invals)) + '"'
 
 		jstr += '}}}'
 
-		# create the transaction and place it into the library's internal transaction buffer
+		print 'Input bill numbers:', inbillnums
+		print 'Input bill amounts:', invals
+		print 'Output bill amounts:', outvals
+		print 'Witness donation:', donation
+
 		print 'Generating transaction...'
-		try:
-			result = DoJsonCmd(jstr)
-			if result:
-				print result
-				raise CCCmdFailed
-		except CCCmdFailed:
-			print '"tx-create" failed'
-			jstr = '{"tx-dump" : {}}'
-			result = DoJsonCmd(jstr)
-			print result
+		output = SubmitTx(jstr, test_nfuzz = test_fuzz_txs * test_nfuzz)
+		#pprint.pprint(output)
+		#DumpTx()
+
+		if isinstance(output, str):
+			tx_ok = False
+		elif double_spend_attempt and (output['submit-response'] == 'INVALID:already spent' or output['submit-response'] == 'INVALID:duplicate serial number'):
+			tx_ok = True	# keep double-spend attempts and make sure they don't clear
+			print 'Double-spend attempt submitted'
+		elif output['tx-accepted']:
+			tx_ok = True
+			print 'Transaction accepted'
+		else:
+			tx_ok = False
+
+		if not tx_ok:
+			print output
+			DumpTx()
 			raise Exception
 
-		if 0:	# for debugging
-			jstr = '{"tx-dump" : {}}'
-			result = DoJsonCmd(jstr)
-			print result
+		# double check the size computation
+		if est_txsize != output['wire-size'] and not extra_on_wire:
+			print 'ERROR: the transaction size estimate was wrong', est_txsize, '!=', output['wire-size']
+			raise Exception
 
-		# Extract and store the input serialnums, and all output addresses and commitments, so we can later look them up to see
-		#	when the bills have cleared and spend them
-		# If the Payor does not send this info to the Payee, the Payee has to guess at the payment-number used by the Payor,
-		#	use the "compute-address" command to get the address, then query a transaction server for new commitments
-		jstr = '{"tx-to-json" : {}}'
-		output = DoJsonCmd(jstr)
-		output = json.loads(output)
-		output = output['tx-pay']
-		commitment_iv = hex(int(output['merkle-root'], 16) & ((1 << 128) - 1))
-		commitment_iv = commitment_iv.rstrip('L') # remove this so string comparisons work
-		if nout:
+		if donation < suggested_donation:
+			raise Exception	# server should have rejected this tx
+
+		commitment_iv = output['commitment-iv']
+		next_commitnum = output['next-commitment-number']
+
+		if nout:	# this wallet tracks outputs, so it needs an output in which to store the input serialnums
 			serialnums = []
 			for i in range(nin):
 				serialnum = output['inputs'][i]['serial-number']
@@ -798,54 +608,23 @@ class Wallet:
 						txouts.double_spend = True
 				serialnums.append(serialnum)
 			txouts.AddInputs(serialnums)		# note: a real wallet doesn't need to track the input serial numbers
+
 		output = output['outputs']
-		#print output
 		for i in range(nout):
 			address = output[i]['address']
-			value_enc = output[i]['encrypted-value']
+			#commitment_iv = output[i]['commitment-iv']
 			commitment = output[i]['commitment']
 			#print address, commitment_iv, commitment
-			txouts.AddOutput(i, address, value_enc, commitment_iv, commitment)
+			txouts.AddOutput(i, address, commitment_iv, commitment)
 
-		# convert the library's internal transaction buffer to a binary "wire" output format
-		jstr = '{"tx-to-wire" : {}}'
-		wire = DoJsonCmd(jstr, True)
-		# double check the size computation
-		txsize = GetMsgSize(wire)
-		if est_txsize != txsize and not extra_on_wire:
-			print 'ERROR: the transaction size estimate was wrong', est_txsize, '!=', txsize
-			raise Exception
-
-		# test that flipping a random bit in the binary tx makes it invalid
-		# do this before submitting the valid tx to make sure the invalid tx's don't affect the valid tx
-		if test_fuzz_txs:
-			proxyuser = RandomString(12)
-			for t in range(test_nfuzz):
-				wire2 = flipbit(wire, txsize)
-				try:
-					reply = SubmitServer('transaction', wire2, proxyuser, False, False)
-				except Exception as e:
-					print 'SubmitServer exception', e
-				else:
-					print 'Server reply:', '"' + reply + '"'
-					if not reply.startswith('INVALID') and not reply.startswith('ERROR') and not reply == 'SubmitServer failed':
-						raise Exception
-
-		# submit binary transaction to the server
-		reply = SubmitServer('transaction', wire, RandomString(12), False)
-		#print 'Server reply:', '"' + reply + '"'
-		reply_split = reply.split(':')
-		if reply_split[0] == 'OK':
-			print 'Transaction accepted'
-		elif double_spend_attempt and reply_split[0] == 'INVALID' and (reply_split[1] == 'already spent' or reply_split[1] == 'duplicate serial number'):
-			print 'Server reply:', '"' + reply + '"'
-			reply_split[1] = 0	# let this tx through and SetNextQueryCommitnum = 0 to make sure it doesn't clear
-		else:
-			print 'Server reply:', '"' + reply + '"'
-			raise Exception
 		if nout:
 			txouts.SetTime()
-			txouts.SetNextQueryCommitnum(int(reply_split[1]))
+			txouts.SetNextQueryCommitnum(next_commitnum)
+			self.txs_unconfirmed.append(txouts)
+
+		#time.sleep(10)	# for testing
+
+		return False
 
 	# Query the next entry in the self.txs_unconfirmed list to see if it has cleared
 	# return True if this function should be called again to check the next txouts
@@ -854,7 +633,7 @@ class Wallet:
 			return False
 		txouts = self.txs_unconfirmed[0]
 		if test_double_spends and txouts.double_spend is None:
-			# a double spend attempt could clear before the initial spend, so we need to check a table of serialnums to make sure only one clears
+			# a double-spend attempt could clear before the initial spend, so we need to check a table of serialnums to make sure only one clears
 			txouts.double_spend = False
 			txouts.recheck_double_spend = True
 			for i in txouts.serialnums:
@@ -869,7 +648,7 @@ class Wallet:
 		if txouts.double_spend and dt < double_spend_wait_time:
 			return False
 		self.txs_unconfirmed.popleft()
-		check_seqnum = txouts.FirstSeqnum()
+		check_billnum = txouts.FirstBillnum()
 		proxyuser = RandomString(12)
 		qcount = 0
 		print
@@ -887,7 +666,7 @@ class Wallet:
 					print
 					print 'Checking if this transaction is a double-spend...'
 					for i in txouts.serialnums:
-						if QueryTxSerialnum(i, proxyuser):
+						if QuerySerialnum(i, False, proxyuser) != 'unspent':
 							print 'This transaction is a double-spend of an already cleared transaction.'
 							txouts.double_spend = True
 							break	# we could just return, but instead continue on to print "Querying...did not clear"
@@ -896,16 +675,16 @@ class Wallet:
 			if txouts.double_spend:
 				print 'double-spent',
 			if txouts.NBills() > 1:
-				print 'seqnum''s', check_seqnum, '-', check_seqnum + txouts.NBills() - 1
+				print 'bills numbered', check_billnum, '-', check_billnum + txouts.NBills() - 1
 			else:
-				print 'seqnum', check_seqnum
+				print 'bill number', check_billnum
 			cleared = QueryTxOutputs(txouts, proxyuser)
 			if cleared:
 				break
 			if txouts.double_spend:
 				print 'Double-spend did not clear'
 				return True
-			if qcount > 35:	# !!! for debugging
+			if 0: # qcount == 40: # for debugging
 				print vars(txouts)
 				print vars(txouts.Bills()[0])
 			qcount += 1
@@ -919,21 +698,23 @@ class Wallet:
 				print
 				raise Exception
 		if txouts.NBills() > 1:
-			print 'seqnum''s', check_seqnum, '-', check_seqnum + txouts.NBills() - 1, 'have cleared;',
+			print 'Bills numbered', check_billnum, '-', check_billnum + txouts.NBills() - 1, 'have cleared;',
 		else:
-			print 'seqnum', check_seqnum, 'has cleared;',
+			print 'Bill number', check_billnum, 'has cleared;',
 		print 'elapsed time', round(time.time() - txouts.Time(), 1), 'seconds'
+		#time.sleep(10)	# for testing
 		if test_double_spends:
 			for i in txouts.serialnums:
 				test_spent_serialnums[i] = True
 		if len(txouts.serialnums):
 			# Make sure the serialnum query works, too.  A real wallet doesn't need to do this.
 			print
-			print 'Verifying the transaction inputs are listed as spent...'
+			print 'Verifying the transaction inputs are recorded as spent...'
 			for i in txouts.serialnums:
-				if not QueryTxSerialnum(i, proxyuser):
+				if QuerySerialnum(i, False, proxyuser) != 'indelible':	# !!! TODO: check all serialnums in one query
 					print i
 					raise Exception
+			print 'ok'
 		# queue the outputs to be spent
 		for bill in txouts.Bills():
 			spend_order = random.getrandbits(32)
@@ -945,67 +726,68 @@ class Wallet:
 # Functions to check if a transaction has cleared
 #
 
-# This is the query the Payor would normally use to see if a transaction has cleared
-def QueryTxSerialnum(serialnum, proxyuser):
-	jstr = '{"tx-query-create" :'
-	jstr += ' {"tx-serial-number-query" :'
-	jstr += ' {"serial-number" : "' + serialnum + '"'
-	jstr += '}}}'
-	query = DoJsonCmd(jstr, True)
-	reply = SubmitServer('query', query, proxyuser)
-	print 'Server reply to serial-number query:', '"' + reply + '"'
-	if reply.startswith('Indelible'):
-		return True
-	return False
-
 # This is the query the Payee would normally use to see if it has received any payments
 def QueryTxOutputs(txouts, proxyuser):
 	bill = txouts.Bills()[0]
-	jstr = '{"tx-query-create" :'
-	jstr += ' {"tx-address-query" :'
-	jstr += ' {"address" : "' + bill.Address() + '"'
-	jstr += ', "commitment-number-start" : "' + hex(txouts.NextQueryCommitnum()) + '"'
-	jstr += '}}}'
-	query = DoJsonCmd(jstr, True)
-	reply = SubmitServer('query', query, proxyuser)
-	if reply.startswith('Not Found'):
+	reply = QueryAddress(bill.Address(), txouts.NextQueryCommitnum(), proxyuser)
+	if isinstance(reply, str):
 		print 'Server reply to address query:', '"' + reply + '"'
 		return False
-	try:
-		reply = json.loads(reply)
-		reply = reply['tx-address-query-report']['tx-address-query-results']
-	except:
-		print 'Address query unexpected reply:', reply
-		raise Exception
-	commitnum = None
 	for entry in reply:
 		commitnum = entry['commitment-number']
-		commitnum = int(commitnum, 16)
-		# Here we compare strings instead of the comparing the values, which is dangerous because the same value can be
-		# represented by different strings. But it works here because all strings come from the same json parser.
-		#print 'W', entry['commitment']
-		#print 'S', bill.Commitment()
-		if entry['commitment'] == bill.Commitment():
+		commitnum = toint(commitnum)
+
+		# Next time we query, skip past any bills already seen by setting NextQueryCommitnum to the last seen commitnum + 1
+		# In a real wallet, NextQueryCommitnum would be associated with each address.  In this simulation, it is associated with the
+		# transaction and used in conjunction with the address of the first output bill in the transaction.
+		txouts.SetNextQueryCommitnum(commitnum + 1)
+
+		#print 'looking for ', bill.Commitment()
+		#print 'have        ', entry['commitment']
+		if toint(entry['commitment']) == toint(bill.Commitment()):
+			#print 'match'
 			# This wallet's bill was found in the results returned by the server
-			# Let's double-check the commitment-iv returned by the server
+			# Let's check the values returned by the query
 			if entry['commitment-iv'] != bill.CommitIV():
-				print 'commitment-iv mismatch', bill.Seqnum(), entry['commitment-iv'], bill.CommitIV()
+				print 'tx-address-query commitment-iv mismatch', bill.Billnum(), entry['commitment-iv'], bill.CommitIV()
 				raise Exception
+			if toint(entry['pool']) != toint(bill.Pool()):
+				print 'tx-address-query pool mismatch', bill.Billnum(), toint(entry['pool']), bill.Pool()
+				raise Exception
+			if toint(entry['encrypted']) != toint(bill.encrypted):
+				print 'tx-address-query encrypted mismatch', entry['encrypted'], bill.encrypted
+				raise Exception
+			if bill.encrypted:
+				bill.ComputeAmountXor()
+				asset = toint(entry['encrypted-asset']) ^ (((1 << toint(entry['asset-bits'])) - 1) & bill.asset_xor)
+				amount = toint(entry['encrypted-amount']) ^ (((1 << toint(entry['amount-bits'])) - 1) & bill.amount_xor)
+				amount = Amounts.Decode(amount, False)
+				if asset != 0:
+					print 'tx-address-query non-zero asset', asset, entry['encrypted-asset'], entry['asset-bits'], bill.asset_xor
+					raise Exception
+				if toint(amount) != toint(bill.Amount()):
+					print 'tx-address-query amount mismatch', amount, entry['encrypted-amount'], entry['amount-bits'], bill.amount_xor, bill.Amount()
+					raise Exception
+			else:
+				asset = toint(entry['asset'])
+				amount = toint(entry['amount'])
+				amount = Amounts.Decode(amount, False)
+				if asset != 0:
+					print 'tx-address-query non-zero asset', asset
+					raise Exception
+				if toint(amount) != toint(bill.Amount()):
+					print 'tx-address-query amount mismatch', amount, bill.Amount()
+					raise Exception
 			# The bill has cleared.	At this point, we want to store the commitment-number with the bill which is required to spend it.
-			# A real wallet that recieves payments would have to monitor all of its payment addresses for incoming bills, and record the
+			# A real wallet that receives payments would have to monitor all of its payment addresses for incoming bills, and record the
 			# commitment-numbers.  Here however this simulation cheats. If one bill in the transaction has cleared, then they have all
 			# cleared and they have sequential commitment-numbers. So instead of taking the time to lookup all the bills, the simulation
 			# simply sets all of the commitment-numbers in the transaction, which it can do because it sent the payment to itself and
-			# knows what output bills are in the transaction.
+			# knows the output bills in the transaction.
 			for bill in txouts.Bills():
 				bill.SetCommitnum(commitnum)
 				commitnum += 1		# all output bills in a transaction have sequential commitment-number's
 			return True		# found
-	# Next time we query, skip past any bills we're already seen by setting NextQueryCommitnum to the last seen commitnum + 1
-	# In a real wallet, NextQueryCommitnum would be associated with each address.  In this simulation, it is associated with the
-	# transaction and used in conjunction with the address of the first output bill in the transaction.
-	if commitnum is not None:
-		txouts.SetNextQueryCommitnum(commitnum + 1)
 	return False	# not found
 
 ####################################################################################
@@ -1014,19 +796,31 @@ def QueryTxOutputs(txouts, proxyuser):
 #
 
 def main(argv):
-	global net_port, test_double_spends, test_fuzz_txs, show_queries, use_tor_proxy, wallet
+	global test_double_spends, test_fuzz_txs, wallet
 
-	if len(argv) < 2 or len(argv) > 4:
+	if len(argv) < 2 or len(argv) > 5:
 		print
-		print 'Usage: python wallet-sim.py <port> [<test_bad_txs>] [<show_queries>] [<use_tor_proxy>]'
+		print 'Usage: python wallet-sim.py <port> [<test_bad_txs=0>] [<show_queries=0>] [<use_tor_proxy>]'
 		print
 		print ' Note: The standalone Tor proxy by default listens at port 9050'
 		print '       The Tor Browser bundle   by default listens at port 9150'
 		print '       Tx server on localhost   by default listens at port 9223'
 		print
+		print ' test_bad_txs:'
+		print '       0 = test only valid txs'
+		print '       1 = test valid and invalid txs, including double-spends'
+		print
+		print ' show_queries:'
+		print '       0 = normal script output'
+		print '       1 = log messages to/from tx server/network'
+		print
+		print ' use_tor_proxy:'
+		print '       Defaults to 1 if port is 9050, 9150 or 9229; otherwise defaults to 0'
 		exit()
 
-	net_port = int(argv[1])
+	cclib.net_port = int(argv[1])
+
+	# !!! TODO: make sure double-spend test tries serialnums that are old enough to no longer be in tempdb
 
 	test_double_spends = False
 	test_fuzz_txs = False
@@ -1034,16 +828,22 @@ def main(argv):
 		test_double_spends = True	# test double-spending a bill
 		test_fuzz_txs = True		# test sending random tx data to server (TEST_BREAK_ON_ASSERT in code must be false)
 
-	show_queries = False
 	if len(argv) > 3:
-		show_queries = int(argv[3])
+		cclib.show_queries = int(argv[3])
+		cclib.show_activity = int(argv[3])
 
-	if net_port == 9050 or net_port == 9150:
-		use_tor_proxy = True
+	if cclib.net_port == 9050 or cclib.net_port == 9150 or cclib.net_port == 9229:
+		cclib.use_tor_proxy = True
 	else:
-		use_tor_proxy = False
+		cclib.use_tor_proxy = False
+
 	if len(argv) > 4:
-		use_tor_proxy = int(argv[4])
+		cclib.use_tor_proxy = int(argv[4])
+
+	seed = int(time.time())
+	#seed = 0	# for repeatibility
+	print 'random seed', seed
+	random.seed(seed)
 
 	wallet = Wallet()
 	wallet.DecodeMasterSecret()
@@ -1051,7 +851,8 @@ def main(argv):
 	NetParams.Query()					# get network parameters
 
 	while True:
-		wallet.SimulateTx()				# simulate one transaction
+		while wallet.SimulateTx():		# simulate one transaction
+			pass
 		while wallet.UpdateCleared():	# possibly check if a transaction has cleared, and if one was found, check for next
 			pass
 		time.sleep(0.20)

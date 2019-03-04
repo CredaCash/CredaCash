@@ -9,9 +9,7 @@ RM := rm -rf
 # All of the sources participating in the build are defined here
 -include sources.mk
 -include src/sqlite/subdir.mk
--include src/skein/subdir.mk
 -include src/siphash/subdir.mk
--include src/keccak/subdir.mk
 -include src/jsoncpp/subdir.mk
 -include src/ed25519/subdir.mk
 -include src/blake2/subdir.mk
@@ -60,6 +58,5 @@ clean:
 	-@echo ' '
 
 .PHONY: all clean dependents
-.SECONDARY:
 
 -include ../makefile.targets

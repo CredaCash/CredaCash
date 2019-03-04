@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * SpinLock.hpp
 */
@@ -16,6 +16,8 @@
 
 #include <CCassert.h>
 
+#define TRACE_SPINLOCK	0
+
 class FastSpinLock
 {
 	std::atomic_flag mutex;
@@ -23,23 +25,30 @@ class FastSpinLock
 public:
 
 	FastSpinLock()
-	 :	mutex(ATOMIC_FLAG_INIT)
-	{ }
+	{
+        mutex.clear();
+	}
 
 	~FastSpinLock()
 	{
-		CCASSERTZ(mutex.test_and_set(std::memory_order_acquire));
+		CCASSERTZ(mutex.test_and_set());
 	}
 
 	void lock()
 	{
-		while (mutex.test_and_set(std::memory_order_acquire))
-			 ;;;
+		if (TRACE_SPINLOCK) std::cerr << "FastSpinLock " << (uintptr_t)this << " locking..." << std::endl;
+
+		while (mutex.test_and_set())
+			;;;
+
+		if (TRACE_SPINLOCK) std::cerr << "FastSpinLock " << (uintptr_t)this << " locked" << std::endl;
 	}
 
 	void unlock()
 	{
-        mutex.clear(std::memory_order_release);
+		if (TRACE_SPINLOCK) std::cerr << "FastSpinLock " << (uintptr_t)this << " unlocking" << std::endl;
+
+        mutex.clear();
 	}
 };
 
@@ -53,60 +62,61 @@ class SpinLock	// re-entrant
 public:
 
 	SpinLock()
-	 :	mutex(ATOMIC_FLAG_INIT),
-		count(0)
-	{ }
+	 :	count(0)
+	{
+		mutex.clear();
+	}
 
 	~SpinLock()
 	{
-		CCASSERTZ(mutex.test_and_set(std::memory_order_acquire));
-		CCASSERTZ(count.load(std::memory_order_acquire));
+		CCASSERTZ(mutex.test_and_set());
+		CCASSERTZ(count.load());
 	}
 
 	void lock()
 	{
 		while (true)
 		{
-			while (mutex.test_and_set(std::memory_order_acquire))
-				 ;;;
+			while (mutex.test_and_set())
+				;;;
 
-			std::cerr << "thread " << std::this_thread::get_id() << " SpinLock lock " << (std::uintptr_t)this << " owning thread " << threadid.load() << " count " << count.load() << std::endl;
+			if (TRACE_SPINLOCK) std::cerr << "thread " << std::this_thread::get_id() << " SpinLock lock " << (std::uintptr_t)this << " owning thread " << threadid.load() << " count " << count.load() << std::endl;
 
-			if (!count.load(std::memory_order_acquire))
+			if (!count.load())
 			{
-				count.store(1, std::memory_order_release);
-				threadid.store(std::this_thread::get_id(), std::memory_order_release);
-		        mutex.clear(std::memory_order_release);
+				count.store(1);
+				threadid.store(std::this_thread::get_id());
+				mutex.clear();
 				return;
 			}
 
-			if (threadid.load(std::memory_order_acquire) == std::this_thread::get_id())
+			if (threadid.load() == std::this_thread::get_id())
 			{
-				count.fetch_add(1, std::memory_order_acq_rel);
-		        mutex.clear(std::memory_order_release);
+				count.fetch_add(1);
+				mutex.clear();
 				return;
 			}
 
-	        mutex.clear(std::memory_order_release);
+			mutex.clear();
 
 			std::atomic<std::uint32_t> spinner;
 
 			for (unsigned i = 0; i < 20; ++i)
-				spinner.fetch_add(1, std::memory_order_acq_rel);
+				spinner.fetch_add(1);
 		}
 	}
 
 	void unlock()
 	{
-			while (mutex.test_and_set(std::memory_order_acquire))
-				 ;;;
+			while (mutex.test_and_set())
+				;;;
 
-			std::cerr << "thread " << std::this_thread::get_id() << " SpinLock unlock " << (std::uintptr_t)this << " owning thread " << threadid.load() << " count " << count.load() << std::endl;
+			if (TRACE_SPINLOCK) std::cerr << "thread " << std::this_thread::get_id() << " SpinLock unlock " << (std::uintptr_t)this << " owning thread " << threadid.load() << " count " << count.load() << std::endl;
 
-			CCASSERT(threadid.load(std::memory_order_acquire) == std::this_thread::get_id());
+			CCASSERT(threadid.load() == std::this_thread::get_id());
 
-			CCASSERT(count.fetch_sub(1, std::memory_order_acq_rel));
+			CCASSERT(count.fetch_sub(1));
 
-	        mutex.clear(std::memory_order_release);
+			mutex.clear();
 	}
 };

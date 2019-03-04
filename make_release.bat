@@ -1,18 +1,25 @@
+set CREDACASH_BUILD=%cd:\=/%
+set CPPFLAGS=-mthreads
+set LDFLAGS=-static
+set LDLIBS=-lWs2_32 -lMswsock
 cd source/3rdparty/Release
 make all
 cd ../../..
 cd source/cccommon/Release
 make all
 cd ../../..
-cd source/cclib/Release
+cd source/ccdll/Release
 make all
 cd ../../..
-cd source/ccdll/Release
+cd source/cclib/Release
 make all
 cd ../../..
 cd source/ccnode/Release
 make all
 cd ../../..
 cd source/cctracker/Release
+make all
+cd ../../..
+cd source/ccwallet/Release
 make all
 cd ../../..

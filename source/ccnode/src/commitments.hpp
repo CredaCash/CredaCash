@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * commitments.hpp
 */
@@ -10,15 +10,8 @@
 
 #include "dbconn.hpp"
 
-#include <CCproof.h>
+#include <CCparams.h>
 #include <transaction.h>
-
-#define ADDRESS_BYTES			((TX_FIELD_BITS + 7) / 8)
-#define COMMITMENT_BYTES		((TX_FIELD_BITS + 7) / 8)
-#define COMMITMENT_HASH_BYTES	((TX_MERKLE_PATH_BITS + 7) / 8)
-#if TX_MERKLE_ROOT_BITS != TX_MERKLE_PATH_BITS
-#error TX_MERKLE_ROOT_BITS != TX_MERKLE_PATH_BITS
-#endif
 
 class Commitments
 {

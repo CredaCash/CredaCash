@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * service.hpp
 */
@@ -31,11 +31,11 @@ public:
 	}
 
 	Service(const string& name)
-	 : m_name(name)
+	 :	m_name(name)
 	{ }
 
 	// Start service
-	void Start(const boost::asio::ip::tcp::endpoint& endpoint, unsigned nthreads, unsigned maxconns, unsigned maxincoming, unsigned backlog, const class ConnectionFactory &connfac, const class CCThreadFactory &threadfac = CCDefaultThreadFac);
+	void Start(const boost::asio::ip::tcp::endpoint& endpoint, unsigned nthreads, unsigned maxconns, unsigned maxincoming, unsigned backlog, const class ConnectionFactory& connfac, const class CCThreadFactory& threadfac = CCDefaultThreadFac);
 
 	unsigned GetNServers()
 	{
@@ -46,6 +46,9 @@ public:
 	{
 		return *m_servers[i];
 	}
+
+	// Commence service shutdown
+	void StartShutdown();
 
 	// Wait for service to shutdown
 	void WaitForShutdown();

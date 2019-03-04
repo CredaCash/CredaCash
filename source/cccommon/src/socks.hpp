@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * socks.hpp
 */
@@ -23,9 +23,7 @@ public:
 
 	static boost::asio::ip::basic_endpoint<boost::asio::ip::tcp> ConnectPoint(unsigned port);
 
-	static const std::string UsernamePrefix();
+	static std::string ConnectString(const std::string& dest, const std::string& toruser);
 
-	static std::string ConnectString(const std::string& dest);
-
-	static boost::system::error_code SendString(const unsigned port, const std::string& str, std::string& reply);
+	static boost::system::error_code SendString(boost::asio::ip::tcp::socket& socket, const unsigned port, const std::string& str, std::string& reply);
 };

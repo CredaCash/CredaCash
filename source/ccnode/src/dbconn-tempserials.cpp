@@ -1,24 +1,24 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * dbconn-tempserials.cpp
 */
 
-#include "CCdef.h"
+#include "ccnode.h"
 #include "dbconn.hpp"
 
 #include <dblog.h>
-#include <Finally.hpp>
-#include <CCutil.h>
 
 #define TRACE_DBCONN	(g_params.trace_pending_serialnum_db)
 
-static mutex Temp_Serials_db_mutex; 	// to avoid SQLITE_LOCKED errors when writing to database
+static mutex Temp_Serials_db_mutex;	// to avoid inconsistency problems with shared cache
 
 DbConnTempSerials::DbConnTempSerials()
 {
+	ClearDbPointers();
+
 	lock_guard<mutex> lock(Temp_Serials_db_mutex);
 
 	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnTempSerials::DbConnTempSerials dbconn " << (uintptr_t)this;
@@ -79,18 +79,18 @@ void DbConnTempSerials::DoTempSerialsFinish()
 	sqlite3_reset(Temp_Serials_prune);
 }
 
-int DbConnTempSerials::TempSerialnumInsert(const void *serial, unsigned size, const void* blockp)
+int DbConnTempSerials::TempSerialnumInsert(const void *serialnum, unsigned serialnum_size, const void* blockp)
 {
 	lock_guard<mutex> lock(Temp_Serials_db_mutex);	// sql statements must be reset before lock is released
 	Finally finally(boost::bind(&DbConnTempSerials::DoTempSerialsFinish, this));
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnTempSerials::TempSerialnumInsert serialnum " << buf2hex(serial, size) << " blockp " << (uintptr_t)blockp;
+	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnTempSerials::TempSerialnumInsert serialnum " << buf2hex(serialnum, serialnum_size) << " blockp " << (uintptr_t)blockp;
 
 	// Serialnum, Blockp
-	if (dblog(sqlite3_bind_blob(Temp_Serials_insert, 1, serial, size, SQLITE_STATIC))) return -1;
+	if (dblog(sqlite3_bind_blob(Temp_Serials_insert, 1, serialnum, serialnum_size, SQLITE_STATIC))) return -1;
 	if (dblog(sqlite3_bind_blob(Temp_Serials_insert, 2, &blockp, sizeof(blockp), SQLITE_STATIC))) return -1;
 
-	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1) // for testing
+	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnTempSerials::TempSerialnumInsert simulating database error pre-insert";
 
@@ -99,9 +99,9 @@ int DbConnTempSerials::TempSerialnumInsert(const void *serial, unsigned size, co
 
 	auto rc = sqlite3_step(Temp_Serials_insert);
 
-	if (rc == SQLITE_CONSTRAINT)
+	if (dbresult(rc) == SQLITE_CONSTRAINT)
 	{
-		BOOST_LOG_TRIVIAL(info) << "DbConnTempSerials::TempSerialnumInsert failed; already in database blockp " << (uintptr_t)blockp << " serialnum " << buf2hex(serial, size);
+		BOOST_LOG_TRIVIAL(info) << "DbConnTempSerials::TempSerialnumInsert failed; already in database blockp " << (uintptr_t)blockp << " serialnum " << buf2hex(serialnum, serialnum_size);
 
 		return 1;
 	}
@@ -112,12 +112,12 @@ int DbConnTempSerials::TempSerialnumInsert(const void *serial, unsigned size, co
 
 	if (changes != 1)
 	{
-		BOOST_LOG_TRIVIAL(error) << "DbConnTempSerials::TempSerialnumInsert sqlite3_changes " << changes << " after insert serialnum " << buf2hex(serial, size) << " blockp " << (uintptr_t)blockp;
+		BOOST_LOG_TRIVIAL(error) << "DbConnTempSerials::TempSerialnumInsert sqlite3_changes " << changes << " after insert serialnum " << buf2hex(serialnum, serialnum_size) << " blockp " << (uintptr_t)blockp;
 
 		return -1;
 	}
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(debug) << "DbConnTempSerials::TempSerialnumInsert inserted serialnum " << buf2hex(serial, size) << " blockp " << (uintptr_t)blockp;
+	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(debug) << "DbConnTempSerials::TempSerialnumInsert inserted serialnum " << buf2hex(serialnum, serialnum_size) << " blockp " << (uintptr_t)blockp;
 
 	return 0;
 }
@@ -134,7 +134,7 @@ int DbConnTempSerials::TempSerialnumUpdate(const void* old_blockp, const void* n
 	if (dblog(sqlite3_bind_int64(Temp_Serials_update, 2, level))) return -1;
 	if (dblog(sqlite3_bind_blob(Temp_Serials_update, 3, &old_blockp, sizeof(old_blockp), SQLITE_STATIC))) return -1;
 
-	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1) // for testing
+	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnTempSerials::TempSerialnumUpdate simulating database error pre-update";
 
@@ -152,15 +152,15 @@ int DbConnTempSerials::TempSerialnumUpdate(const void* old_blockp, const void* n
 	return 0;
 }
 
-int DbConnTempSerials::TempSerialnumSelect(const void *serial, unsigned size, const void* last_blockp, void *output[], unsigned bufsize)
+int DbConnTempSerials::TempSerialnumSelect(const void *serialnum, unsigned serialnum_size, const void* last_blockp, void *output[], unsigned bufsize)
 {
 	lock_guard<mutex> lock(Temp_Serials_db_mutex);	// sql statements must be reset before lock is released
 	Finally finally(boost::bind(&DbConnTempSerials::DoTempSerialsFinish, this));
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnTempSerials::TempSerialnumSelect serialnum " << buf2hex(serial, size) << " last blockp " << (uintptr_t)last_blockp;
+	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnTempSerials::TempSerialnumSelect serialnum " << buf2hex(serialnum, serialnum_size) << " last blockp " << (uintptr_t)last_blockp;
 
 	// Serialnum, last Blockp
-	if (dblog(sqlite3_bind_blob(Temp_Serials_select, 1, serial, size, SQLITE_STATIC))) return -1;
+	if (dblog(sqlite3_bind_blob(Temp_Serials_select, 1, serialnum, serialnum_size, SQLITE_STATIC))) return -1;
 	if (dblog(sqlite3_bind_blob(Temp_Serials_select, 2, &last_blockp, sizeof(last_blockp), SQLITE_STATIC))) return -1;
 
 	unsigned bufpos = 0;
@@ -171,14 +171,14 @@ int DbConnTempSerials::TempSerialnumSelect(const void *serial, unsigned size, co
 
 		if (dblog(rc = sqlite3_step(Temp_Serials_select), DB_STMT_SELECT)) return -1;
 
-		if ((TEST_RANDOM_DB_ERRORS & rand()) == 1) // for testing
+		if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
 		{
 			BOOST_LOG_TRIVIAL(info) << "DbConnTempSerials::TempSerialnumSelect simulating database error post-select";
 
 			return -1;
 		}
 
-		if (rc == SQLITE_DONE)
+		if (dbresult(rc) == SQLITE_DONE)
 			break;
 
 		if (bufpos == bufsize)
@@ -187,7 +187,7 @@ int DbConnTempSerials::TempSerialnumSelect(const void *serial, unsigned size, co
 			break;
 		}
 
-		if (rc != SQLITE_ROW)
+		if (dbresult(rc) != SQLITE_ROW)
 		{
 			BOOST_LOG_TRIVIAL(error) << "DbConnTempSerials::TempSerialnumSelect select returned " << rc;
 
@@ -206,7 +206,7 @@ int DbConnTempSerials::TempSerialnumSelect(const void *serial, unsigned size, co
 
 		if (sqlite3_column_bytes(Temp_Serials_select, 0) != sizeof(void*))
 		{
-			BOOST_LOG_TRIVIAL(error) << "DbConnTempSerials::TempSerialnumSelect Bufp size " << sqlite3_column_bytes(Temp_Serials_select, 0) << " != " << sizeof(void*);
+			BOOST_LOG_TRIVIAL(error) << "DbConnTempSerials::TempSerialnumSelect Bufp serialnum_size " << sqlite3_column_bytes(Temp_Serials_select, 0) << " != " << sizeof(void*);
 
 			return -1;
 		}
@@ -224,7 +224,7 @@ int DbConnTempSerials::TempSerialnumSelect(const void *serial, unsigned size, co
 
 		if (dblog(sqlite3_extended_errcode(Temp_Serials_db), DB_STMT_SELECT)) return -1;	// check if error retrieving results
 
-		if ((TEST_RANDOM_DB_ERRORS & rand()) == 1) // for testing
+		if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
 		{
 			BOOST_LOG_TRIVIAL(info) << "DbConnTempSerials::TempSerialnumSelect simulating database error post-error check";
 
@@ -240,18 +240,18 @@ int DbConnTempSerials::TempSerialnumSelect(const void *serial, unsigned size, co
 }
 
 #if 0	// not used
-int DbConnTempSerials::TempSerialnumDelete(const void *serial, unsigned size, const void* blockp)
+int DbConnTempSerials::TempSerialnumDelete(const void *serialnum, unsigned serialnum_size, const void* blockp)
 {
 	lock_guard<mutex> lock(Temp_Serials_db_mutex);	// sql statements must be reset before lock is released
 	Finally finally(boost::bind(&DbConnTempSerials::DoTempSerialsFinish, this));
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnTempSerials::TempSerialnumDelete serialnum " << buf2hex(serial, size) << " blockp " << (uintptr_t)blockp;
+	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnTempSerials::TempSerialnumDelete serialnum " << buf2hex(serialnum, serialnum_size) << " blockp " << (uintptr_t)blockp;
 
 	// Serialnum, Blockp
-	if (dblog(sqlite3_bind_blob(Temp_Serials_delete, 1, serial, size, SQLITE_STATIC))) return -1;
+	if (dblog(sqlite3_bind_blob(Temp_Serials_delete, 1, serialnum, serialnum_size, SQLITE_STATIC))) return -1;
 	if (dblog(sqlite3_bind_blob(Temp_Serials_delete, 2, &blockp, sizeof(blockp), SQLITE_STATIC))) return -1;
 
-	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1) // for testing
+	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnTempSerials::TempSerialnumDelete simulating database error pre-delete";
 
@@ -266,12 +266,12 @@ int DbConnTempSerials::TempSerialnumDelete(const void *serial, unsigned size, co
 
 	if (changes != 1)
 	{
-		BOOST_LOG_TRIVIAL(error) << "DbConnTempSerials::TempSerialnumDelete sqlite3_changes " << changes << " after delete serialnum " << buf2hex(serial, size) << " blockp " << (uintptr_t)blockp;
+		BOOST_LOG_TRIVIAL(error) << "DbConnTempSerials::TempSerialnumDelete sqlite3_changes " << changes << " after delete serialnum " << buf2hex(serialnum, serialnum_size) << " blockp " << (uintptr_t)blockp;
 
 		return -1;
 	}
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(debug) << "DbConnTempSerials::TempSerialnumInsert deleted serialnum " << buf2hex(serial, size) << " blockp " << (uintptr_t)blockp;
+	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(debug) << "DbConnTempSerials::TempSerialnumInsert deleted serialnum " << buf2hex(serialnum, serialnum_size) << " blockp " << (uintptr_t)blockp;
 
 	return 0;
 }
@@ -287,7 +287,7 @@ int DbConnTempSerials::TempSerialnumClear(const void* blockp)
 	// Blockp
 	if (dblog(sqlite3_bind_blob(Temp_Serials_clear, 1, &blockp, sizeof(blockp), SQLITE_STATIC))) return -1;
 
-	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1) // for testing
+	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnTempSerials::TempSerialnumClear simulating database error pre-delete";
 
@@ -317,7 +317,7 @@ int DbConnTempSerials::TempSerialnumPruneLevel(uint64_t level)
 	// Level
 	if (dblog(sqlite3_bind_int64(Temp_Serials_prune, 1, level))) return -1;
 
-	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1) // for testing
+	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnTempSerials::TempSerialnumPrune simulating database error pre-delete";
 

@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * CCutil.h
 */
@@ -24,9 +24,15 @@ std::string w2s(const std::wstring& wstr);
 std::string s2hex(const std::string& str);
 std::string buf2hex(const void *buf, unsigned nbytes, char separator = ' ');
 const char* yesno(int val);
+const char* truefalse(int val);
+const char* plusminus(bool plus);
 const std::string& stringorempty(const std::string& str);
 
-unsigned buf2int(const std::uint8_t*& bufp);
+unsigned buf2int(const void* bufp);
 
-void copy_to_buf(const void* data, const size_t nbytes, uint32_t& bufpos, void *output, const uint32_t bufsize, const bool bhex = false);
-void copy_from_buf(void* data, const size_t nbytes, uint32_t& bufpos, const void *input, const uint32_t bufsize, const bool bhex = false);
+void copy_to_bufl(unsigned line, const void* data, const size_t nbytes, uint32_t& bufpos, void *buffer, const uint32_t bufsize, const bool bhex = false);
+void copy_from_bufl(unsigned line, void* data, const size_t datasize, const size_t nbytes, uint32_t& bufpos, const void *buffer, const uint32_t bufsize, const bool bhex = false);
+
+#define copy_to_bufp(...)       copy_to_bufl(__LINE__, __VA_ARGS__)
+#define copy_to_buf(a, ...)     copy_to_bufl(__LINE__, &(a), __VA_ARGS__)
+#define copy_from_buf(a, ...) copy_from_bufl(__LINE__, &(a), sizeof(a), __VA_ARGS__)

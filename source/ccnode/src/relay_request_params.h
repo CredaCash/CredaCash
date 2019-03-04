@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * relay_request_params.h
 */
@@ -27,8 +27,8 @@ struct relay_request_params_extended_t
 	ccoid_t prior_oid;
 	uint64_t level;
 	uint32_t size;
-	uint32_t announce_time;
 	uint8_t witness;
+	uint32_t announce_time;		// must be last, so beginning of this struct matches the above struct
 };
 
 typedef array<relay_request_params_extended_t, CC_TX_SEND_MAX> relay_request_param_buf_t;

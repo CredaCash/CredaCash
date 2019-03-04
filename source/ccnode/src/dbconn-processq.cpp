@@ -1,17 +1,16 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * dbconn-processq.cpp
 */
 
-#include "CCdef.h"
+#include "ccnode.h"
 #include "dbconn.hpp"
 
 #include <dblog.h>
 #include <CCobjects.hpp>
-#include <Finally.hpp>
 
 #define TRACE_DBCONN	(g_params.trace_validation_q_db)
 
@@ -19,10 +18,12 @@ static array<atomic<int>, PROCESS_Q_N>			queued_work;
 static array<mutex, PROCESS_Q_N>				work_queue_mutex;
 static array<condition_variable, PROCESS_Q_N>	work_queue_condition_variable;
 
-static mutex Process_Q_db_mutex[PROCESS_Q_N]; 	// to avoid SQLITE_LOCKED errors when writing to database
+static mutex Process_Q_db_mutex[PROCESS_Q_N];	// to avoid inconsistency problems with shared cache
 
 DbConnProcessQ::DbConnProcessQ()
 {
+	ClearDbPointers();
+
 	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnProcessQ::DbConnProcessQ dbconn " << (uintptr_t)this;
 
 	for (unsigned i = 0; i < PROCESS_Q_N; ++i)
@@ -210,7 +211,7 @@ void DbConnProcessQ::WaitForQueuedWork(unsigned type)
 	}
 }
 
-int DbConnProcessQ::ProcessQEnqueueValidate(unsigned type, SmartBuf smartobj, const ccoid_t *prior_oid, int64_t level, unsigned status, int64_t priority, unsigned conn_index, uint64_t callback_id)
+int DbConnProcessQ::ProcessQEnqueueValidate(unsigned type, SmartBuf smartobj, const ccoid_t *prior_oid, int64_t level, unsigned status, int64_t priority, unsigned conn_index, uint32_t callback_id)
 {
 	unique_lock<mutex> lock(Process_Q_db_mutex[type]);	// sql statements must be reset before lock is released
 	Finally finally(boost::bind(&DbConnProcessQ::DoProcessQFinish, this, type, 0, 0));		// reset only
@@ -220,7 +221,7 @@ int DbConnProcessQ::ProcessQEnqueueValidate(unsigned type, SmartBuf smartobj, co
 	auto bufp = smartobj.BasePtr();
 	auto obj = (CCObject*)smartobj.data();
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnProcessQ::ProcessQEnqueueValidate type " << type << " level " << level << " status " << status << " priority " << priority << " callback_id " << callback_id << " bufp " << (uintptr_t)bufp << " oid " << buf2hex(obj->OidPtr(), sizeof(ccoid_t)) << " conn_index Conn-" << conn_index << " callback_id " << callback_id;
+	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnProcessQ::ProcessQEnqueueValidate type " << type << " level " << level << " status " << status << " priority " << priority << " callback_id " << callback_id << " bufp " << (uintptr_t)bufp << " oid " << buf2hex(obj->OidPtr(), sizeof(ccoid_t)) << " conn_index Conn " << conn_index << " callback_id " << callback_id;
 
 	// ObjId, PriorOid, Level, Status, Priority, AuxInt, CallbackId, Bufp
 	if (dblog(sqlite3_bind_blob(Process_Q_insert[type], 1, obj->OidPtr(), sizeof(ccoid_t), SQLITE_STATIC))) return -1;
@@ -237,15 +238,15 @@ int DbConnProcessQ::ProcessQEnqueueValidate(unsigned type, SmartBuf smartobj, co
 	if (dblog(sqlite3_bind_int(Process_Q_insert[type], 4, status))) return -1;
 	if (dblog(sqlite3_bind_int64(Process_Q_insert[type], 5, priority))) return -1;
 	if (dblog(sqlite3_bind_int(Process_Q_insert[type], 6, conn_index))) return -1;
-	if (dblog(sqlite3_bind_int64(Process_Q_insert[type], 7, callback_id))) return -1;
+	if (dblog(sqlite3_bind_int(Process_Q_insert[type], 7, callback_id))) return -1;
 	if (dblog(sqlite3_bind_blob(Process_Q_insert[type], 8, &bufp, sizeof(bufp), SQLITE_STATIC))) return -1;
 
 	auto rc = sqlite3_step(Process_Q_insert[type]);
-	if (rc == SQLITE_CONSTRAINT)
+	if (dbresult(rc) == SQLITE_CONSTRAINT)
 	{
-		if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(debug) << "DbConnProcessQ::ProcessQEnqueueValidate constraint violation; object downloaded more than once?";
+		BOOST_LOG_TRIVIAL(debug) << "DbConnProcessQ::ProcessQEnqueueValidate constraint violation; object downloaded more than once?";
 
-		return -1;
+		return 1;
 	}
 	else if (dblog(rc, DB_STMT_STEP)) return -1;
 
@@ -273,15 +274,16 @@ int DbConnProcessQ::ProcessQEnqueueValidate(unsigned type, SmartBuf smartobj, co
 	return 0;
 }
 
-int DbConnProcessQ::ProcessQGetNextValidateObj(unsigned type, SmartBuf *retobj, unsigned& conn_index, unsigned& callback_id)
+int DbConnProcessQ::ProcessQGetNextValidateObj(unsigned type, SmartBuf *retobj, unsigned& conn_index, uint32_t& callback_id)
 {
 	lock_guard<mutex> lock(Process_Q_db_mutex[type]);	// sql statements must be reset before lock is released
 	Finally finally(boost::bind(&DbConnProcessQ::DoProcessQFinish, this, type, 1, 1));		// rollback and increment work
+
+	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnProcessQ::ProcessQGetNextValidateObj type " << type;
+
 	retobj->ClearRef();
 	conn_index = 0;
 	callback_id = 0;
-
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnProcessQ::ProcessQGetNextValidateObj type " << type;
 
 	int result = 0;
 	int rc;
@@ -298,14 +300,14 @@ int DbConnProcessQ::ProcessQGetNextValidateObj(unsigned type, SmartBuf *retobj, 
 
 	if (dblog(rc = sqlite3_step(Process_Q_select[type]), DB_STMT_SELECT)) return -1;
 
-	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1) // for testing
+	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::ProcessQGetNextValidateObj simulating database error post-select";
 
 		return -1;
 	}
 
-	if (rc == SQLITE_DONE)
+	if (dbresult(rc) == SQLITE_DONE)
 	{
 		if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnProcessQ::ProcessQGetNextValidateObj select returned SQLITE_DONE";
 
@@ -316,7 +318,7 @@ int DbConnProcessQ::ProcessQGetNextValidateObj(unsigned type, SmartBuf *retobj, 
 		return 1;
 	}
 
-	if (rc != SQLITE_ROW)
+	if (dbresult(rc) != SQLITE_ROW)
 	{
 		BOOST_LOG_TRIVIAL(error) << "DbConnProcessQ::ProcessQGetNextValidateObj select returned " << rc;
 
@@ -333,7 +335,7 @@ int DbConnProcessQ::ProcessQGetNextValidateObj(unsigned type, SmartBuf *retobj, 
 	// ObjId, AuxInt, CallbackId, Bufp
 	auto objid_blob = sqlite3_column_blob(Process_Q_select[type], 0);
 	conn_index = sqlite3_column_int(Process_Q_select[type], 1);
-	callback_id = sqlite3_column_int64(Process_Q_select[type], 2);
+	callback_id = sqlite3_column_int(Process_Q_select[type], 2);
 	auto bufp_blob = sqlite3_column_blob(Process_Q_select[type], 3);
 
 	ccoid_t oid;
@@ -344,7 +346,7 @@ int DbConnProcessQ::ProcessQGetNextValidateObj(unsigned type, SmartBuf *retobj, 
 	// must have objid_blob for the delete statement
 	// if other columns fail, it is an error but we can still try to clean up by executing the delete statement
 
-	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1) // for testing
+	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::ProcessQGetNextValidateObj simulating database error; setting bufp_blob = NULL";
 
@@ -408,7 +410,7 @@ int DbConnProcessQ::ProcessQGetNextValidateObj(unsigned type, SmartBuf *retobj, 
 
 	if (dblog(sqlite3_extended_errcode(Process_Q_db[type]), DB_STMT_SELECT)) return -1;	// check if error retrieving results
 
-	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1) // for testing
+	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::ProcessQGetNextValidateObj simulating database error post-error check";
 
@@ -446,7 +448,7 @@ int DbConnProcessQ::ProcessQGetNextValidateObj(unsigned type, SmartBuf *retobj, 
 
 	// COMMIT
 
-	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1) // for testing
+	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::ProcessQGetNextValidateObj simulating database error pre-commit";
 
@@ -544,14 +546,14 @@ int DbConnProcessQ::ProcessQCountValidObjs(unsigned type, int64_t auxint)
 
 	if (dblog(rc = sqlite3_step(Process_Q_count[type]), DB_STMT_SELECT)) return -1;
 
-	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1) // for testing
+	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::ProcessQCountValidObjs simulating database error post-select";
 
 		return -1;
 	}
 
-	if (rc != SQLITE_ROW)
+	if (dbresult(rc) != SQLITE_ROW)
 	{
 		BOOST_LOG_TRIVIAL(error) << "DbConnProcessQ::ProcessQCountValidObjs select returned " << rc;
 
@@ -570,7 +572,7 @@ int DbConnProcessQ::ProcessQCountValidObjs(unsigned type, int64_t auxint)
 
 	if (dblog(sqlite3_extended_errcode(Process_Q_db[type]), DB_STMT_SELECT)) return -1;	// check if error retrieving results
 
-	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1) // for testing
+	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::ProcessQCountValidObjs simulating database error post-error check";
 
@@ -618,9 +620,10 @@ int DbConnProcessQ::ProcessQGetNextValidObj(unsigned type, unsigned offset, Smar
 {
 	lock_guard<mutex> lock(Process_Q_db_mutex[type]);	// sql statements must be reset before lock is released
 	Finally finally(boost::bind(&DbConnProcessQ::DoProcessQFinish, this, type, 0, 0));		// reset only
-	retobj->ClearRef();
 
 	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnProcessQ::ProcessQGetNextValidObj type " << type << " offset " << offset;
+
+	retobj->ClearRef();
 
 	int rc;
 
@@ -630,16 +633,16 @@ int DbConnProcessQ::ProcessQGetNextValidObj(unsigned type, unsigned offset, Smar
 
 	if (dblog(rc = sqlite3_step(Process_Q_select[type]), DB_STMT_SELECT)) return -1;
 
-	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1) // for testing
+	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::ProcessQGetNextValidObj simulating database error post-select";
 
 		return -1;
 	}
 
-	if (rc == SQLITE_DONE) return 1;
+	if (dbresult(rc) == SQLITE_DONE) return 1;
 
-	if (rc != SQLITE_ROW)
+	if (dbresult(rc) != SQLITE_ROW)
 	{
 		BOOST_LOG_TRIVIAL(error) << "DbConnProcessQ::ProcessQGetNextValidObj select returned " << rc;
 
@@ -660,7 +663,7 @@ int DbConnProcessQ::ProcessQGetNextValidObj(unsigned type, unsigned offset, Smar
 	SmartBuf smartobj;
 	CCObject* obj = NULL;
 
-	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1) // for testing
+	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::ProcessQGetNextValidObj simulating database error; setting bufp_blob = NULL";
 
@@ -692,7 +695,7 @@ int DbConnProcessQ::ProcessQGetNextValidObj(unsigned type, unsigned offset, Smar
 
 	if (dblog(sqlite3_extended_errcode(Process_Q_db[type]), DB_STMT_SELECT)) return -1;	// check if error retrieving results
 
-	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1) // for testing
+	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::ProcessQGetNextValidObj simulating database error post-error check";
 
@@ -743,16 +746,16 @@ int DbConnProcessQ::ProcessQPruneLevel(unsigned type, int64_t level)
 
 		if (dblog(rc = sqlite3_step(Process_Q_select_level[type]), DB_STMT_SELECT)) return -1;
 
-		if ((TEST_RANDOM_DB_ERRORS & rand()) == 1) // for testing
+		if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
 		{
 			BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::ProcessQPruneLevel simulating database error post-select";
 
 			return -1;
 		}
 
-		if (rc == SQLITE_DONE) return 1;
+		if (dbresult(rc) == SQLITE_DONE) return 1;
 
-		if (rc != SQLITE_ROW)
+		if (dbresult(rc) != SQLITE_ROW)
 		{
 			BOOST_LOG_TRIVIAL(error) << "DbConnProcessQ::ProcessQPruneLevel select returned " << rc;
 
@@ -775,7 +778,7 @@ int DbConnProcessQ::ProcessQPruneLevel(unsigned type, int64_t level)
 		SmartBuf smartobj;
 		CCObject* obj = NULL;
 
-		if ((TEST_RANDOM_DB_ERRORS & rand()) == 1) // for testing
+		if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
 		{
 			BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::ProcessQPruneLevel simulating database error; setting bufp_blob = NULL";
 
@@ -835,7 +838,7 @@ int DbConnProcessQ::ProcessQPruneLevel(unsigned type, int64_t level)
 
 		if (dblog(sqlite3_extended_errcode(Process_Q_db[type]), DB_STMT_SELECT)) return -1;	// check if error retrieving results
 
-		if ((TEST_RANDOM_DB_ERRORS & rand()) == 1) // for testing
+		if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
 		{
 			BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::ProcessQPruneLevel simulating database error post-error check";
 

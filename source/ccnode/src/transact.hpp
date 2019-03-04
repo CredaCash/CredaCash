@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * transact.hpp
 */
@@ -11,48 +11,45 @@
 #include <ccserver/service.hpp>
 #include <ccserver/connection.hpp>
 
-#include "service_base.hpp"
-
 #include <boost/bind.hpp>
 
 class TransactConnection : public CCServer::Connection
 {
 
 public:
-	TransactConnection(class CCServer::ConnectionManager& manager, boost::asio::io_service& io_service, const class CCServer::ConnectionFactory& connfac)
-	:	CCServer::Connection(manager, io_service, connfac),
-		expected_callback_id(0)
+	TransactConnection(class CCServer::ConnectionManagerBase& manager, boost::asio::io_service& io_service, const class CCServer::ConnectionFactoryBase& connfac)
+	:	CCServer::Connection(manager, io_service, connfac)
 	{ }
 
-	void HandleValidateDone(unsigned callback_id, int64_t result);
+	void HandleValidateDone(uint32_t callback_id, int64_t result);
 
 private:
-	atomic<uint32_t> expected_callback_id;
-
 	void StartConnection();
 	void HandleReadComplete();
 	void HandleMsgReadComplete(const boost::system::error_code& e, size_t bytes_transferred, SmartBuf smartobj, AutoCount pending_op_counter);
 	void HandleTx(SmartBuf smartobj);
-	bool SetTimer(unsigned sec);
-	void HandleTimeout(unsigned callback_id, const boost::system::error_code& e, AutoCount pending_op_counter);
-	void HandleTxQueryParams(const uint8_t *msg, unsigned size);
-	void HandleTxQueryAddress(const uint8_t *msg, unsigned size);
-	void HandleTxQueryInputs(const uint8_t *msg, unsigned size);
-	void HandleTxQuerySerial(const uint8_t *msg, unsigned size);
+	bool SetValidationTimer(uint32_t callback_id, unsigned sec);
+	void HandleValidationTimeout(uint32_t callback_id, const boost::system::error_code& e, AutoCount pending_op_counter);
+	void HandleTxQueryParams(const char *msg, unsigned size);
+	void HandleTxQueryAddress(const char *msg, unsigned size);
+	void HandleTxQueryInputs(const char *msg, unsigned size);
+	void HandleTxQuerySerials(const char *msg, unsigned size);
 	void SendReply(ostringstream& os);
+	void SendBlockchainNumberError();
+	void SendTooManyObjectsError();
 	void SendServerError(unsigned line);
 	void SendReplyWriteError();
 	void SendTimeout();
 };
 
 
-class TransactService : public ServiceBase
+class TransactService : public TorService
 {
 	CCServer::Service m_service;
 
 public:
-	TransactService(string n, string s)
-	 :	ServiceBase(n, s),
+	TransactService(const string& n, const wstring& d, const string& s)
+	 :	TorService(n, d, s),
 		m_service(n)
 	{ }
 
@@ -63,6 +60,7 @@ public:
 
 	void Start();
 
+	void StartShutdown();
 	void WaitForShutdown();
 };
 

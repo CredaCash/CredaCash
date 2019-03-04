@@ -1,26 +1,15 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * CCcrypto.cpp
  *
 */
 
+#include "CCdef.h"
 #include "CCcrypto.hpp"
 #include "SpinLock.hpp"
-
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#include <Wincrypt.h>
-#endif
-
-#include <random>
-#include <string>
-#include <iostream>
-
-using namespace std;
 
 #if defined(__cplusplus)
 extern "C"
@@ -45,8 +34,13 @@ void CCRandom(void *data, unsigned nbytes)
 	auto rc = ::CryptGenRandom(hProvider, nbytes, (BYTE*)data);
 	CCASSERT(rc);
 #else
-	auto rc = getrandom(data, nbytes, 0);
-	CCASSERT(rc > 0);
+	static int fd_rnd = -1;
+
+	if (fd_rnd == -1)
+		fd_rnd = open("/dev/urandom", O_RDONLY);
+
+	auto rc = read(fd_rnd, data, nbytes);
+	CCASSERT(rc == (int)nbytes);
 #endif
 }
 
@@ -67,7 +61,7 @@ void CCPseudoRandom(void *data, unsigned nbytes)
 
 	unsigned i = 0;
 
-	for ( ; i < nbytes; i += sizeof(mt19937_64::result_type))
+	for ( ; i + sizeof(mt19937_64::result_type) < nbytes; i += sizeof(mt19937_64::result_type))
 	{
 		*(mt19937_64::result_type*)((uint8_t*)data + i) = (*prnd)();
 	}
@@ -80,17 +74,19 @@ void CCPseudoRandom(void *data, unsigned nbytes)
 	}
 }
 
-string PseudoRandomLetters(unsigned len)
+#if defined(__cplusplus)
+extern "C"
+#endif
+void PseudoRandomLetters(void *data, unsigned nbytes)
 {
-	string str(len, 0);
+	CCPseudoRandom(data, nbytes);
 
-	CCPseudoRandom((void*)str.data(), len);
-
-	for (unsigned i = 0; i < len; ++i)
+	for (unsigned i = 0; i < nbytes; ++i)
 	{
-		unsigned letter = str[i];
+		auto p = (uint8_t*)data + i;
 
-		letter &= 255;
+		unsigned letter = *p;
+
 		letter %= 26*2;
 		letter += 'A';
 
@@ -99,8 +95,6 @@ string PseudoRandomLetters(unsigned len)
 
 		//cerr << "PseudoRandomLetters " << i << " " << letter << endl;
 
-		str[i] = letter;
+		*p = letter;
 	}
-
-	return str;
 }

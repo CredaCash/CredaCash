@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * blocksync.hpp
 */
@@ -10,8 +10,6 @@
 
 #include <ccserver/service.hpp>
 #include <ccserver/connection.hpp>
-
-#include "service_base.hpp"
 
 #include <CCobjdefs.h>
 
@@ -50,7 +48,7 @@ class BlockSyncList
 	deque<BlockSyncEntry> m_list;
 	uint64_t m_next_level;
 
-	FastSpinLock m_lock;
+	FastSpinLock m_block_sync_list_lock;
 
 public:
 	uint64_t Init();
@@ -63,7 +61,7 @@ public:
 class BlockSyncConnection : public CCServer::Connection
 {
 public:
-	BlockSyncConnection(class CCServer::ConnectionManager& manager, boost::asio::io_service& io_service, const class CCServer::ConnectionFactory& connfac)
+	BlockSyncConnection(class CCServer::ConnectionManagerBase& manager, boost::asio::io_service& io_service, const class CCServer::ConnectionFactoryBase& connfac)
 	 :	CCServer::Connection(manager, io_service, connfac)
 	{ }
 
@@ -80,14 +78,11 @@ private:
 
 	void HandleObjReadComplete(const boost::system::error_code& e, size_t bytes_transferred, SmartBuf smartobj, AutoCount pending_op_counter);
 
-	bool SetTimer(unsigned sec);
-	void HandleTimeout(const boost::system::error_code& e, AutoCount pending_op_counter);
-
 	void FinishConnection();
 };
 
 
-class BlockSyncClient : public ServiceBase
+class BlockSyncClient : public TorService
 {
 	CCServer::Service m_service;
 
@@ -101,8 +96,8 @@ class BlockSyncClient : public ServiceBase
 	void ConnectOutgoing();
 
 public:
-	BlockSyncClient(string n, string s)
-	 :	ServiceBase(n, s),
+	BlockSyncClient(const string& n, const wstring& d, const string& s)
+	 :	TorService(n, d, s, true),
 		m_service(n),
 		m_conns_finished(0)
 	{ }
@@ -120,6 +115,7 @@ public:
 		m_conns_finished++;
 	}
 
+	void StartShutdown();
 	void WaitForShutdown();
 
 	class BlockSyncList m_sync_list;

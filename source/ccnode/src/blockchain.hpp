@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * blockchain.hpp
 */
@@ -23,6 +23,9 @@
 
 #define BLOCK_PRUNE_ROUNDS	5
 
+struct TxPay;
+struct TxOut;
+
 class BlockChain
 {
 	SmartBuf m_new_indelible_block;
@@ -31,20 +34,27 @@ class BlockChain
 	uint64_t m_startup_prune_level;
 	atomic<bool> m_have_fatal_error;
 
-	bool DoConfirmOne(DbConn *dbconn, SmartBuf newobj, struct TxPay &txbuf);
+	bool DoConfirmOne(DbConn *dbconn, SmartBuf newobj, TxPay& txbuf);
 
 public:
 
 	struct
 	{
-		uint64_t donation_per_tx;
-		uint64_t donation_per_byte;
-		uint64_t donation_per_output;
-		uint64_t donation_per_input;
-		uint64_t outvalmin;
-		uint64_t outvalmax;
-		uint64_t invalmax;
-		uint16_t proof_param_set;
+		bigint_t donation_per_tx;
+		bigint_t donation_per_byte;
+		bigint_t donation_per_output;
+		bigint_t donation_per_input;
+		bigint_t minimum_donation;
+
+		uint64_t donation_per_tx_fp;
+		uint64_t donation_per_byte_fp;
+		uint64_t donation_per_output_fp;
+		uint64_t donation_per_input_fp;
+		uint64_t minimum_donation_fp;
+
+		uint16_t outvalmin;
+		uint16_t outvalmax;
+		uint16_t invalmax;
 
 	} proof_params;
 
@@ -71,7 +81,7 @@ public:
 
 	uint64_t ComputePruneLevel(unsigned min_level, unsigned trailing_rounds) const;
 
-	bool SetNewlyIndelibleBlock(DbConn *dbconn, SmartBuf smartobj, struct TxPay &txbuf);
+	bool SetNewlyIndelibleBlock(DbConn *dbconn, SmartBuf smartobj, TxPay& txbuf);
 
 	SmartBuf GetLastIndelibleBlock()
 	{
@@ -89,16 +99,16 @@ public:
 	static void CreateGenesisDataFiles();
 	bool LoadGenesisDataFiles(class BlockAux* auxp);
 
-	bool DoConfirmations(DbConn *dbconn, SmartBuf newobj, struct TxPay &txbuf);
-	bool DoConfirmationLoop(DbConn *dbconn, SmartBuf newobj, struct TxPay &txbuf);
+	bool DoConfirmations(DbConn *dbconn, SmartBuf newobj, TxPay& txbuf);
+	bool DoConfirmationLoop(DbConn *dbconn, SmartBuf newobj, TxPay& txbuf);
 
 	typedef int (*SerialnumInsertFunction)(DbConn *dbconn, const void *serial, unsigned size, const void* blockp, uint64_t level);
 
-	static bool IndexTxs(DbConn *dbconn, SmartBuf smartobj, struct TxPay &txbuf);
-	static void CheckCreatePseudoSerialnum(struct TxPay& txbuf, const void *wire, const uint32_t bufsize);
-	static bool IndexTxOutputs(DbConn *dbconn, struct TxOut& tx, uint64_t param_level);
+	static bool IndexTxs(DbConn *dbconn, SmartBuf smartobj, TxPay& txbuf);
+	static void CheckCreatePseudoSerialnum(TxPay& txbuf, const void *wire, const uint32_t bufsize);
+	static bool IndexTxOutputs(DbConn *dbconn, const TxPay& tx, const TxOut& txout);
 
-	int CheckSerialnums(DbConn *dbconn, SmartBuf topblock, int type, SmartBuf txobj, void *txwire, unsigned txsize, struct TxPay &txbuf);
+	int CheckSerialnums(DbConn *dbconn, SmartBuf topblock, int type, SmartBuf txobj, void *txwire, unsigned txsize, TxPay& txbuf);
 	int CheckSerialnum(DbConn *dbconn, SmartBuf topblock, int type, SmartBuf txobj, const void *serial, unsigned size);
 	static bool BlockInChain(void *find_block, SmartBuf smartobj, SmartBuf last_indelible_block);
 	static bool ChainHasDelibleTxs(SmartBuf smartobj, uint64_t last_indelible_level);

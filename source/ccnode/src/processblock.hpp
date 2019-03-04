@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * processblock.hpp
 */
@@ -13,6 +13,8 @@
 #include <transaction.hpp>
 
 #include <thread>
+
+struct TxPay;
 
 class ProcessBlock
 {
@@ -31,10 +33,11 @@ public:
 	{ }
 
 	void Init();
+	void Stop();
 	void DeInit();
 
-	int BlockValidate(DbConn *dbconn, SmartBuf smartobj, struct TxPay &txbuf);
-	void ValidObjsBlockInsert(DbConn *dbconn, SmartBuf smartobj, struct TxPay &txbuf, bool enqueue = false, bool check_indelible = true);
+	int BlockValidate(DbConn *dbconn, SmartBuf smartobj, TxPay& txbuf);
+	void ValidObjsBlockInsert(DbConn *dbconn, SmartBuf smartobj, TxPay& txbuf, bool enqueue = false, bool check_indelible = true);
 
 	uint32_t GetLastBlockTicks() const
 	{

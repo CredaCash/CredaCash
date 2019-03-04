@@ -1,12 +1,12 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * jsoncmd.cpp
 */
 
-#include "CCdef.h"
+#include "cclib.h"
 
 #include <jsoncpp/json/json.h>
 
@@ -17,100 +17,135 @@
 #include "jsonutil.h"
 #include "CCproof.h"
 
-static CCRESULT json_cmd(const string& fn, const char *json, char *output, const uint32_t bufsize)
+static CCRESULT json_cmd(const string& fn, const char *json, char *output, const uint32_t outsize, char *binbuf, const uint32_t binsize)
 {
+	//bigint_test();
+
 	CCASSERT(json);
 	CCASSERT(output);
-	CCASSERT(bufsize > 0);
+	CCASSERT(outsize > 0);
 
-	char firstbyte = output[0];
+	if (binbuf && binsize < sizeof(uint32_t))
+		return copy_error_to_output(fn, "error: binary buffer too small", output, outsize);
+
 	output[0] = 0;
 
 	CCProof_Init();
 
-	Json::Reader reader;
+#if TEST_SUPPORT_ZK_KEYGEN
+	CCProof_PreloadVerifyKeys();	// generates keys if none are found
+#endif
+
+	Json::CharReaderBuilder builder;
+	Json::CharReaderBuilder::strictMode(&builder.settings_);
 	Json::Value root;
+	string errs;
 
-	reader.parse(json, json + strlen(json), root);
+	auto reader = builder.newCharReader();
 
-	if (!reader.good())
-		return copy_error_to_output(fn + ": " + reader.getFormattedErrorMessages(), output, bufsize);
+	bool rc;
+
+	try
+	{
+		rc = reader->parse(json, json + strlen(json), &root, &errs);
+	}
+	catch (const exception& e)
+	{
+		errs = e.what();
+		rc = false;
+	}
+	catch (...)
+	{
+		errs = "unknown";
+		rc = false;
+	}
+
+	delete reader;
+
+	if (!rc)
+		return copy_error_to_output(fn, string("error: ") + errs, output, outsize);
 
 	if (root.size() != 1)
-		return copy_error_to_output(fn + ": json root must contain exactly one object", output, bufsize);
+		return copy_error_to_output(fn, "error: json root must contain exactly one object", output, outsize);
 
 	auto it = root.begin();
 	auto key = it.name();
 	root = *it;
 
+	if (key == "generate-random")
+		return generate_random(key, root, output, outsize);
+
 	if (key == "master-secret-generate")
-		return generate_master_secret(key, root, output, bufsize);
+		return generate_master_secret_json(key, root, output, outsize);
 
-	if (key == "master-secret-descramble")
-		return master_secret_to_json(key, root, output, bufsize);
+	if (key == "master-secret-decrypt")
+		return compute_master_secret_json(key, root, output, outsize);
 
-	if (key == "hash-spend-secret")
-		return hash_spend_secret(key, root, output, bufsize);
+	if (key == "compute-root-secret" || key == "compute-spend-secret" || key == "compute-trust-secret" || key == "compute-monitor-secret" || key == "compute-receive-secret")
+		return compute_secret(key, root, output, outsize);
 
 	if (key == "payspec-encode")
-		return payspec_from_json(key, root, output, bufsize);
+		return payspec_from_json(key, root, output, outsize);
 
 	if (key == "payspec-decode")
-		return payspec_to_json(key, root, output, bufsize);
+		return payspec_to_json(key, root, output, outsize);
 
 	if (key == "compute-address")
-		return compute_address(key, root, output, bufsize);
+		return compute_address_json(key, root, output, outsize);
+
+	if (key == "encode-amount")
+		return encode_amount_json(key, root, output, outsize);
+
+	if (key == "decode-amount")
+		return decode_amount_json(key, root, output, outsize);
+
+	if (key == "compute-amount-encryption")
+		return compute_amount_encyption_json(key, root, output, outsize);
+
+	if (key == "compute-serial-number")
+		return compute_serialnum_json(key, root, output, outsize);
 
 #if SUPPORT_GENERATE_TEST_INPUTS
 
 	if (key == "generate-test-inputs")
-		return generate_test_inputs(key, root, output, bufsize);
+		return generate_test_inputs(key, root, output, outsize);
 
 #endif
 
 	if (key == "tx-create")
-		return json_tx_create(key, root, output, bufsize);
+		return json_tx_create(key, root, output, outsize);
 
 	if (key == "tx-verify")
-		return json_tx_verify(key, root, output, bufsize);
+		return json_tx_verify(key, root, output, outsize);
 
 	if (key == "tx-to-json")
-		return json_tx_to_json(key, root, output, bufsize);
+		return json_tx_to_json(key, root, output, outsize);
 
 	if (key == "tx-to-wire")
-		return json_tx_to_wire(key, root, output, bufsize);
+		return json_tx_to_wire(key, root, output, outsize, binbuf, binsize);
 
 	if (key == "tx-from-wire")
-	{
-		output[0] = firstbyte;
-		return json_tx_from_wire(key, root, output, bufsize);
-	}
+		return json_tx_from_wire(key, root, output, outsize, binbuf, binsize);
 
 	if (key == "tx-dump")
-		return json_tx_dump(key, root, output, bufsize);
-
-	if (key == "tx-dump")
-		return json_tx_dump(key, root, output, bufsize);
+		return json_tx_dump(key, root, output, outsize);
 
 	if (key == "tx-query-create")
-		return tx_query_from_json(key, root, output, bufsize);
+		return tx_query_from_json(key, root, output, outsize, binbuf, binsize);
 
 	if (key == "work-reset")
-	{
-		output[0] = firstbyte;
-		return json_work_reset(key, root, output, bufsize);
-	}
+		return json_work_reset(key, root, output, outsize, binbuf, binsize);
 
 	if (key == "work-add")
-	{
-		output[0] = firstbyte;
-		return json_work_add(key, root, output, bufsize);
-	}
+		return json_work_add(key, root, output, outsize, binbuf, binsize);
 
-	return copy_error_to_output(fn + ": unrecognized command \"" + key + "\"", output, bufsize);
+	if (key == "test-parse-number")
+		return json_test_parse_number(key, root, output, outsize);
+
+	return copy_error_to_output(fn, string("error: unrecognized command \"") + key + "\"", output, outsize);
 }
 
-CCAPI CCTx_JsonCmd(const char *json, char *output, const uint32_t bufsize)
+CCAPI CCTx_JsonCmd(const char *json, char *output, const uint32_t outsize, char *binbuf, const uint32_t binsize)
 {
 	static const string fn("CCTx_JsonCmd");
 
@@ -118,7 +153,7 @@ CCAPI CCTx_JsonCmd(const char *json, char *output, const uint32_t bufsize)
 	{
 		//CCASSERT(!true);
 
-		return json_cmd(fn, json, output, bufsize);
+		return json_cmd(fn, json, output, outsize, binbuf, binsize);
 	}
 	catch (...)
 	{
@@ -126,7 +161,7 @@ CCAPI CCTx_JsonCmd(const char *json, char *output, const uint32_t bufsize)
 
 	try
 	{
-		return copy_error_to_output(fn + ": assert error", output, bufsize);
+		return copy_error_to_output(fn, "error: assert failed", output, outsize);
 	}
 	catch (...)
 	{

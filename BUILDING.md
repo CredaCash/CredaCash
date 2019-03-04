@@ -1,24 +1,144 @@
-#Building the CredaCash&trade; Network Node (Server) Software
+# Building the CredaCash&trade; Software
 
 <!--- NOTE: This file is in Markdown format, and is intended to be viewed in a Markdown viewer. -->
 
-The CredaCash network node software is cross-platform, but the most recent release has only been built and tested under Windows x64.  There is currently no documentation on building for Linux.
+Windows executables are available at [CredaCash.com](https://credacash.com/software/). The following steps are only needed to build the software for Linux, or to rebuild for Windows from the source code.
 
-##Windows x64
+## Supported Platforms
 
-A Windows executable with instructions is available at [CredaCash.com](https://credacash.com/software/).  The following steps are only needed if you would like to rebuild from source.  The build process currently requires a number of manual steps; it will be better automated in the future.
+The CredaCash software is intended to be cross-platform, and has been built and run under 64-bit versions of Windows and Linux (specifically, Windows 7 x64 and Debian Stretch v9.8). Compatibility with other platforms is unknown.
 
-###Setting up the build environment
+## Dependencies
 
-####MinGW-w64
+The following dependencies are required. Specific instructions are provided below for Debian Linux and Windows x64.
 
-1. Download [MinGW-w64 4.8.5 Posix threads SEH]( http://downloads.sourceforge.net/project/mingw-w64/Toolchains%20targetting%20Win64/Personal%20Builds/mingw-builds/4.8.5/threads-posix/seh/x86_64-4.8.5-release-posix-seh-rt_v4-rev0.7z)
+Required to fetch the source dependencies:
+
+- curl
+- unzip
+- Python (any version, however Python 2.7.x 64-bit is required to run the test scripts)
+
+Required to build:
+
+- GNU g++ v4.8 or higher. The software has been specifically tested with v4.9.4 and v6.4.0, and the earlier version works just as well as the more recent version. Under Linux, the default version provided with your distribution is recommended.
+- Boost library, roughly version v1.50 or higher. The software has been specifically tested with v1.62 and v1.69. Under Linux, the version provided with your distribution is recommended, if it is compatible.
+- GNU gmplib, any recent version. Under Linux, the version provided with your distribution is recommended, if it is compatible.
+
+Required to run:
+
+- Tor v0.3.2 or higher
+
+Required to run the test scripts:
+
+- Python 2.7.x 64-bit
+
+## Linux
+
+The following instructions are specifically for Debian Stretch v9.8.  They may be adaptable to other Linux distributions.
+
+1. Install the following packages:
+
+	- curl
+	- make
+	- g++
+	- libboost-all-dev
+	- libgmp-dev
+
+	Note that in Redhat-based distribtions, the above packages are named curl, make, gcc-c++, boost-devel, and gmp-devel
+
+2. Tor v0.3.2 or higher is required, which is available in Debian Stretch from the backports repository.  If the backports repository has not yet been enabled, it can be enabled with:
+
+	``sudo sh -c "echo 'deb http://deb.debian.org/debian stretch-backports main' >> /etc/apt/sources.list.d/stretch-backports.list"``
+
+	``sudo apt-get update``
+
+	Tor v3 can then be installed with:
+
+	``sudo apt-get -t stretch-backports install tor``
+
+	``sudo systemctl stop tor``
+
+	``sudo systemctl disable tor``
+
+	Alternately, binary packages for various distributions, and source that is straigtforward to build for any distribution, are available at the [Tor Project website](https://www.torproject.org/download/download-unix.html).  Older versions can be found at [Tor Project archive](https://dist.torproject.org/).
+
+3. Open a new terminal window and fetch the CredaCash source code:
+
+	``mkdir CredaCash``
+
+	``cd CredaCash``
+
+	``curl -L https://github.com/CredaCash/CredaCash/archive/master.zip -o credacash_source.zip``
+
+	``unzip credacash_source.zip``
+
+	``mv CredaCash-master/* .``
+
+	``rmdir CredaCash-master``
+
+	``rm *.bat``
+
+	``chmod +x *.sh``
+
+4. Fetch the dependencies:
+
+	``./get_depends.sh``
+
+5. Fetch the zero knowledge proof keys:
+
+	``./get_zkkeys.sh``
+
+6. Build the executables:
+
+	``./make_release.sh``
+
+	This should build the network node server (ccnode.exe), wallet server (ccwallet.exe) and transaction library cctx64.dll) and place them into the current directory.
+
+7. Fetch the genesis files:
+
+	``./get_genesis.sh``
+
+##### Boost
+
+If the build is not successful due to incompatibilities with Boost, the Boost libraries can be built from source as a static library under Linux as follows:
+
+1. Download the latest stable version of the Boost library source code from [Sourceforge](https://sourceforge.net/projects/boost/files/boost/)
+
+2. Extract to CredaCash/depends/boost
+
+3. Check that the directory CredaCash/depends/boost contains the subdirectories boost, doc, libs, etc.
+
+4. From a command prompt, run the following commands:
+
+	``cd CredaCash/depends/boost``
+
+	``./bootstrap.sh``
+
+	``./b2 --layout=system variant=release threading=multi link=static runtime-link=shared``
+
+	The output should be "The Boost C++ Libraries were successfully built!"
+
+5. The CredaCash executables can then be built using "static-boost" as follows:
+
+	``cd CredaCash``
+
+	``./make_release.sh static-boost``
+
+## Windows x64
+
+Windows executables are available at [CredaCash.com](https://credacash.com/software/).  The following steps are only needed to rebuild the executables from the source code.
+
+### Set up the environment
+
+#### MinGW-w64
+
+1. Download [MinGW-w64 4.9.4 Posix threads SEH](http://downloads.sourceforge.net/project/mingw-w64/Toolchains%20targetting%20Win64/Personal%20Builds/mingw-builds/4.9.4/threads-posix/seh/x86_64-4.9.4-release-posix-seh-rt_v5-rev0.7z)
 
 2. Extract to C:\mingw64
 
 3. Check that the directory C:\mingw64 contains the subdirectories bin, include, lib, etc.
 
-####MSYS
+#### MSYS
 
 1. Download the [MSYS Installer](http://downloads.sourceforge.net/project/mingw/Installer/mingw-get-setup.exe)
 
@@ -37,9 +157,7 @@ A Windows executable with instructions is available at [CredaCash.com](https://c
  - msys-automake
  - msys-binutils
  - msys-bison
- - msys-dash
  - msys-flex
- - msys-groff
  - msys-guile
  - msys-help2man
  - msys-libtool
@@ -48,40 +166,88 @@ A Windows executable with instructions is available at [CredaCash.com](https://c
  - msys-mktemp
  - msys-patch
  - msys-perl
- - msys-rebase
- - msys-unzip
- - msys-wget
- - msys-zip
 
 7. Under the "Installation" menu, select "Apply Changes".
 
 8. Close the installer.
 
-###Obtaining the CredaCash source
+#### Python
 
-####CredaCash server
+1. In a web browser, go to https://www.python.org/downloads/windows/
 
-1. Download the CredaCash network node [source code](https://github.com/CredaCash/network-node/archive/master.zip)
+2. Click "Latest Python 2 Release"
 
-2. Extract to C:\CredaCash
+3. Click "Windows x86-64 MSI installer"
 
-3. Check that the directory C:\CredaCash contains the subdirectories source and test.
+4. Download and install.
 
-####snarklib
+#### Curl
 
-1. Download [snarklib](https://github.com/CredaCash/snarklib/archive/master.zip)
+1. In a web browser, go to https://curl.haxx.se/windows/
 
-2. Extract all files to C:\CredaCash\source\snarklib
+2. Select "curl for 32 bit"
 
-####snarkfront
+3. Download and extract the files to any directory.
 
-1. Download [snarkfront](https://github.com/CredaCash/snarkfront/archive/master.zip)
+#### Unzip
 
-2. Extract all files to C:\CredaCash\source\snarkfront
+1. Download [unzip.zip](https://credacash.s3.amazonaws.com/unzip.zip)
+ 
+2. Extract the single file (unzip.exe) to any directory.
 
-###Obtaining and Building the Dependents
+#### Tor
 
-####GMP
+1. In a web browser, go to https://www.torproject.org/download/download.html.en
+
+2. Click "Microsoft Windows"
+
+3. Download the Tor Expert Bundle
+
+4. Extract the files to any new directory location.
+
+### Obtain the CredaCash source
+
+1. Download the CredaCash network node [source code](https://github.com/CredaCash/CredaCash/archive/master.zip)
+
+2. Extract it to C:\CredaCash
+
+3. Check that C:\CredaCash contains the subdirectories source and test.
+
+4. Open a command prompt and execute:
+
+	``cd C:\CredaCash``
+
+	``set_path.bat``
+
+5. Add the directories containing curl.exe and unzip.exe to the PATH:
+
+	``set PATH=%PATH%;<directory containing curl.exe>;<directory containing unzip.exe>
+
+6. Check that python is in your path by executing:
+
+	``python --version``
+
+	This should print the python version.
+
+7. Check that curl.exe is in your path by executing:
+
+	``curl --version``
+
+	This should print the curl version.
+
+8. Check that unzip.exe is in your path by executing:
+
+	``unzip -h``
+
+	This should print the unzip help text.
+
+9. Fetch the dependencies by executing:
+
+	``get_depends.bat``
+ 
+### Build the Dependents
+
+#### GMP
 
 1. Download the latest stable version of the GMP library from [https://gmplib.org/](https://gmplib.org/)
 
@@ -96,11 +262,12 @@ A Windows executable with instructions is available at [CredaCash.com](https://c
 	``cd C:\CredaCash\depends\gmp``
 
  	``perl ./configure NM=/c/mingw64/bin/nm --enable-cxx --enable-fat --disable-shared --disable-fft --with-gnu-ld``
+
  	``make``
 
-#####Boost
+##### Boost
 
-1. Download the latest stable version of the Boost library source code from [https://sourceforge.net/projects/boost/files/boost/](https://sourceforge.net/projects/boost/files/boost/)
+1. Download the latest stable version of the Boost library source code from [Sourceforge](https://sourceforge.net/projects/boost/files/boost/)
 
 2. Extract to C:\CredaCash\depends\boost
 
@@ -112,23 +279,15 @@ A Windows executable with instructions is available at [CredaCash.com](https://c
 
 	``cd C:\CredaCash\depends\boost``
 
-	``bootstrap.bat``
+	``bootstrap.bat gcc``
 
-5. Edit project-config.jam and change "using msvc" to "using gcc"
+	``b2 -j4 --layout=system toolset=gcc address-model=64 cxxflags="-std=c++11 -D_hypot=hypot" define=BOOST_USE_WINAPI_VERSION=0x0502 variant=release threading=multi link=static runtime-link=static``
 
-6. From the command prompt:
+The output should be "The Boost C++ Libraries were successfully built!"
 
-	``b2 --layout=system variant=release threading=multi link=static runtime-link=static``
+### Build CredaCash
 
-	The output should be "The Boost C++ Libraries were successfully built!"
-
-#####Other Dependents
-
-1. Look in the directory C:\CredaCash\source\3rdparty\src, and for each subdirectory, obtain the source package described in the ORIGIN-*.txt file and place the required file into a corresponding subdirectory in C:\CredaCash\depends.  For example, the source package described in the file C:\CredaCash\source\3rdparty\src\blake2\ORIGIN-blake2.txt should be placed into the directory C:\CredaCash\depends\blake2
-
-###Building the CredaCash source
-
-1. From a command prompt (with the PATH set as described above), run the following commands:
+1. From a command prompt, run the following commands:
 
 	``cd C:\CredaCash``
 
@@ -136,4 +295,10 @@ A Windows executable with instructions is available at [CredaCash.com](https://c
 
 	``make_release.bat``
 
-This should build the binary distribution files ccnode.exe, cctx64.dll, and cctracker.exe, and place them in their respective "Release" subdirectories.
+	This should build the binary distribution files ccnode.exe, ccwallet.exe and cctx64.dll and place them in their respective "Release" subdirectories.
+
+2. Fetch the genesis files:
+
+	``get_genesis.bat``
+
+3. Create or edit the configuration files cnode.conf and ccwallet.con and set the value of tor-exe to the full path of tor.exe in the directory created above.

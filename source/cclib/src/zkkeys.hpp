@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * zkkeys.hpp
 */
@@ -22,23 +22,22 @@ struct key_table_entry
 
 class ZKKeyStore
 {
-	//typedef Keypair<ZKPAIRING> ProvingKey;
-	typedef snarklib::PPZK_ProvingKey<ZKPAIRING> ProvingKey;
+	typedef snarklib::PPZK_ProvingKey<ZKPAIRING> ProveKey;
+	typedef snarklib::PPZK_PrecompVerificationKey<ZKPAIRING> VerifyKey;
 
-	unsigned nproof;
+	unsigned nproof, nproofsave;
 	vector<key_table_entry> keytable;
 	vector<unsigned> workorder;
-	unsigned nproofsave;
-	vector<shared_ptr<ProvingKey>> proofkey;
+	vector<shared_ptr<ProveKey>> proofkey;
 
 	unsigned nverify;
-	vector<unique_ptr<snarklib::PPZK_PrecompVerificationKey<ZKPAIRING>>> verifykey;
+	vector<shared_ptr<VerifyKey>> verifykey;
 
-	string GetKeyFileName(const unsigned keyindex, bool verifykey);
+	string GetKeyFileName(const unsigned keyindex, bool verify);
 
 	bool TestKeyFit(const unsigned keyindex, const unsigned nout, const unsigned nin, const unsigned nin_with_path);
 
-	const shared_ptr<ZKKeyStore::ProvingKey> LoadProofKey(const unsigned keyindex);
+	shared_ptr<const ProveKey> LoadProofKey(const unsigned keyindex);
 
 	bool LoadVerifyKey(const unsigned keyid);
 
@@ -50,20 +49,19 @@ public:
 		return nproof;
 	}
 
+	unsigned GetKeyId(unsigned keyindex);
 	unsigned GetKeyIndex(uint16_t& nout, uint16_t& nin, uint16_t& nin_with_path, const bool test_largerkey = false);
 	void SetTxCounts(unsigned keyindex, uint16_t& nout, uint16_t& nin, uint16_t& nin_with_path, bool verify = false);
 
-	const shared_ptr<ProvingKey> GetProofKey(const unsigned keyindex);
-
-	unsigned GetKeyId(unsigned keyindex);
-	const snarklib::PPZK_PrecompVerificationKey<ZKPAIRING> GetVerifyKey(const unsigned keyid);
+	shared_ptr<const ProveKey> GetProofKey(const unsigned keyindex);
+	shared_ptr<const VerifyKey> GetVerifyKey(const unsigned keyid);
 
 	void PreLoadProofKeys();
-	void PreLoadVerifyKeys();
+	void PreLoadVerifyKeys(bool require_all);
 
 	void UnloadProofKey(const unsigned keyindex);
 
-#if SUPPORT_ZK_KEYGEN
+#if TEST_SUPPORT_ZK_KEYGEN
 public:
 	void SaveKeyPair(const unsigned keyindex, const Keypair<ZKPAIRING>& keypair);
 #endif

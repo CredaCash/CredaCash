@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * block.hpp
 */
@@ -10,6 +10,11 @@
 
 #include <CCobjects.hpp>
 #include <SmartBuf.hpp>
+#include <PackedInt.hpp>
+#include <CCparams.h>
+
+#define BLOCKLEVEL_BYTES			(32/8)
+#define BLOCKTIME_BYTES				(32/8)
 
 #define MAX_NWITNESSES				21
 
@@ -34,15 +39,17 @@ typedef array<uint8_t, 512/8> block_hash_t;
 
 #pragma pack(push, 1)
 
-struct BlockWireHeader
+class BlockWireHeader
 {
+public:
+
 	block_signature_t signature;
 #if ROTATE_BLOCK_SIGNING_KEYS
 	block_signing_public_key_t witness_next_signing_public_key;
 #endif
 	ccoid_t prior_oid;
-	uint64_t level;
-	uint64_t timestamp;
+	PackedUnsigned<BLOCKLEVEL_BYTES> level;
+	PackedUnsigned<BLOCKTIME_BYTES, 1, TX_TIME_OFFSET> timestamp;
 	uint8_t witness;
 };
 

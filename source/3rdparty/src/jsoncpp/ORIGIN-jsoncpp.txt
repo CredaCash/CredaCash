@@ -2,4 +2,9 @@ https://github.com/open-source-parsers/jsoncpp
 
 cd jsoncpp-master
 python amalgamate.py
-copy dist/* to CredaCash-dependents/jsoncpp
+copy dist/* to CredaCash/depends/jsoncpp
+
+in json.h, modify class StyledStreamWriter:
+1. change private to protected
+2. change: void writeValue(const Value& value);
+       to: virtual void writeValue(const Value& value);

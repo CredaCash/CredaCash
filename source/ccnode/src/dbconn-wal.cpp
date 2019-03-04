@@ -1,26 +1,24 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * dbconn-wal.cpp
 */
 
-#include "CCdef.h"
+#include "ccnode.h"
 #include "dbconn.hpp"
 #include "block.hpp"
 #include "blockchain.hpp"
 
 #include <dblog.h>
 #include <CCobjects.hpp>
-#include <Finally.hpp>
-#include <CCutil.h>
 
 #define TRACE_DBCONN	(g_params.trace_wal_db)
 
-static const uint32_t g_full_checkpoint_time = 20;	// !!! make this configurable?
+static const uint32_t g_full_checkpoint_time = 20;	// make this configurable?
 
-//#define TEST_FREERUN_CHECKPOINTS	1	// for testing
+//!#define TEST_FREERUN_CHECKPOINTS	1
 
 #ifndef TEST_FREERUN_CHECKPOINTS
 #define TEST_FREERUN_CHECKPOINTS	0	// don't test
@@ -68,7 +66,8 @@ void WalDB::WalWaitForStartCheckpoint()
 
 	if (TEST_FREERUN_CHECKPOINTS)
 	{
-		usleep(1000000 + rand()*(1000000.0/RAND_MAX));
+		ccsleep(1);
+		usleep(rand() & (1024*1024-1));
 
 		return;
 	}
@@ -90,7 +89,7 @@ void WalDB::WalCheckpoint(sqlite3 *db)
 	{
 		if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "WalDB::WalCheckpoint " << dbname << " stop_checkpointing is set";
 
-		sleep(1);
+		ccsleep(1);
 
 		checkpoint_needed.store(false);
 

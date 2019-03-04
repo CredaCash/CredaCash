@@ -1,12 +1,12 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * blocksync.cpp
 */
 
-#include "CCdef.h"
+#include "ccnode.h"
 #include "blocksync.hpp"
 #include "block.hpp"
 #include "blockchain.hpp"
@@ -15,17 +15,12 @@
 #include "hostdir.hpp"
 #include "expire.hpp"
 #include "dbconn.hpp"
-#include "util.h"
 
 #include <CCobjects.hpp>
 
 #include <transaction.h>
 #include <ccserver/server.hpp>
 #include <ccserver/connection_manager.hpp>
-
-#include <boost/bind.hpp>
-
-#include <utility>
 
 #define TRACE_BLOCKSYNC		(g_params.trace_block_sync)
 
@@ -41,7 +36,9 @@ thread_local DbConn *blocksync_dbconn;
 
 void BlockSyncConnection::StartConnection()
 {
-	if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn-" << m_conn_index << " BlockSyncConnection::StartConnection";
+	if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::StartConnection";
+
+	m_conn_state = CONN_CONNECTED;
 
 	req_msg.entry.nlevels = 0;
 
@@ -50,53 +47,61 @@ void BlockSyncConnection::StartConnection()
 
 void BlockSyncConnection::SendReq()
 {
-	if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn-" << m_conn_index << " BlockSyncConnection::SendReq";
+	if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::SendReq";
 
 	if (req_msg.entry.nlevels)
 	{
-		BOOST_LOG_TRIVIAL(error) << Name() << " Conn-" << m_conn_index << " BlockSyncConnection::SendReq unexpected req_msg.nlevels " << req_msg.entry.nlevels;
+		BOOST_LOG_TRIVIAL(error) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::SendReq unexpected req_msg.nlevels " << req_msg.entry.nlevels;
 
 		return Stop();
 	}
 
 	req_msg.entry = g_blocksync_client.m_sync_list.GetNextEntry();
 
-	if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn-" << m_conn_index << " BlockSyncConnection::SendReq requesting level " << req_msg.entry.level << " nlevels " << req_msg.entry.nlevels;
+	if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::SendReq requesting level " << req_msg.entry.level << " nlevels " << req_msg.entry.nlevels;
 
 	WriteAsync("BlockSyncConnection::SendReq", boost::asio::buffer(&req_msg, sizeof(req_msg)),
 			boost::bind(&BlockSyncConnection::HandleSendMsgWrite, this, boost::asio::placeholders::error, AutoCount(this)));
 
-	SetTimer(BLOCKSYNC_TIMEOUT);
+	if (SetTimer(BLOCKSYNC_TIMEOUT))
+		return;
 }
 
 void BlockSyncConnection::HandleSendMsgWrite(const boost::system::error_code& e, AutoCount pending_op_counter)
 {
 	m_write_in_progress.clear();
 
-	CancelTimer();
+	if (CheckOpCount(pending_op_counter))
+		return;
+
+	if (CancelTimer())
+		return;
 
 	bool sim_err = ((TEST_RANDOM_WRITE_ERRORS & rand()) == 1);
-	if (sim_err) BOOST_LOG_TRIVIAL(info) << Name() << " Conn-" << m_conn_index << " BlockSyncConnection::HandleSendMsgWrite simulating write error";
+	if (sim_err) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::HandleSendMsgWrite simulating write error";
 
 	if (e || sim_err)
 	{
-		BOOST_LOG_TRIVIAL(info) << Name() << " Conn-" << m_conn_index << " BlockSyncConnection::HandleSendMsgWrite after error " << e << " " << e.message();
+		BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::HandleSendMsgWrite after error " << e << " " << e.message();
 
 		return Stop();
 	}
 
-	if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn-" << m_conn_index << " BlockSyncConnection::HandleSendMsgWrite ok";
+	if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::HandleSendMsgWrite ok";
 
 	StartRead();
 
-	SetTimer(BLOCKSYNC_TIMEOUT);
+	if (SetTimer(BLOCKSYNC_TIMEOUT))
+		return;
 }
 
 void BlockSyncConnection::HandleReadComplete()
 {
+	// timer is canceled in HandleObjReadComplete
+
 	if (m_nred < CC_MSG_HEADER_SIZE)
 	{
-		BOOST_LOG_TRIVIAL(info) << Name() << " Conn-" << m_conn_index << " BlockSyncConnection::HandleReadComplete error short read " << m_nred;
+		BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::HandleReadComplete error short read " << m_nred;
 
 		return Stop();
 	}
@@ -104,18 +109,18 @@ void BlockSyncConnection::HandleReadComplete()
 	unsigned size = *(uint32_t*)m_pread;
 	unsigned tag = *(uint32_t*)(m_pread + 4);
 
-	if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn-" << m_conn_index << " BlockSyncConnection::HandleReadComplete read " << m_nred << " bytes msg size " << size << " tag " << tag;
+	if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::HandleReadComplete read " << m_nred << " bytes msg size " << size << " tag " << tag;
 
 	if (size < CC_MSG_HEADER_SIZE || size > CC_BLOCK_MAX_SIZE)
 	{
-		BOOST_LOG_TRIVIAL(info) << Name() << " Conn-" << m_conn_index << " BlockSyncConnection::HandleReadComplete error invalid msg size " << size;
+		BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::HandleReadComplete error invalid msg size " << size;
 
 		return Stop();
 	}
 
 	if (tag == CC_RESULT_NO_LEVEL)
 	{
-		BOOST_LOG_TRIVIAL(info) << Name() << " Conn-" << m_conn_index << " BlockSyncConnection::HandleReadComplete received CC_RESULT_NO_LEVEL";
+		BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::HandleReadComplete received CC_RESULT_NO_LEVEL";
 
 		g_blocksync_client.IncFinishedConns();
 
@@ -124,7 +129,7 @@ void BlockSyncConnection::HandleReadComplete()
 
 	if (tag != CC_TAG_BLOCK)
 	{
-		BOOST_LOG_TRIVIAL(info) << Name() << " Conn-" << m_conn_index << " BlockSyncConnection::HandleReadComplete error unrecognized msg tag " << tag;
+		BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::HandleReadComplete error unrecognized msg tag " << tag;
 
 		return Stop();
 	}
@@ -136,7 +141,7 @@ void BlockSyncConnection::HandleReadComplete()
 	smartobj = SmartBuf(size + sizeof(CCObject::Preamble));
 	if (!smartobj)
 	{
-		BOOST_LOG_TRIVIAL(error) << Name() << " Conn-" << m_conn_index << " BlockSyncConnection::HandleReadComplete smartobj failed";
+		BOOST_LOG_TRIVIAL(error) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::HandleReadComplete smartobj failed";
 
 		return;
 	}
@@ -145,44 +150,49 @@ void BlockSyncConnection::HandleReadComplete()
 
 	memcpy(obj->ObjPtr(), m_pread, m_nred);
 
-	m_pread = obj->ObjPtr();
+	m_pread = (char*)obj->ObjPtr();
 
 	m_maxread = size;
 
-	if (m_maxread > m_nred)
+	if (m_nred < m_maxread)
 	{
-		if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn-" << m_conn_index << " BlockSyncConnection::HandleReadComplete queueing read size " << m_maxread - m_nred;
+		if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::HandleReadComplete queueing read size " << m_maxread - m_nred;
 
 		ReadAsync("BlockSyncConnection::HandleReadComplete", boost::asio::buffer(m_pread + m_nred, m_maxread - m_nred), boost::asio::transfer_exactly(m_maxread - m_nred),
 				boost::bind(&BlockSyncConnection::HandleObjReadComplete, this, boost::asio::placeholders::error, boost::asio::placeholders::bytes_transferred, smartobj, AutoCount(this)));
 
-		SetTimer(BLOCKSYNC_TIMEOUT + (m_maxread - m_nred) / BLOCKSYNC_BYTES_PER_SEC);
+		if (SetTimer(BLOCKSYNC_TIMEOUT + (m_maxread - m_nred) / BLOCKSYNC_BYTES_PER_SEC))
+			return;
 	}
 	else
 	{
-		HandleObjReadComplete(boost::system::error_code(), 0, smartobj, AutoCount());	// don't need to increment op count
+		HandleObjReadComplete(boost::system::error_code(), 0, smartobj, AutoCount(this));	// don't need to increment op count, but too much effort to chain the AutoCount from the function calling HandleReadComplete
 	}
 }
 
 void BlockSyncConnection::HandleObjReadComplete(const boost::system::error_code& e, size_t bytes_transferred, SmartBuf smartobj, AutoCount pending_op_counter)
 {
-	CancelTimer();
+	if (CheckOpCount(pending_op_counter))
+		return;
+
+	if (CancelTimer())
+		return;
 
 	m_nred += bytes_transferred;
 
 	bool sim_err = ((TEST_RANDOM_READ_ERRORS & rand()) == 1);
-	if (sim_err) BOOST_LOG_TRIVIAL(info) << Name() << " Conn-" << m_conn_index << " BlockSyncConnection::HandleObjReadComplete simulating read error";
+	if (sim_err) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::HandleObjReadComplete simulating read error";
 
 	if (e || sim_err)
 	{
-		BOOST_LOG_TRIVIAL(info) << Name() << " Conn-" << m_conn_index << " BlockSyncConnection::HandleObjReadComplete error " << e << " " << e.message() << "; read " << bytes_transferred << " of " << m_nred << " of " << m_maxread << " bytes";
+		BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::HandleObjReadComplete error " << e << " " << e.message() << "; read " << bytes_transferred << " of " << m_nred << " of " << m_maxread << " bytes";
 
 		return Stop();
 	}
 
 	if (m_nred != m_maxread)
 	{
-		BOOST_LOG_TRIVIAL(info) << Name() << " Conn-" << m_conn_index << " BlockSyncConnection::HandleObjReadComplete error short read " << m_nred;
+		BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::HandleObjReadComplete error short read " << m_nred;
 
 		return Stop();
 	}
@@ -191,12 +201,12 @@ void BlockSyncConnection::HandleObjReadComplete(const boost::system::error_code&
 
 	if (msgsize != m_nred)
 	{
-		BOOST_LOG_TRIVIAL(info) << Name() << " Conn-" << m_conn_index << " BlockSyncConnection::HandleObjReadComplete error size mismatch msgsize " << msgsize << " != m_nred " << m_nred;
+		BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::HandleObjReadComplete error size mismatch msgsize " << msgsize << " != m_nred " << m_nred;
 
 		return Stop();
 	}
 
-	if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn-" << m_conn_index << " BlockSyncConnection::HandleObjReadComplete read " << m_nred << " bytes msg size " << msgsize;
+	if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::HandleObjReadComplete read " << m_nred << " bytes msg size " << msgsize;
 
 	CCASSERT(msgsize >= CC_MSG_HEADER_SIZE);
 
@@ -205,11 +215,11 @@ void BlockSyncConnection::HandleObjReadComplete(const boost::system::error_code&
 
 	auto obj = (CCObject*)smartobj.data();
 
-	CCASSERT(m_pread == obj->ObjPtr());
+	CCASSERT(m_pread == (char*)obj->ObjPtr());
 
 	if (!obj->IsValid())
 	{
-		BOOST_LOG_TRIVIAL(info) << Name() << " Conn-" << m_conn_index << " BlockSyncConnection::HandleObjReadComplete error object IsValid false";
+		BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::HandleObjReadComplete error object IsValid false";
 
 		return Stop();
 	}
@@ -219,21 +229,21 @@ void BlockSyncConnection::HandleObjReadComplete(const boost::system::error_code&
 
 	if (block->BodySize() < sizeof(BlockWireHeader))
 	{
-		BOOST_LOG_TRIVIAL(info) << Name() << " Conn-" << m_conn_index << " BlockSyncConnection::HandleObjReadComplete error CC_TAG_BLOCK object too small size " << block->BodySize();
+		BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::HandleObjReadComplete error CC_TAG_BLOCK object too small size " << block->BodySize();
 
 		return Stop();
 	}
 
-	if (req_msg.entry.level != wire->level)
+	if (req_msg.entry.level != wire->level.GetValue())
 	{
-		BOOST_LOG_TRIVIAL(info) << Name() << " Conn-" << m_conn_index << " BlockSyncConnection::HandleObjReadComplete error requested block level " << req_msg.entry.level << "; received block level " << wire->level;
+		BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::HandleObjReadComplete error requested block level " << req_msg.entry.level << "; received block level " << wire->level.GetValue();
 
 		return Stop();
 	}
 
 	if (!req_msg.entry.nlevels)
 	{
-		BOOST_LOG_TRIVIAL(info) << Name() << " Conn-" << m_conn_index << " BlockSyncConnection::HandleObjReadComplete error unexpected object";
+		BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::HandleObjReadComplete error unexpected object";
 
 		return Stop();
 	}
@@ -241,7 +251,7 @@ void BlockSyncConnection::HandleObjReadComplete(const boost::system::error_code&
 	auto auxp = block->SetupAuxBuf(smartobj);
 	if (!auxp)
 	{
-		BOOST_LOG_TRIVIAL(error) << Name() << " Conn-" << m_conn_index << " BlockSyncConnection::HandleObjReadComplete error SetupAuxBuf failed";
+		BOOST_LOG_TRIVIAL(error) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::HandleObjReadComplete error SetupAuxBuf failed";
 
 		return Stop();
 	}
@@ -251,9 +261,9 @@ void BlockSyncConnection::HandleObjReadComplete(const boost::system::error_code&
 	int64_t priority = 0;
 
 	prior_oid = &wire->prior_oid;
-	level = wire->level;
+	level = wire->level.GetValue();
 
-	BOOST_LOG_TRIVIAL(debug) << Name() << " Conn-" << m_conn_index << " BlockSyncConnection::HandleObjReadComplete received obj bufp " << (uintptr_t)smartobj.BasePtr() << " tag " << obj->ObjTag() << " size " << obj->ObjSize() << " oid " << buf2hex(obj->OidPtr(), sizeof(ccoid_t));
+	BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::HandleObjReadComplete received obj bufp " << (uintptr_t)smartobj.BasePtr() << " tag " << obj->ObjTag() << " size " << obj->ObjSize() << " oid " << buf2hex(obj->OidPtr(), sizeof(ccoid_t));
 
 	blocksync_dbconn->ProcessQEnqueueValidate(PROCESS_Q_TYPE_BLOCK, smartobj, prior_oid, level, PROCESS_Q_STATUS_PENDING, priority, m_conn_index, m_use_count.load());
 
@@ -264,40 +274,16 @@ void BlockSyncConnection::HandleObjReadComplete(const boost::system::error_code&
 	{
 		StartRead();
 
-		SetTimer(BLOCKSYNC_TIMEOUT);
+		if (SetTimer(BLOCKSYNC_TIMEOUT))
+			return;
 	}
 	else
 		SendReq();
 }
 
-bool BlockSyncConnection::SetTimer(unsigned sec)
-{
-	//if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn-" << m_conn_index << " BlockSyncConnection::SetTimer " << sec;
-
-	auto op_counter = AutoCount();
-	return AsyncTimerWait("BlockSyncConnection::SetTimer", sec*1000, boost::bind(&BlockSyncConnection::HandleTimeout, this, boost::asio::placeholders::error, op_counter), op_counter);
-}
-
-void BlockSyncConnection::HandleTimeout(const boost::system::error_code& e, AutoCount pending_op_counter)
-{
-	if (e == boost::asio::error::operation_aborted)
-	{
-		//if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn-" << m_conn_index << " BlockSyncConnection::HandleTimeout " << uintptr_t(this) << " e = " << e << " " << e.message();
-
-		return;
-	}
-
-	if (g_shutdown)
-		return;
-
-	if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(info) << Name() << " Conn-" << m_conn_index << " BlockSyncConnection::HandleTimeout " << uintptr_t(this) << " e = " << e << " " << e.message();
-
-	Stop();
-}
-
 void BlockSyncConnection::FinishConnection()
 {
-	if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn-" << m_conn_index << " BlockSyncConnection::FinishConnection";
+	if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::FinishConnection";
 
 	if (req_msg.entry.nlevels)
 	{
@@ -363,7 +349,7 @@ void BlockSyncClient::ConnMonitorProc()
 
 uint64_t BlockSyncList::Init()
 {
-	lock_guard<FastSpinLock> lock(m_lock);
+	lock_guard<FastSpinLock> lock(m_block_sync_list_lock);
 
 	m_list.clear();
 	m_next_level = g_blockchain.GetLastIndelibleLevel() + 1;
@@ -373,7 +359,7 @@ uint64_t BlockSyncList::Init()
 
 class BlockSyncEntry BlockSyncList::GetNextEntry()
 {
-	lock_guard<FastSpinLock> lock(m_lock);
+	lock_guard<FastSpinLock> lock(m_block_sync_list_lock);
 
 	if (!m_list.empty())
 	{
@@ -395,7 +381,7 @@ void BlockSyncList::RequeueEntry(class BlockSyncEntry& entry)
 {
 	if (entry.nlevels)
 	{
-		lock_guard<FastSpinLock> lock(m_lock);
+		lock_guard<FastSpinLock> lock(m_block_sync_list_lock);
 
 		m_list.push_back(entry);
 	}
@@ -464,7 +450,12 @@ void BlockSyncClient::ConnectOutgoing()
 
 	if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(info) << Name() << " BlockSyncClient::ConnectOutgoing connecting to " << peer;
 
-	m_service.GetServer(0).ConnectThruTor(peer, g_params.torproxy_port);
+	m_service.GetServer(0).Connect(peer, g_params.torproxy_port, true);
+}
+
+void BlockSyncClient::StartShutdown()
+{
+	m_service.StartShutdown();
 }
 
 void BlockSyncClient::WaitForShutdown()

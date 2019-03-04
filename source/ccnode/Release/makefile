@@ -44,7 +44,7 @@ all: ccnode.exe
 ccnode.exe: $(OBJS) $(USER_OBJS)
 	@echo 'Building target: $@'
 	@echo 'Invoking: Cross G++ Linker'
-	g++ -LC:/CredaCash/source/cclib/Release -LC:/CredaCash/source/3rdparty/Release -LC:/CredaCash/source/cccommon/Release -LC:/CredaCash/depends/boost/stage/lib -LC:/CredaCash/depends/gmp/.libs -static -o "ccnode.exe" $(OBJS) $(USER_OBJS) $(LIBS)
+	g++ $(LDFLAGS) -L$(CREDACASH_BUILD)/source/cclib/Release -L$(CREDACASH_BUILD)/source/cccommon/Release -L$(CREDACASH_BUILD)/source/3rdparty/Release -L$(CREDACASH_BUILD)/depends/boost/stage/lib -L$(CREDACASH_BUILD)/depends/gmp/.libs -o "ccnode.exe" $(OBJS) $(USER_OBJS) $(LIBS) $(LDLIBS)
 	@echo 'Finished building target: $@'
 	@echo ' '
 
@@ -54,6 +54,5 @@ clean:
 	-@echo ' '
 
 .PHONY: all clean dependents
-.SECONDARY:
 
 -include ../makefile.targets

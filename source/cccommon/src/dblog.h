@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * dblog.h
 */
@@ -16,6 +16,8 @@ enum db_statement_type
 	DB_STMT_STEP,
 	DB_STMT_SELECT
 };
+
+#define dbresult(rc) ((rc) & 0xFF)
 
 bool dbiserr(int rc, db_statement_type st = DB_STMT_REG);
 

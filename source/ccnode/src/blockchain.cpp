@@ -1,25 +1,25 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * blockchain.cpp
 */
 
-#include "CCdef.h"
+#include "ccnode.h"
 #include "blockchain.hpp"
 #include "block.hpp"
 #include "witness.hpp"
 #include "commitments.hpp"
 #include "processblock.hpp"
 #include "dbparamkeys.h"
-#include "util.h"
 
 #include <CCobjects.hpp>
 #include <CCcrypto.hpp>
 #include <transaction.h>
+#include <osutil.h>
 
-#include <blake2/blake2b.h>
+#include <blake2/blake2.h>
 #include <ed25519/ed25519.h>
 
 #define TRACE_BLOCKCHAIN		(g_params.trace_blockchain)
@@ -44,7 +44,7 @@ static const uint32_t genesis_file_tag = 0x00474343;	// BBG\0 in little endian f
 
 BlockChain g_blockchain;
 
-static DbConn *Wal_dbconn = NULL;
+static DbConn *Wal_dbconn = NULL;	// not thread safe
 
 void BlockChain::Init()
 {
@@ -54,26 +54,25 @@ void BlockChain::Init()
 
 	auto dbconn = Wal_dbconn;
 
-	// !!! change this for final release:
-	// one CRED = (1 << 50) ~= $10
-	// min allowed bill = (1 << 43) ~= $0.08
-	// donation 2 in 2 out = $0.036
-	// milli CRED = (1 << 40) ~= $0.01
-	// micro CRED = (1 << 30)
-	// nano  CRED = (1 << 20)
-	// pico  CRED = (1 << 10)
-	// femto CRED = 1
-	// max allowed bill  = (1 << 62) = 4096 bills ~= $40,960
-	// max possible bill = (1 << 64) = $163,840
+	#define SET_PROOF_PARAM(var, val) (var##_fp = tx_amount_encode((var = val), true, TX_DONATION_BITS, TX_AMOUNT_EXPONENT_BITS))
 
-	proof_params.donation_per_tx = (uint64_t)1 << 37;
-	proof_params.donation_per_byte = (uint64_t)1 << 30;
-	proof_params.donation_per_output = (uint64_t)1 << 40;
-	proof_params.donation_per_input = (uint64_t)1 << 39;
-	proof_params.proof_param_set = 0;
-	proof_params.outvalmin = (uint64_t)1 << 43;
-	proof_params.outvalmax = (uint64_t)1 << 62;
-	proof_params.invalmax = (uint64_t)1 << 62;
+	SET_PROOF_PARAM(proof_params.minimum_donation,     "2500000000000000000000000");
+	SET_PROOF_PARAM(proof_params.donation_per_tx,      "2500000000000000000000000");
+	SET_PROOF_PARAM(proof_params.donation_per_byte,      "20000000000000000000000");
+	SET_PROOF_PARAM(proof_params.donation_per_output, "20000000000000000000000000");
+	SET_PROOF_PARAM(proof_params.donation_per_input,  "10000000000000000000000000");
+
+	#if 0
+	SET_PROOF_PARAM(proof_params.minimum_donation,		"0");
+	SET_PROOF_PARAM(proof_params.donation_per_tx,		"0");
+	SET_PROOF_PARAM(proof_params.donation_per_byte,		"0");
+	SET_PROOF_PARAM(proof_params.donation_per_output,	"0");
+	SET_PROOF_PARAM(proof_params.donation_per_input,	"0");
+	#endif
+
+	proof_params.outvalmin = 23; //@@!
+	proof_params.outvalmax = 23;
+	proof_params.invalmax = 23;
 
 	uint64_t last_indelible_level;
 
@@ -152,8 +151,8 @@ uint64_t BlockChain::ComputePruneLevel(unsigned min_level, unsigned trailing_rou
 
 	uint64_t prune_level = min_level;
 
-	if (wire->level > trailing_levels)
-		prune_level = wire->level - trailing_levels;
+	if (wire->level.GetValue() > trailing_levels)
+		prune_level = wire->level.GetValue() - trailing_levels;
 
 	if (prune_level < m_startup_prune_level)
 		prune_level = m_startup_prune_level;
@@ -210,7 +209,7 @@ void BlockChain::SetupGenesisBlock(SmartBuf *retobj)
 
 void BlockChain::CreateGenesisDataFiles()
 {
-	auto fd_pub = open_file(g_params.genesis_data_file, O_BINARY | O_WRONLY | O_CREAT | O_TRUNC, S_IRWXU | S_IRGRP | S_IROTH);
+	auto fd_pub = open_file(g_params.genesis_data_file, O_BINARY | O_WRONLY | O_CREAT | O_TRUNC, S_IWUSR | S_IRUSR | S_IRGRP | S_IROTH);
 	if (fd_pub == -1) perror(NULL);
 	CCASSERT(fd_pub != -1);
 
@@ -260,7 +259,7 @@ void BlockChain::CreateGenesisDataFiles()
 		close(fd_priv);
 		if (errno) perror(NULL);
 
-		// !!! don't log the private key in final release
+		//@@! don't log the private key in the final release
 		if (TRACE_SIGNING) BOOST_LOG_TRIVIAL(debug) << "BlockChain::CreateGenesisDataFiles generated witness " << i << " signing public key " << buf2hex(&privkey, sizeof(privkey));
 		if (TRACE_SIGNING) BOOST_LOG_TRIVIAL(debug) << "BlockChain::CreateGenesisDataFiles generated witness " << i << " signing public key " << buf2hex(&pubkey, sizeof(pubkey));
 	}
@@ -273,12 +272,12 @@ void BlockChain::CreateGenesisDataFiles()
 
 bool BlockChain::LoadGenesisDataFiles(BlockAux* auxp)
 {
-	// !!! for now, all witness private signing keys are in the same file; this will change in the final release
+	//@@! for now, all witness private signing keys are in the same file; this will change in the final release
 
 	auto fd = open_file(g_params.genesis_data_file, O_BINARY | O_RDONLY);
 	if (fd == -1)
 	{
-		BOOST_LOG_TRIVIAL(fatal) << "BlockChain::LoadGenesisDataFiles error opening file \"" << g_params.genesis_data_file << "\"; " << strerror(errno);
+		BOOST_LOG_TRIVIAL(fatal) << "BlockChain::LoadGenesisDataFiles error opening file \"" << w2s(g_params.genesis_data_file) << "\"; " << strerror(errno);
 
 		return true;
 	}
@@ -291,7 +290,7 @@ bool BlockChain::LoadGenesisDataFiles(BlockAux* auxp)
 
 	if (datum != genesis_file_tag)
 	{
-		BOOST_LOG_TRIVIAL(fatal) << "BlockChain::LoadGenesisDataFiles invalid genesis data file \"" << g_params.genesis_data_file << "\"";
+		BOOST_LOG_TRIVIAL(fatal) << "BlockChain::LoadGenesisDataFiles invalid genesis data file \"" << w2s(g_params.genesis_data_file) << "\"";
 
 		return true;
 	}
@@ -357,7 +356,7 @@ bool BlockChain::LoadGenesisDataFiles(BlockAux* auxp)
 
 			close(fd);
 
-			// !!! don't log the private key in the final release
+			//@@! don't log the private key in the final release
 			if (TRACE_SIGNING) BOOST_LOG_TRIVIAL(debug) << "BlockChain::LoadGenesisDataFiles witness " << i << " signing private key " << buf2hex(&auxp->witness_params.next_signing_private_key[keynum], sizeof(auxp->witness_params.next_signing_private_key[keynum]));
 		}
 	}
@@ -366,7 +365,7 @@ bool BlockChain::LoadGenesisDataFiles(BlockAux* auxp)
 
 genesis_read_error:
 
-	BOOST_LOG_TRIVIAL(fatal) << "BlockChain::LoadGenesisDataFiles error reading file \"" << g_params.genesis_data_file << "\"; " << strerror(errno);
+	BOOST_LOG_TRIVIAL(fatal) << "BlockChain::LoadGenesisDataFiles error reading file \"" << w2s(g_params.genesis_data_file) << "\"; " << strerror(errno);
 
 	return true;
 }
@@ -416,7 +415,7 @@ void BlockChain::RestoreLastBlocks(DbConn *dbconn, uint64_t last_indelible_level
 			return g_blockchain.SetFatalError(msg);
 		}
 
-		auto rc = dbconn->ParameterSelect(DB_KEY_BLOCK_AUX, wire->level & 63, auxp, (uintptr_t)&auxp->blockchain_params + sizeof(auxp->blockchain_params) - (uintptr_t)auxp);
+		auto rc = dbconn->ParameterSelect(DB_KEY_BLOCK_AUX, wire->level.GetValue() & 63, auxp, (uintptr_t)&auxp->blockchain_params + sizeof(auxp->blockchain_params) - (uintptr_t)auxp);
 		if (rc)
 		{
 			const char *msg = "FATAL ERROR BlockChain::RestoreLastBlocks error in ParameterSelect block aux";
@@ -441,7 +440,7 @@ void BlockChain::RestoreLastBlocks(DbConn *dbconn, uint64_t last_indelible_level
 
 			if (IsWitness())
 			{
-				auto rc = dbconn->ProcessQEnqueueValidate(PROCESS_Q_TYPE_BLOCK, smartobj, &wire->prior_oid, wire->level, PROCESS_Q_STATUS_VALID, 0, 0, 0);
+				auto rc = dbconn->ProcessQEnqueueValidate(PROCESS_Q_TYPE_BLOCK, smartobj, &wire->prior_oid, wire->level.GetValue(), PROCESS_Q_STATUS_VALID, 0, 0, 0);
 
 				if (rc)
 				{
@@ -482,7 +481,7 @@ used for that purpose, since it is updated before the PersistentDB.
 
 */
 
-bool BlockChain::DoConfirmations(DbConn *dbconn, SmartBuf newobj, struct TxPay &txbuf)
+bool BlockChain::DoConfirmations(DbConn *dbconn, SmartBuf newobj, TxPay& txbuf)
 {
 	if (m_have_fatal_error.load())
 	{
@@ -500,7 +499,7 @@ bool BlockChain::DoConfirmations(DbConn *dbconn, SmartBuf newobj, struct TxPay &
 	return rc;
 }
 
-bool BlockChain::DoConfirmationLoop(DbConn *dbconn, SmartBuf newobj, struct TxPay &txbuf)
+bool BlockChain::DoConfirmationLoop(DbConn *dbconn, SmartBuf newobj, TxPay& txbuf)
 {
 	auto block = (Block*)newobj.data();
 	auto wire = block->WireData();
@@ -548,7 +547,7 @@ bool BlockChain::DoConfirmationLoop(DbConn *dbconn, SmartBuf newobj, struct TxPa
 
 	// careful when using these: m_last_indelible_block and m_last_indelible_level may appear momentarily out-of-sync
 	m_last_indelible_block = m_new_indelible_block;
-	m_last_indelible_level = wire->level;
+	m_last_indelible_level = wire->level.GetValue();
 
 	m_new_indelible_block.ClearRef();
 
@@ -562,7 +561,7 @@ bool BlockChain::DoConfirmationLoop(DbConn *dbconn, SmartBuf newobj, struct TxPa
 	return false;
 }
 
-bool BlockChain::DoConfirmOne(DbConn *dbconn, SmartBuf newobj, struct TxPay &txbuf)
+bool BlockChain::DoConfirmOne(DbConn *dbconn, SmartBuf newobj, TxPay& txbuf)
 {
 	auto block = (Block*)newobj.data();
 	auto wire = block->WireData();
@@ -574,7 +573,7 @@ bool BlockChain::DoConfirmOne(DbConn *dbconn, SmartBuf newobj, struct TxPay &txb
 	auto nseqconfsigs = auxp->blockchain_params.nseqconfsigs;
 	auto nskipconfsigs = auxp->blockchain_params.nskipconfsigs;
 
-	if (TRACE_BLOCKCHAIN) BOOST_LOG_TRIVIAL(trace) << "BlockChain::DoConfirmOne starting at level " << wire->level << " witness " << (unsigned)wire->witness << " skip " << auxp->skip << " nwitnesses " << auxp->blockchain_params.nwitnesses << " maxmal " << auxp->blockchain_params.maxmal << " nseqconfsigs " << nseqconfsigs << " nskipconfsigs " << nskipconfsigs << " oid " << buf2hex(&auxp->oid, sizeof(ccoid_t));
+	if (TRACE_BLOCKCHAIN) BOOST_LOG_TRIVIAL(trace) << "BlockChain::DoConfirmOne starting at level " << wire->level.GetValue() << " witness " << (unsigned)wire->witness << " skip " << auxp->skip << " nwitnesses " << auxp->blockchain_params.nwitnesses << " maxmal " << auxp->blockchain_params.maxmal << " nseqconfsigs " << nseqconfsigs << " nskipconfsigs " << nskipconfsigs << " oid " << buf2hex(&auxp->oid, sizeof(ccoid_t));
 
 	unsigned nconfsigs = 1;
 
@@ -589,17 +588,17 @@ bool BlockChain::DoConfirmOne(DbConn *dbconn, SmartBuf newobj, struct TxPay &txb
 
 		// peek back one block
 
-		auto expected_level = wire->level - 1;
+		auto expected_level = wire->level.GetValue() - 1;
 
 		block = (Block*)prior_block.data();
 		wire = block->WireData();
 		auto scan_auxp = block->AuxPtr();
 
-		if (wire->level != expected_level)
+		if (wire->level.GetValue() != expected_level)
 		{
 			const char *msg = "FATAL ERROR BlockChain::DoConfirmOne block level sequence error";
 
-			BOOST_LOG_TRIVIAL(fatal) << msg << " level " << wire->level << " expected level " << expected_level;
+			BOOST_LOG_TRIVIAL(fatal) << msg << " level " << wire->level.GetValue() << " expected level " << expected_level;
 
 			g_blockchain.SetFatalError(msg);
 
@@ -610,7 +609,7 @@ bool BlockChain::DoConfirmOne(DbConn *dbconn, SmartBuf newobj, struct TxPay &txb
 
 		if (scan_auxp->marked_for_indelible)
 		{
-			if (TRACE_BLOCKCHAIN) BOOST_LOG_TRIVIAL(trace) << "BlockChain::DoConfirmOne stopping at already marked for indelible block level " << wire->level << " witness " << (unsigned)wire->witness << " oid " << buf2hex(&scan_auxp->oid, sizeof(ccoid_t));
+			if (TRACE_BLOCKCHAIN) BOOST_LOG_TRIVIAL(trace) << "BlockChain::DoConfirmOne stopping at already marked for indelible block level " << wire->level.GetValue() << " witness " << (unsigned)wire->witness << " oid " << buf2hex(&scan_auxp->oid, sizeof(ccoid_t));
 
 			break;
 		}
@@ -622,7 +621,7 @@ bool BlockChain::DoConfirmOne(DbConn *dbconn, SmartBuf newobj, struct TxPay &txb
 
 		++nconfsigs;
 
-		if (TRACE_BLOCKCHAIN) BOOST_LOG_TRIVIAL(trace) << "BlockChain::DoConfirmOne now have nconfsigs " << nconfsigs << " after scanning block level " << wire->level << " witness " << (unsigned)wire->witness << " skip " << auxp->skip << " oid " << buf2hex(&auxp->oid, sizeof(ccoid_t));
+		if (TRACE_BLOCKCHAIN) BOOST_LOG_TRIVIAL(trace) << "BlockChain::DoConfirmOne now have nconfsigs " << nconfsigs << " after scanning block level " << wire->level.GetValue() << " witness " << (unsigned)wire->witness << " skip " << auxp->skip << " oid " << buf2hex(&auxp->oid, sizeof(ccoid_t));
 	}
 
 	if (m_last_indelible_block && (nconfsigs < nseqconfsigs || (auxp->skip && nconfsigs < nskipconfsigs)))
@@ -636,19 +635,19 @@ bool BlockChain::DoConfirmOne(DbConn *dbconn, SmartBuf newobj, struct TxPay &txb
 	wire = block->WireData();
 	auxp = block->AuxPtr();
 
-	if (TRACE_BLOCKCHAIN) BOOST_LOG_TRIVIAL(trace) << "BlockChain::DoConfirmOne new indelible block level " << wire->level << " witness " << (unsigned)wire->witness << " oid " << buf2hex(&auxp->oid, sizeof(ccoid_t)) << " prior oid " << buf2hex(&wire->prior_oid, sizeof(ccoid_t));
+	if (TRACE_BLOCKCHAIN) BOOST_LOG_TRIVIAL(trace) << "BlockChain::DoConfirmOne new indelible block level " << wire->level.GetValue() << " witness " << (unsigned)wire->witness << " oid " << buf2hex(&auxp->oid, sizeof(ccoid_t)) << " prior oid " << buf2hex(&wire->prior_oid, sizeof(ccoid_t));
 
 	return SetNewlyIndelibleBlock(dbconn, lastobj, txbuf);
 }
 
-bool BlockChain::SetNewlyIndelibleBlock(DbConn *dbconn, SmartBuf smartobj, struct TxPay &txbuf)
+bool BlockChain::SetNewlyIndelibleBlock(DbConn *dbconn, SmartBuf smartobj, TxPay& txbuf)
 {
 	auto block = (Block*)smartobj.data();
 	auto wire = block->WireData();
 	auto auxp = block->AuxPtr();
 
-	auto level = wire->level;
-	auto timestamp = wire->timestamp;
+	auto level = wire->level.GetValue();
+	auto timestamp = wire->timestamp.GetValue();
 	auto prior_oid = &wire->prior_oid;
 
 	// BeginWrite will wait for the checkpoint, so we don't need to do this--and more importantly, it will hang if we already hold the write mutex:
@@ -679,7 +678,7 @@ bool BlockChain::SetNewlyIndelibleBlock(DbConn *dbconn, SmartBuf smartobj, struc
 
 	{
 		//lock_guard<FastSpinLock> lock(g_cout_lock);
-		//cerr << "INDELIBLE BLOCK LEVEL " << wire->level << " witness " << (unsigned)wire->witness << " skip " << auxp->skip << " size " << (block->ObjSize() < 1000 ? " " : "") << block->ObjSize() << " oid " << buf2hex(&auxp->oid, 3, 0) << ".. prior " << buf2hex(&wire->prior_oid, 3, 0) << ".." << endl;
+		//cerr << "INDELIBLE BLOCK LEVEL " << wire->level.GetValue() << " witness " << (unsigned)wire->witness << " skip " << auxp->skip << " size " << (block->ObjSize() < 1000 ? " " : "") << block->ObjSize() << " oid " << buf2hex(&auxp->oid, 3, 0) << ".. prior " << buf2hex(&wire->prior_oid, 3, 0) << ".." << endl;
 	}
 
 	auto last_indelible_block = m_last_indelible_block;
@@ -696,7 +695,7 @@ bool BlockChain::SetNewlyIndelibleBlock(DbConn *dbconn, SmartBuf smartobj, struc
 		auto wire = block->WireData();
 		auto auxp = block->AuxPtr();
 
-		auto expected_level = wire->level + 1;
+		auto expected_level = wire->level.GetValue() + 1;
 
 		if (level != expected_level || memcmp(prior_oid, &auxp->oid, sizeof(ccoid_t)))
 		{
@@ -758,7 +757,7 @@ bool BlockChain::SetNewlyIndelibleBlock(DbConn *dbconn, SmartBuf smartobj, struc
 	return false;
 }
 
-bool BlockChain::IndexTxs(DbConn *dbconn, SmartBuf smartobj, struct TxPay &txbuf)
+bool BlockChain::IndexTxs(DbConn *dbconn, SmartBuf smartobj, TxPay& txbuf)
 {
 	auto bufp = smartobj.BasePtr();
 	auto block = (Block*)smartobj.data();
@@ -766,7 +765,7 @@ bool BlockChain::IndexTxs(DbConn *dbconn, SmartBuf smartobj, struct TxPay &txbuf
 	auto pdata = block->TxData();
 	auto pend = block->ObjEndPtr();
 
-	if (TRACE_SERIALNUM_CHECK) BOOST_LOG_TRIVIAL(trace) << "BlockChain::IndexTxs block level " << wire->level << " bufp " << (uintptr_t)bufp << " objsize " << block->ObjSize() << " pdata " << (uintptr_t)pdata << " pend " << (uintptr_t)pend;
+	if (TRACE_SERIALNUM_CHECK) BOOST_LOG_TRIVIAL(trace) << "BlockChain::IndexTxs block level " << wire->level.GetValue() << " bufp " << (uintptr_t)bufp << " objsize " << block->ObjSize() << " pdata " << (uintptr_t)pdata << " pend " << (uintptr_t)pend;
 
 	while (pdata < pend)
 	{
@@ -788,28 +787,47 @@ bool BlockChain::IndexTxs(DbConn *dbconn, SmartBuf smartobj, struct TxPay &txbuf
 			return true;
 		}
 
+		uint64_t merkle_time, next_commitnum;
+
+		rc = dbconn->CommitRootsSelectLevel(txbuf.param_level, false, merkle_time, next_commitnum, &txbuf.tx_merkle_root, TX_MERKLE_BYTES);
+		if (rc)
+		{
+			const char *msg = "FATAL ERROR BlockChain::IndexTxs error in CommitRootsSelectLevel";
+
+			BOOST_LOG_TRIVIAL(fatal) << msg;
+
+			g_blockchain.SetFatalError(msg);
+
+			return true;
+		}
+
+		tx_set_commit_iv(txbuf);
+
 		CheckCreatePseudoSerialnum(txbuf, pdata, txsize);
 
 		pdata += txsize;
 
 		for (unsigned i = 0; i < txbuf.nin; ++i)
 		{
-			auto rc = dbconn->SerialnumInsert(&txbuf.input[i].S_serialnum, sizeof(txbuf.input[i].S_serialnum));
-			if (rc)
+			if (!txbuf.inputs[i].no_serialnum)
 			{
-				const char *msg = "FATAL ERROR BlockChain::IndexTxs error in SerialnumInsert";
+				auto rc = dbconn->SerialnumInsert(&txbuf.inputs[i].S_serialnum, TX_SERIALNUM_BYTES, &txbuf.inputs[i].S_hashkey, TX_HASHKEY_WIRE_BYTES);
+				if (rc)
+				{
+					const char *msg = "FATAL ERROR BlockChain::IndexTxs error in SerialnumInsert";
 
-				BOOST_LOG_TRIVIAL(fatal) << msg;
+					BOOST_LOG_TRIVIAL(fatal) << msg;
 
-				g_blockchain.SetFatalError(msg);
+					g_blockchain.SetFatalError(msg);
 
-				return true;
+					return true;
+				}
 			}
 		}
 
 		for (unsigned i = 0; i < txbuf.nout; ++i)
 		{
-			auto rc = IndexTxOutputs(dbconn, txbuf.output[i], txbuf.param_level);
+			auto rc = IndexTxOutputs(dbconn, txbuf, txbuf.outputs[i]);
 			if (rc)
 			{
 				const char *msg = "FATAL ERROR BlockChain::IndexTxs error in TxOutputsInsert";
@@ -824,41 +842,56 @@ bool BlockChain::IndexTxs(DbConn *dbconn, SmartBuf smartobj, struct TxPay &txbuf
 	return false;
 }
 
-void BlockChain::CheckCreatePseudoSerialnum(struct TxPay& txbuf, const void *wire, const uint32_t bufsize)
+void BlockChain::CheckCreatePseudoSerialnum(TxPay& txbuf, const void *wire, const uint32_t bufsize)
 {
-	if (txbuf.nin)
-		return;
+	for (unsigned i = 0; i < txbuf.nin && txbuf.tag_type != CC_TYPE_MINT; ++i)
+	{
+		if (!txbuf.inputs[i].no_serialnum)
+			return;
+	}
 
 	txbuf.nin = 1;
+	txbuf.inputs[0].no_serialnum = 0;
 
 	auto obj = (CCObject*)((char*)wire - sizeof(CCObject::Preamble));
-	auto type = obj->ObjTag();
-	CCASSERT(type == CC_TAG_TX_WIRE || type == CC_TAG_TX_BLOCK);
+	uint32_t type = obj->ObjType();
+	CCASSERT(type == CC_TYPE_TXPAY || type == CC_TYPE_MINT);
 
-	auto rc = blake2b(&txbuf.input[0].S_serialnum, sizeof(txbuf.input[0].S_serialnum), NULL, 0, obj->BodyPtr(), obj->BodySize());
+	auto rc = blake2b(&txbuf.inputs[0].S_serialnum, TX_SERIALNUM_BYTES, &type, sizeof(type), obj->BodyPtr(), obj->BodySize());
 	CCASSERTZ(rc);
 
-	if (TRACE_SERIALNUM_CHECK) BOOST_LOG_TRIVIAL(trace) << "BlockChain::CheckCreatePseudoSerialnum created serialnum " << buf2hex(&txbuf.input[0].S_serialnum, sizeof(txbuf.input[0].S_serialnum)) << " from tx size " << obj->BodySize() << " param_level " << txbuf.param_level << " address[0] " << buf2hex(&txbuf.output[0].M_address, sizeof(txbuf.output[0].M_address)) << " commitment[0] " << buf2hex(&txbuf.output[0].M_commitment, sizeof(txbuf.output[0].M_commitment));
+	if (TRACE_SERIALNUM_CHECK) BOOST_LOG_TRIVIAL(trace) << "BlockChain::CheckCreatePseudoSerialnum created serialnum " << buf2hex(&txbuf.inputs[0].S_serialnum, sizeof(txbuf.inputs[0].S_serialnum)) << " from tx size " << obj->BodySize() << " param_level " << txbuf.param_level << " address[0] " << buf2hex(&txbuf.outputs[0].M_address, sizeof(txbuf.outputs[0].M_address)) << " commitment[0] " << buf2hex(&txbuf.outputs[0].M_commitment, sizeof(txbuf.outputs[0].M_commitment));
 }
 
-bool BlockChain::IndexTxOutputs(DbConn *dbconn, struct TxOut& tx, uint64_t param_level)
+bool BlockChain::IndexTxOutputs(DbConn *dbconn, const TxPay& tx, const TxOut& txout)
 {
-	if (TRACE_BLOCKCHAIN) BOOST_LOG_TRIVIAL(trace) << "BlockChain::IndexTxOutputs param_level " << param_level;
+	if (TRACE_BLOCKCHAIN) BOOST_LOG_TRIVIAL(trace) << "BlockChain::IndexTxOutputs";
 
 	auto commitnum = g_commitments.GetNextCommitnum(true);
 
-	auto rc = g_commitments.AddCommitment(dbconn, commitnum, tx.M_commitment);
+	auto rc = g_commitments.AddCommitment(dbconn, commitnum, txout.M_commitment);
 	if (rc)
 		return true;
 
-	dbconn->TxOutputsInsert(&tx.M_address, ADDRESS_BYTES, tx.M_value_enc, param_level, &tx.M_commitment, COMMITMENT_BYTES, commitnum);	// if this fails, we can still continue
+	uint32_t pool;
+	if (TEST_EXTRA_ON_WIRE)
+		pool = txout.M_pool;
+	else
+		pool = g_params.default_pool;
+
+	bool enc_flag = !txout.asset_mask && !txout.amount_mask;	// 1 if values are not encrypted
+	pool = (pool << 1) | enc_flag;								// encode enc_flag with M_pool
+
+	if (!txout.no_address)
+		dbconn->TxOutputsInsert(&txout.M_address, TX_ADDRESS_BYTES, pool, txout.M_asset_enc, txout.M_amount_enc, tx.param_level, commitnum);	// if this fails, we can still continue
 
 	return false;
 }
 
 // returns true if found (or there's an error)
 // if txobj is provided and tx is found in the persistent serialnum db, then txobj is deleted from the validobjs db
-int BlockChain::CheckSerialnums(DbConn *dbconn, SmartBuf topblock, int type, SmartBuf txobj, void *txwire, unsigned txsize, struct TxPay &txbuf)
+// !!! note: this function is not used?
+int BlockChain::CheckSerialnums(DbConn *dbconn, SmartBuf topblock, int type, SmartBuf txobj, void *txwire, unsigned txsize, TxPay& txbuf)
 {
 	auto rc = tx_from_wire(txbuf, (char*)txwire, txsize);
 	if (rc)
@@ -872,7 +905,7 @@ int BlockChain::CheckSerialnums(DbConn *dbconn, SmartBuf topblock, int type, Sma
 
 	for (unsigned i = 0; i < txbuf.nin; ++i)
 	{
-		rc = CheckSerialnum(dbconn, topblock, type, txobj, &txbuf.input[i].S_serialnum, sizeof(txbuf.input[i].S_serialnum));
+		rc = CheckSerialnum(dbconn, topblock, type, txobj, &txbuf.inputs[i].S_serialnum, TX_SERIALNUM_BYTES);
 		if (rc)
 			return rc;
 	}
@@ -889,21 +922,21 @@ int BlockChain::CheckSerialnum(DbConn *dbconn, SmartBuf topblock, int type, Smar
 
 	// check serialnum's in persistent db
 
-	auto result = dbconn->SerialnumCheck(serial, size);
+	auto result = dbconn->SerialnumSelect(serial, size);
 	if (result < 0)
 	{
 		BOOST_LOG_TRIVIAL(error) << "BlockChain::CheckSerialnum error checking persistent serialnums";
 
 		return -1;
 	}
-	else if (result)
+	else if (!result)
 	{
 		if (TRACE_SERIALNUM_CHECK) BOOST_LOG_TRIVIAL(trace) << "BlockChain::CheckSerialnum serialnum in persistent db; deleting from validobjs tx " << (uintptr_t)txobj.BasePtr();
 
 		if (txobj)
 			dbconn->ValidObjsDeleteObj(txobj);
 
-		return 4;
+		return 4;	// !!! don't want to do this yet--need to check if block is on side chain and if so, it's ok?
 	}
 
 	// check serialnum's in temp db
@@ -916,7 +949,7 @@ int BlockChain::CheckSerialnum(DbConn *dbconn, SmartBuf topblock, int type, Smar
 	// make sure tx is not in chain from topblock to first indelible block at same or lower level than last_indelible,
 	// then scan from last_indelible back to same block as above and if tx is in that subchain, the block is valid
 
-	static const int BLOCKARRAYSIZE = TEST_SMALL_BUFS ? 2 : 100;
+	const int BLOCKARRAYSIZE = TEST_SMALL_BUFS ? 2 : 100;
 	void *blockparray[BLOCKARRAYSIZE];
 	void *last_blockp = 0;
 	bool have_more = true;
@@ -966,18 +999,18 @@ bool BlockChain::BlockInChain(void *find_block, SmartBuf smartobj, SmartBuf last
 		auto block = (Block*)smartobj.data();
 		auto wire = block->WireData();
 
-		if (TRACE_SERIALNUM_CHECK) BOOST_LOG_TRIVIAL(trace) << "BlockChain::BlockInChain searching for block " << (uintptr_t)find_block << " at block bufp " << (uintptr_t)bufp << " level " << wire->level;
+		if (TRACE_SERIALNUM_CHECK) BOOST_LOG_TRIVIAL(trace) << "BlockChain::BlockInChain searching for block " << (uintptr_t)find_block << " at block bufp " << (uintptr_t)bufp << " level " << wire->level.GetValue();
 
 		if (bufp == find_block)
 		{
-			if (TRACE_SERIALNUM_CHECK) BOOST_LOG_TRIVIAL(trace) << "BlockChain::BlockInChain found block bufp " << (uintptr_t)find_block << " at level " << wire->level;
+			if (TRACE_SERIALNUM_CHECK) BOOST_LOG_TRIVIAL(trace) << "BlockChain::BlockInChain found block bufp " << (uintptr_t)find_block << " at level " << wire->level.GetValue();
 
 			return true;
 		}
 
-		if (wire->level <= last_indelible_wire->level)
+		if (wire->level.GetValue() <= last_indelible_wire->level.GetValue())
 		{
-			if (TRACE_SERIALNUM_CHECK) BOOST_LOG_TRIVIAL(trace) << "BlockChain::BlockInChain terminating search for block " << (uintptr_t)find_block << " at indelible level " << wire->level << " block bufp " << (uintptr_t)bufp;
+			if (TRACE_SERIALNUM_CHECK) BOOST_LOG_TRIVIAL(trace) << "BlockChain::BlockInChain terminating search for block " << (uintptr_t)find_block << " at indelible level " << wire->level.GetValue() << " block bufp " << (uintptr_t)bufp;
 
 			break;
 		}
@@ -996,10 +1029,10 @@ bool BlockChain::ChainHasDelibleTxs(SmartBuf smartobj, uint64_t last_indelible_l
 		auto block = (Block*)smartobj.data();
 		auto wire = block->WireData();
 
-		if (wire->level <= last_indelible_level)
+		if (wire->level.GetValue() <= last_indelible_level)
 			break;
 
-		if (TRACE_DELIBLETX_CHECK) BOOST_LOG_TRIVIAL(trace) << "BlockChain::ChainHasDelibleTxs checking block at bufp " << (uintptr_t)bufp << " level " << wire->level;
+		if (TRACE_DELIBLETX_CHECK) BOOST_LOG_TRIVIAL(trace) << "BlockChain::ChainHasDelibleTxs checking block at bufp " << (uintptr_t)bufp << " level " << wire->level.GetValue();
 
 		if (block->HasTx())
 		{

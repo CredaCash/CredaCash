@@ -1,24 +1,15 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * connection_manager.cpp
 */
 
 #include "CCdef.h"
+#include "CCboost.hpp"
 #include "connection_manager.hpp"
 #include "server.hpp"
-
-#include <algorithm>
-#include <iostream>
-#ifdef _WIN32
-#include <Winsock2.h>
-#else
-#include <sys/socket.h>
-#endif
-
-using namespace std;
 
 namespace CCServer {
 
@@ -28,8 +19,10 @@ ConnectionManager::~ConnectionManager()
 		delete connection;
 }
 
-void ConnectionManager::Init(unsigned maxconns, unsigned maxincoming, const class ConnectionFactory &connfac)
+void ConnectionManager::Init(unsigned maxconns, unsigned maxincoming, const class ConnectionFactory& connfac)
 {
+	if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " ConnectionManager::Init maxconns " << maxconns << " maxincoming " << maxincoming;
+
 	CCASSERT(m_connections.empty());
 	CCASSERT(m_free_connections.empty());
 
@@ -41,7 +34,13 @@ void ConnectionManager::Init(unsigned maxconns, unsigned maxincoming, const clas
 	for (unsigned i = 0; i < maxconns; ++i)
 	{
 		pconnection_t connection = connfac.NewConnection(*this, m_io_service);
-		m_connections.push_back(connection);
+
+		{
+			lock_guard<FastSpinLock> lock(m_conn_mgr_lock);
+
+			m_connections.push_back(connection);
+		}
+
 		FreeConnection(connection);
 	}
 }
@@ -49,14 +48,18 @@ void ConnectionManager::Init(unsigned maxconns, unsigned maxincoming, const clas
 void ConnectionManager::FreeConnection(pconnection_t connection)
 {
 	if (g_shutdown)
-		return;
+	{
+		if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << connection->m_conn_index << " ConnectionManager::FreeConnection shutting down";
 
-	if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn-" << connection->m_conn_index << " ConnectionManager::FreeConnection";
+		return;
+	}
+
+	if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << connection->m_conn_index << " ConnectionManager::FreeConnection";
 
 	bool was_freed = false;
 
 	{
-		lock_guard<FastSpinLock> lock(m_lock);
+		lock_guard<FastSpinLock> lock(m_conn_mgr_lock);
 
 		if (!connection->m_is_free)
 		{
@@ -72,6 +75,8 @@ void ConnectionManager::FreeConnection(pconnection_t connection)
 
 	if (was_freed && m_free_callback_obj)
 		m_free_callback_obj->HandleFreeConnection();
+
+	if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << connection->m_conn_index << " ConnectionManager::FreeConnection done";
 }
 
 void ConnectionManager::SetFreeConnectionHandler(Server *p)
@@ -81,28 +86,25 @@ void ConnectionManager::SetFreeConnectionHandler(Server *p)
 
 pconnection_t ConnectionManager::GetFreeConnection(bool incoming)
 {
-	pconnection_t connection;
+	lock_guard<FastSpinLock> lock(m_conn_mgr_lock);
 
+	if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " ConnectionManager::GetFreeConnection free " << m_free_connections.size() << " next " << (m_free_connections.size() ? (uintptr_t)m_free_connections.back() : 0) << " incoming " << incoming << " count " << m_incoming_count << " max " << m_maxincoming;
+
+	if (!m_free_connections.size())
+		return NULL;
+
+	if (incoming)
 	{
-		lock_guard<FastSpinLock> lock(m_lock);
-
-		if (!m_free_connections.size())
+		if (m_incoming_count >= m_maxincoming)
 			return NULL;
 
-		if (incoming)
-		{
-			if (m_incoming_count >= m_maxincoming)
-				return NULL;
-
-			++m_incoming_count;
-		}
-
-		connection = m_free_connections.back();
-		m_free_connections.pop_back();
-
-		connection->m_is_free = false;
+		++m_incoming_count;
 	}
 
+	auto connection = m_free_connections.back();
+	m_free_connections.pop_back();
+
+	connection->m_is_free = false;
 	connection->m_incoming = incoming;	// need to set this now to keep count of incoming and outgoing connections
 
 	return connection;
@@ -110,7 +112,7 @@ pconnection_t ConnectionManager::GetFreeConnection(bool incoming)
 
 unsigned ConnectionManager::GetOutgoingConnectionCount()
 {
-	lock_guard<FastSpinLock> lock(m_lock);
+	lock_guard<FastSpinLock> lock(m_conn_mgr_lock);
 
 	//cerr << Name() << " m_connections.size() " << m_connections.size() << " m_free_connections.size() " << m_free_connections.size() << " m_incoming_count " << m_incoming_count << endl;
 
@@ -122,7 +124,7 @@ void ConnectionManager::StopAllConnections()
 	for (auto connection : m_connections)
 	{
 		connection->Stop();
-		connection->WaitForStop();
+		connection->WaitForStopped();
 	}
 }
 
@@ -143,19 +145,21 @@ int get_int_opt(int sockfd, int level, int optname)
 
 void dump_socket_opts(int sockfd)
 {
+	if (sockfd == -1)
+		return;
+
 	cout << endl;
 	cout << "socket # " << sockfd << endl;
 
 	socklen_t optlen;
 
 	struct linger lopt;
-	lopt.l_onoff = -1;
-	lopt.l_linger = -1;
 	optlen = sizeof(lopt);
+	memset(&lopt, -1, optlen);
 	getsockopt(sockfd, SOL_SOCKET, SO_LINGER, (char*)&lopt, &optlen);
 	cout << "SO_LINGER " << lopt.l_onoff << " seconds " << lopt.l_linger << endl;
 
-#ifdef _WIN32
+#ifdef SO_DONTLINGER
 	cout << "SO_DONTLINGER " << get_int_opt(sockfd, SOL_SOCKET,		SO_DONTLINGER) << endl;
 #endif
 	cout << "SO_RCVBUF " << get_int_opt(sockfd, SOL_SOCKET,			SO_RCVBUF) << endl;

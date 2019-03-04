@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * blockserve.hpp
 */
@@ -11,14 +11,12 @@
 #include <ccserver/service.hpp>
 #include <ccserver/connection.hpp>
 
-#include "service_base.hpp"
-
 #include <CCobjdefs.h>
 
 class BlockServeConnection : public CCServer::Connection
 {
 public:
-	BlockServeConnection(class CCServer::ConnectionManager& manager, boost::asio::io_service& io_service, const class CCServer::ConnectionFactory& connfac)
+	BlockServeConnection(class CCServer::ConnectionManagerBase& manager, boost::asio::io_service& io_service, const class CCServer::ConnectionFactoryBase& connfac)
 	 :	CCServer::Connection(manager, io_service, connfac),
 		m_reqlevel(0),
 		m_nreqlevels(0)
@@ -35,13 +33,10 @@ private:
 
 	void DoSend();
 	void HandleBlockWrite(const boost::system::error_code& e, SmartBuf smartobj, AutoCount pending_op_counter);
-
-	bool SetTimer(unsigned sec);
-	void HandleTimeout(const boost::system::error_code& e, AutoCount pending_op_counter);
 };
 
 
-class BlockService : public ServiceBase
+class BlockService : public TorService
 {
 	CCServer::Service m_service;
 
@@ -50,8 +45,8 @@ class BlockService : public ServiceBase
 	void ConnMonitorProc();
 
 public:
-	BlockService(string n, string s)
-	 :	ServiceBase(n, s),
+	BlockService(const string& n, const wstring& d, const string& s)
+	 :	TorService(n, d, s),
 		m_service(n)
 	{ }
 
@@ -66,6 +61,7 @@ public:
 
 	void Start();
 
+	void StartShutdown();
 	void WaitForShutdown();
 };
 

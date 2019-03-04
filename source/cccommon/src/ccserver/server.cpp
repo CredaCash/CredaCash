@@ -1,35 +1,37 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * server.cpp
 */
 
 #include "CCdef.h"
+#include "CCboost.hpp"
 #include "server.hpp"
-
-#include <iostream>
-#include <boost/bind.hpp>
-#include <signal.h>
-
-using namespace std;
+#include "osutil.h"
 
 namespace CCServer {
 
-void Server::Init(const boost::asio::ip::tcp::endpoint& endpoint, unsigned maxconns, unsigned maxincoming, unsigned backlog, const class ConnectionFactory &connfac)
+void Server::Init(const boost::asio::ip::tcp::endpoint& endpoint, unsigned maxconns, unsigned maxincoming, unsigned backlog, const class ConnectionFactory& connfac)
 {
 	if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " Server::Init maxconns " << maxconns << " maxincoming " << maxincoming << " port " << endpoint.port() << " backlog " << backlog;
+
+	lock_guard<FastSpinLock> lock(m_new_connection_lock);	// not really needed, but doesn't hurt
 
 	// Register to handle the signals that indicate when the CCServer should exit.
 	// It is safe to register for the same signal multiple times in a program,
 	// provided all registration for the specified signal is made through Asio.
+	#if 0 // no longer using asio to trap signals for shutdown
 	m_signals.add(SIGINT);
 	m_signals.add(SIGTERM);
 	#if defined(SIGQUIT)
 	m_signals.add(SIGQUIT);
 	#endif
-	m_signals.async_wait(boost::bind(&Server::HandleStop, this));
+	#endif
+
+	// this async_wait prevents io_service::run() from terminating early
+	m_signals.async_wait(boost::bind(&Server::HandleSignals, this));
 
 	m_connection_manager.Init(maxconns, maxincoming, connfac);
 	m_connection_manager.SetFreeConnectionHandler(this);
@@ -45,16 +47,28 @@ void Server::Init(const boost::asio::ip::tcp::endpoint& endpoint, unsigned maxco
 
 	// !!! note: also need to check /proc/sys/net/ipv4/tcp_rmem and /proc/sys/net/ipv4/tcp_wmem
 
-	m_acceptor.set_option(boost::asio::ip::tcp::acceptor::reuse_address(true));
+	// SO_REUSEADDR allows the server to be restarted if a prior instance was killed and the port state isn't clean
+	// but it also allows two instances of the server to run at the same time, which can cause problems
+	//set_int_opt(m_acceptor.native_handle(), SOL_SOCKET, SO_REUSEADDR, 1);
 
-#ifndef _WIN32
-	set_int_opt(m_acceptor.native_handle(), SOL_SOCKET, SO_REUSEPORT, 1);
+#ifdef _WIN32
+	// prevent duplicate port use
+	set_int_opt(m_acceptor.native_handle(), SOL_SOCKET, SO_EXCLUSIVEADDRUSE, 1);
+#else
+	// SO_REUSEPORT allows load distribution, but could have the same tradeoff as SO_REUSEADDR
+	//set_int_opt(m_acceptor.native_handle(), SOL_SOCKET, SO_REUSEPORT, 1);
 	set_int_opt(m_acceptor.native_handle(), IPPROTO_IP, IP_MTU_DISCOVER, 0);
 	set_int_opt(m_acceptor.native_handle(), IPPROTO_TCP, TCP_DEFER_ACCEPT, 1);
 	if (!connfac.m_noclose)
 		set_int_opt(m_acceptor.native_handle(), IPPROTO_TCP, TCP_CORK, 1);
 	set_int_opt(m_acceptor.native_handle(), IPPROTO_TCP, TCP_LINGER2, 1);
 #endif
+
+	struct linger lopt;
+	memset(&lopt, 0, sizeof(lopt));
+	lopt.l_onoff = 1;
+	lopt.l_linger = 15;
+	setsockopt(m_acceptor.native_handle(), SOL_SOCKET, SO_LINGER, (char*)&lopt, sizeof(lopt));
 
 	//set_int_opt(m_acceptor.native_handle(), IPPROTO_TCP, TCP_MAXRT, 40);
 
@@ -72,43 +86,50 @@ void Server::Init(const boost::asio::ip::tcp::endpoint& endpoint, unsigned maxco
 		backlog = 0x7fff;
 
 	m_acceptor.listen(backlog);
-
-	StartAccept();
 }
 
 void Server::Run()
 {
-	if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " Server::Run";
+	m_startup_backlog--;
+
+	if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " Server::Run startup backlog " << m_startup_backlog.load();
 
 	// The io_service::run() call will block until all asynchronous operations
-	// have finished. While the server is running, there is always at least one
-	// asynchronous operation outstanding: the asynchronous accept call waiting
-	// for new incoming connections.
+	// have finished.
 
 	m_io_service.run();
+
+	if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " Server::Run done";
 }
 
-void Server::StartAccept(bool m_new_connection_has_been_used)
+void Server::StartAccept(bool new_connection_used)
 {
+	//if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " Server::StartAccept acquiring m_new_connection_lock...";
+
 	lock_guard<FastSpinLock> lock(m_new_connection_lock);
 
+	StartAcceptWithLock(new_connection_used);
+}
+
+void Server::StartAcceptWithLock(bool new_connection_used)
+{
 	if (!m_acceptor.is_open())
 	{
-		//BOOST_LOG_TRIVIAL(info) << Name() << " Server::StartAccept acceptor is closed";
+		//if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " Server::StartAccept acceptor is closed";
 
 		return;
 	}
 
-	if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " Server::StartAccept last new connection " << m_new_connection << ", used = " << m_new_connection_has_been_used;
+	if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " Server::StartAccept last new connection Conn " << (m_new_connection ? m_new_connection->m_conn_index : 0) << ", used = " << new_connection_used;
 
-	if (m_new_connection && !m_new_connection_has_been_used)
+	if (m_new_connection && !new_connection_used)
 	{
 		if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " Server::StartAccept already accepting";
 
 		return;
 	}
 
-	if (!m_new_connection || m_new_connection_has_been_used)
+	if (!m_new_connection || new_connection_used)
 	{
 		if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " Server::StartAccept fetching new connection";
 
@@ -120,7 +141,8 @@ void Server::StartAccept(bool m_new_connection_has_been_used)
 		#define USE_TEMP_HACK_FOR_WIN32_SOCKETS 0
 		#if USE_TEMP_HACK_FOR_WIN32_SOCKETS
 		// this hack allows other threads to accept connections without SO_REUSEPORT (i.e., Windows), but when the threads run out, no more connections will be accepted
-		m_acceptor.close();
+		boost::system::error_code ec;
+		m_acceptor.close(ec);
 		BOOST_LOG_TRIVIAL(warning) << Name() << " Server::StartAccept WARNING: temporary hack--listening socket closed--when all listening sockets closed, the server will stop working...";
 		#endif
 
@@ -131,39 +153,36 @@ void Server::StartAccept(bool m_new_connection_has_been_used)
 
 	m_acceptor.async_accept(m_new_connection->m_socket, boost::bind(&Server::HandleAccept, this, boost::asio::placeholders::error));
 
-	if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn-" << m_new_connection->m_conn_index << " Server::StartAccept now accepting";
+	if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_new_connection->m_conn_index << " Server::StartAccept now accepting";
 }
 
 void Server::HandleAccept(const boost::system::error_code& e)
 {
-	if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " Server::HandleAccept";
+	if (e) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_new_connection->m_conn_index << " Server::HandleAccept after error " << e << " " << e.message();
+	else if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " Server::HandleAccept";
 
+	lock_guard<FastSpinLock> lock(m_new_connection_lock);
+
+	// Check whether the server was stopped by a signal before this completion
+	// handler had a chance to run.
+	if (!m_acceptor.is_open())
 	{
-		lock_guard<FastSpinLock> lock(m_new_connection_lock);
+		BOOST_LOG_TRIVIAL(info) << Name() << " Server::HandleAccept acceptor is closed";
 
-		// Check whether the server was stopped by a signal before this completion
-		// handler had a chance to run.
-		if (!m_acceptor.is_open())
-		{
-			BOOST_LOG_TRIVIAL(info) << Name() << " Server::HandleAccept acceptor is closed";
-
-			return;
-		}
+		return;
 	}
 
 	if (e)
-	{
-		BOOST_LOG_TRIVIAL(info) << Name() << " Conn-" << m_new_connection->m_conn_index << " Server::HandleAccept after error " << e << " " << e.message();
-
-		StartAccept();
-	}
+		StartAcceptWithLock(false);
 	else
 	{
-		if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn-" << m_new_connection->m_conn_index << " Server::HandleAccept starting connection";
+		if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_new_connection->m_conn_index << " Server::HandleAccept starting connection";
 
-		m_new_connection->Post(boost::bind(&Connection::StartIncomingConnection, m_new_connection));
+		m_new_connection->InitNewConnection();
 
-		StartAccept(true);
+		m_new_connection->Post("Server::HandleAccept", boost::bind(&Connection::HandleStartIncomingConnection, m_new_connection, AutoCount(m_new_connection)));
+
+		StartAcceptWithLock(true);
 	}
 }
 
@@ -174,9 +193,9 @@ void Server::HandleFreeConnection()
 	StartAccept();
 }
 
-pconnection_t Server::Connect(const string& host, unsigned port)
+pconnection_t Server::Connect(const string& host, unsigned port, bool use_tor)
 {
-	auto connection = m_connection_manager.GetFreeConnection(false);
+	auto connection = m_connection_manager.GetFreeConnection();
 
 	if (!connection)
 	{
@@ -185,36 +204,54 @@ pconnection_t Server::Connect(const string& host, unsigned port)
 		return NULL;
 	}
 
-	BOOST_LOG_TRIVIAL(info) << Name() << " Conn-" << connection->m_conn_index << " Server::Connect " << host;
+	BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << connection->m_conn_index << " Server::Connect " << host;
 
-	connection->Post(boost::bind(&Connection::ConnectOutgoing, connection, host, port));
+	connection->InitNewConnection();
 
-	return connection;
-}
-
-pconnection_t Server::ConnectThruTor(const string& host, unsigned proxy_port)
-{
-	auto connection = m_connection_manager.GetFreeConnection(false);
-
-	if (!connection)
+	int rc;
+	static const string null;
+	if (use_tor)
+		rc = connection->Post("Server::Connect", boost::bind(&Connection::HandleConnectOutgoingTor, connection, port, host, ref(null), AutoCount(connection)));
+	else
+		rc = connection->Post("Server::Connect", boost::bind(&Connection::HandleConnectOutgoing, connection, host, port, AutoCount(connection)));
+	if (rc)
 	{
-		BOOST_LOG_TRIVIAL(warning) << Name() << " Server::ConnectThruTor no connection available";
+		BOOST_LOG_TRIVIAL(trace) << Name() << " Server::Connect post failed m_stopping " << m_stopping.load();
+
+		connection->FreeConnection();
 
 		return NULL;
 	}
 
-	BOOST_LOG_TRIVIAL(info) << Name() << " Conn-" << connection->m_conn_index << " Server::ConnectThruTor " << host;
-
-	connection->Post(boost::bind(&Connection::ConnectOutgoingTor, connection, host, proxy_port));
-
 	return connection;
+}
+
+void Server::HandleSignals()
+{
+	BOOST_LOG_TRIVIAL(info) << Name() << " Server::HandleSignals";
+
+	start_shutdown();
+}
+
+void Server::AsyncStop()
+{
+	BOOST_LOG_TRIVIAL(info) << Name() << " Server::AsyncStop posting stop";
+
+	m_io_service.post(boost::bind(&Server::HandleStop, this));
 }
 
 void Server::HandleStop()
 {
-	BOOST_LOG_TRIVIAL(info) << Name() << " Server::HandleStop shutting down...";
+	auto already_stopping = m_stopping.fetch_add(1);
 
-	g_shutdown = true;
+	if (already_stopping)
+	{
+		BOOST_LOG_TRIVIAL(info) << Name() << " Server::HandleStop already stopping " << already_stopping;
+
+		return;
+	}
+
+	BOOST_LOG_TRIVIAL(info) << Name() << " Server::HandleStop shutting down...";
 
 	{
 		lock_guard<FastSpinLock> lock(m_new_connection_lock);
@@ -222,10 +259,16 @@ void Server::HandleStop()
 		// The server is stopped by cancelling all outstanding asynchronous
 		// operations. Once all operations have finished the io_service::run() call
 		// will exit.
-		m_acceptor.close();
+		boost::system::error_code ec;
+		m_signals.cancel(ec);
+		m_acceptor.close(ec);
 	}
 
+	BOOST_LOG_TRIVIAL(info) << Name() << " Server::HandleStop closed acceptor";
+
 	m_connection_manager.StopAllConnections();
+
+	BOOST_LOG_TRIVIAL(info) << Name() << " Server::HandleStop done";
 }
 
 } // namespace CCServer

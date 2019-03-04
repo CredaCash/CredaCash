@@ -44,7 +44,7 @@ all: cctracker.exe
 cctracker.exe: $(OBJS) $(USER_OBJS)
 	@echo 'Building target: $@'
 	@echo 'Invoking: Cross G++ Linker'
-	g++ -LC:/CredaCash/depends/boost/stage/lib -LC:/CredaCash/source/cccommon/Debug -LC:/CredaCash/source/3rdparty/Debug -o "cctracker.exe" $(OBJS) $(USER_OBJS) $(LIBS)
+	g++ $(LDFLAGS) -L$(CREDACASH_BUILD)/source/cccommon/Debug -L$(CREDACASH_BUILD)/source/3rdparty/Debug -L$(CREDACASH_BUILD)/depends/boost/stage/lib -o "cctracker.exe" $(OBJS) $(USER_OBJS) $(LIBS) $(LDLIBS)
 	@echo 'Finished building target: $@'
 	@echo ' '
 
@@ -54,6 +54,5 @@ clean:
 	-@echo ' '
 
 .PHONY: all clean dependents
-.SECONDARY:
 
 -include ../makefile.targets

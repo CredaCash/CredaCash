@@ -1,27 +1,22 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * service.cpp
 */
 
 #include "CCdef.h"
+#include "CCboost.hpp"
 #include "service.hpp"
 #include "server.hpp"
-
-#include <CCthread.hpp>
-#include <boost/bind.hpp>
-
-#include <iostream>
-
-using namespace std;
+#include "CCthread.hpp"
 
 CCThreadFactory CCDefaultThreadFac;
 
 namespace CCServer {
 
-void Service::Start(const boost::asio::ip::tcp::endpoint& endpoint, unsigned nthreads, unsigned maxconns, unsigned maxincoming, unsigned backlog, const class ConnectionFactory &connfac, const class CCThreadFactory &threadfac)
+void Service::Start(const boost::asio::ip::tcp::endpoint& endpoint, unsigned nthreads, unsigned maxconns, unsigned maxincoming, unsigned backlog, const class ConnectionFactory& connfac, const class CCThreadFactory& threadfac)
 {
 	BOOST_LOG_TRIVIAL(info) << Name() << " Service::Init nthreads " << nthreads << " maxconns " << maxconns << " maxincoming " << maxincoming << " backlog " << backlog;
 
@@ -42,11 +37,13 @@ void Service::Start(const boost::asio::ip::tcp::endpoint& endpoint, unsigned nth
 	unsigned connections_per_server = (maxconns + nservers - 1)/nservers;
 	unsigned incoming_connections_per_server = (maxincoming + nservers - 1)/nservers;
 
-	if (threads_per_server < 20)
-		threads_per_server = 20;	// make sure we have enough threads to shutdown
-
 	if (connections_per_server < 1)
 		connections_per_server = 1;
+
+	if (threads_per_server < 1)
+		threads_per_server = 1;
+
+	threads_per_server += 20;		// add some extra threads to avoid deadlocks
 
 	m_servers.reserve(nservers);
 	m_threads.reserve(threads_per_server * nservers);
@@ -58,13 +55,29 @@ void Service::Start(const boost::asio::ip::tcp::endpoint& endpoint, unsigned nth
 
 		s->Init(endpoint, connections_per_server, incoming_connections_per_server, backlog, connfac);
 
-		for (unsigned j = 0; j < threads_per_server && !g_shutdown; ++j)
+		for (unsigned j = 0; j < threads_per_server; ++j)
 		{
+			if (g_shutdown && j > 20)
+				break;
+
+			s->m_startup_backlog++;
+
+			while (s->m_startup_backlog.load() > 8)
+				usleep(1000);
+
 			auto t = threadfac.NewThread();
 			t->Run(boost::bind(&Server::Run, s));
 			m_threads.push_back(t);
 		}
+
+		s->HandleFreeConnection();
 	}
+}
+
+void Service::StartShutdown()
+{
+	for (auto s : m_servers)
+		s->AsyncStop();
 }
 
 void Service::WaitForShutdown()

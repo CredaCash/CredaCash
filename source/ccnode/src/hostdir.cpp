@@ -1,40 +1,34 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * hostdir.cpp
 */
 
-#include "CCdef.h"
+#include "ccnode.h"
 #include "hostdir.hpp"
 #include "socks.hpp"
-#include "service_base.hpp"
 #include "relay.hpp"
 #include "blockserve.hpp"
 
 #include <CCcrypto.hpp>
-#include <boost/filesystem/fstream.hpp>
-#include <boost/algorithm/string.hpp>
 
 #define MAX_SAVED_HOSTS		200
-#define MAX_REPLY_HOSTS		(20+10)
-#define MAX_DIR_REPLY_SIZE	((16 + 3)*MAX_REPLY_HOSTS + 200)
+#define MAX_DIR_REPLY_SIZE	((TOR_HOSTNAME_CHARS + 3)*(RELAY_QUERY_MAX_NAMES + BLOCK_QUERY_MAX_NAMES) + 200)
 
 #define TRACE_HOSTDIR	(g_params.trace_host_dir)
-
-// .onion addresses are 16 characters in base32 = 10 bytes
 
 bool HostDir::Init()
 {
 	if (m_directory_servers.size())
 	{
-		BOOST_LOG_TRIVIAL(trace) << " HostDir::Init already initialized";
+		BOOST_LOG_TRIVIAL(trace) << "HostDir::Init already initialized";
 
 		return false;
 	}
 
-	BOOST_LOG_TRIVIAL(trace) << " HostDir::Init file \"" << g_params.directory_servers_file << "\"";
+	BOOST_LOG_TRIVIAL(trace) << "HostDir::Init file \"" << w2s(g_params.directory_servers_file) << "\"";
 
 	CCASSERT(g_params.directory_servers_file.length());
 
@@ -42,7 +36,7 @@ bool HostDir::Init()
 	fs.open(g_params.directory_servers_file, fstream::in);
 	if(!fs.is_open())
 	{
-		BOOST_LOG_TRIVIAL(error) << " HostDir::Init error opening private relay hosts file \"" << g_params.directory_servers_file << "\"";
+		BOOST_LOG_TRIVIAL(error) << "HostDir::Init error opening private relay hosts file \"" << w2s(g_params.directory_servers_file) << "\"";
 
 		return true;
 	}
@@ -55,7 +49,7 @@ bool HostDir::Init()
 
 		if (fs.fail() && !fs.eof())
 		{
-			BOOST_LOG_TRIVIAL(error) << " HostDir::Init error reading private relay hosts file \"" << g_params.directory_servers_file << "\"";
+			BOOST_LOG_TRIVIAL(error) << "HostDir::Init error reading private relay hosts file \"" << w2s(g_params.directory_servers_file) << "\"";
 
 			return true;
 		}
@@ -74,7 +68,7 @@ bool HostDir::Init()
 
 		if (line.length() > 0)
 		{
-			BOOST_LOG_TRIVIAL(trace) << " HostDir::Init read hostname \"" << line << "\"";
+			BOOST_LOG_TRIVIAL(trace) << "HostDir::Init read hostname \"" << line << "\"";
 
 			m_directory_servers.push_back(line);
 		}
@@ -83,13 +77,30 @@ bool HostDir::Init()
 			break;
 	}
 
-	BOOST_LOG_TRIVIAL(debug) << " HostDir::Init loaded " << m_directory_servers.size() << " private directory hostnames";
+	BOOST_LOG_TRIVIAL(debug) << "HostDir::Init loaded " << m_directory_servers.size() << " private directory hostnames";
 
 	return false;
 }
 
+void HostDir::DeInit()
+{
+	BOOST_LOG_TRIVIAL(trace) << "HostDir::DeInit";
+
+	while (m_query_in_progress.load())
+		usleep(50*1000);
+
+	if (m_socket.is_open())
+	{
+		boost::system::error_code ec;
+		m_socket.close(ec);
+	}
+}
+
 string HostDir::GetHostName(HostType type)
 {
+	if (g_shutdown)
+		return string();
+
 	lock_guard<mutex> lock(classlock);
 
 	if (type < 0 || type >= N_HostTypes || hostnames[type].empty())
@@ -120,7 +131,7 @@ void HostDir::QueryServer()
 
 	if (TRACE_HOSTDIR) BOOST_LOG_TRIVIAL(trace) << "querying directory server " << name << " torproxy port " << g_params.torproxy_port;
 
-	string str = Socks::ConnectString(name);
+	string str = Socks::ConnectString(name, string());
 
 	if (g_relay_service.TorHostname().length())
 		str += "R:" + g_relay_service.TorHostname() + "\n";
@@ -135,22 +146,50 @@ void HostDir::QueryServer()
 
 	string reply(MAX_DIR_REPLY_SIZE, 0);
 
-	auto e = Socks::SendString(g_params.torproxy_port, str, reply);
+	m_query_in_progress = true;
 
-	if (e)
+	boost::system::error_code e(boost::system::errc::operation_canceled, boost::system::generic_category());
+
+	if (!g_shutdown)
+		e = Socks::SendString(m_socket, g_params.torproxy_port, str, reply);
+
+	m_query_in_progress = false;
+
+	if (e || g_shutdown)
 		return;
 
 	//cerr << "directory reply " << reply.length() << " bytes: " << reply << endl;
 
 	if (TRACE_HOSTDIR) BOOST_LOG_TRIVIAL(trace) << "HostDir::QueryServer directory reply: " << reply;
 
-	Json::Reader reader;
-	Json::Value root, value;
+	Json::CharReaderBuilder builder;
+	Json::CharReaderBuilder::strictMode(&builder.settings_);
+	Json::Value root;
+	string errs;
 
-	reader.parse(reply.data(), reply.data() + reply.length(), root);
+	auto reader = builder.newCharReader();
 
-	if (!reader.good())
-		BOOST_LOG_TRIVIAL(error) << "HostDir::QueryServer error parsing reply: " << reader.getFormattedErrorMessages();
+	bool rc;
+
+	try
+	{
+		rc = reader->parse(reply.data(), reply.data() + reply.length(), &root, &errs);
+	}
+	catch (const exception& e)
+	{
+		errs = e.what();
+		rc = false;
+	}
+	catch (...)
+	{
+		errs = "unknown";
+		rc = false;
+	}
+
+	delete reader;
+
+	if (!rc)
+		BOOST_LOG_TRIVIAL(error) << "HostDir::QueryServer error parsing reply: " << errs;
 
 	#if 0
 	cerr << "json root.size() " << root.size() << endl;

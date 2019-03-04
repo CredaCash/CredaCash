@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * CCapi.h
 */
@@ -15,10 +15,14 @@
 
 #ifndef CCAPI
 #ifdef CC_DLL_IMPORTS
+#ifdef _WIN32
 #define CCAPI extern "C" __stdcall __declspec(dllimport) CCRESULT
 #else
+#define CCAPI extern "C" CCRESULT
+#endif // _WIN32
+#else
 #define CCAPI CCRESULT
-#endif
-#endif
+#endif // CC_DLL_IMPORTS
+#endif // CCAPI
 
 #endif

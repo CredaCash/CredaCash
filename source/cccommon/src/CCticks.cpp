@@ -1,15 +1,13 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * CCticks.cpp
 */
 
+#include "CCdef.h"
 #include "CCticks.hpp"
-#include <CCassert.h>
-
-using namespace std;
 
 uint32_t ccticks(clockid_t clock_id)
 {
@@ -29,4 +27,17 @@ int32_t ccticks_elapsed(uint32_t t0, uint32_t t1)
 		return 0;
 	else
 		return diff;
+}
+
+void ccticks_test()
+{
+	for (unsigned i = 0; i < 100; ++i)
+	{
+		auto t0 = ccticks();
+		auto t1 = t0;
+		while (t1 == t0)
+			t1 = ccticks();
+		auto elapsed = ccticks_elapsed(t0, t1);
+		cerr << "ccticks_test elapsed " << elapsed << endl;
+	}
 }

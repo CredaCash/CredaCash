@@ -1,24 +1,19 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * dirserver.cpp
 */
 
-#include "CCdef.h"
+#include "cctracker.h"
 #include "dirserver.h"
 #include "dir.hpp"
 
 #include <ccserver/service.hpp>
 #include <ccserver/connection.hpp>
 
-#include <boost/bind.hpp>
-
 #define TIMEOUT					10
-
-#define RELAY_QUERY_RETURNS		20
-#define BLOCK_QUERY_RETURNS		10
 
 class DirConnection : public CCServer::Connection
 {
@@ -26,9 +21,9 @@ class DirConnection : public CCServer::Connection
 	string m_namestr;
 
 public:
-	DirConnection(class CCServer::ConnectionManager& manager, boost::asio::io_service& io_service, const class CCServer::ConnectionFactory& connfac)
+	DirConnection(class CCServer::ConnectionManagerBase& manager, boost::asio::io_service& io_service, const class CCServer::ConnectionFactoryBase& connfac)
 	:	CCServer::Connection(manager, io_service, connfac),
-		m_namestr(NAME_CHARS, 0)
+		m_namestr(TOR_HOSTNAME_CHARS, 0)
 	{
 		static int rndseed = 0;
 		m_random.seed(time_t() + (rndseed++));
@@ -40,25 +35,12 @@ private:
 	{
 		BOOST_LOG_TRIVIAL(trace) << "StartConnection";
 
-		auto op_counter = AutoCount();
-		if (AsyncTimerWait("BlockServeConnection::SetTimer", TIMEOUT*1000, boost::bind(&DirConnection::HandleTimeout, this, boost::asio::placeholders::error, op_counter), op_counter))
+		m_conn_state = CONN_CONNECTED;
+
+		if (SetTimer(TIMEOUT))
 			return;
 
-		Connection::StartConnection();
-	}
-
-	void HandleTimeout(const boost::system::error_code& e, AutoCount pending_op_counter)
-	{
-		if (e == boost::asio::error::operation_aborted)
-		{
-			//BOOST_LOG_TRIVIAL(trace) << "HandleTimeout " << uintptr_t(this) << " e = " << e << " " << e.message();
-
-			return;
-		}
-
-		BOOST_LOG_TRIVIAL(info) << "HandleTimeout " << uintptr_t(this) << " e = " << e << " " << e.message();
-
-		Stop();
+		StartRead();
 	}
 
 	void HandleReadComplete()
@@ -77,9 +59,8 @@ private:
 		//		str += "R:" + g_relay_service.TorHostname() + "\n"
 		//		str += "B:" + g_blockserve_service.TorHostname() + "\n"
 		//		str += "QRB\0";
-		// TorHostname's are 16 chars
 
-		const unsigned max_msg_len = (NAME_CHARS+3)*2 + 4;
+		const unsigned max_msg_len = (TOR_HOSTNAME_CHARS+3)*2 + 4;
 
 		if (m_nred > max_msg_len)
 		{
@@ -104,19 +85,19 @@ private:
 		{
 			if (m_pread[scan] == 'R' && m_pread[scan+1] == ':')
 			{
-				relayname = (char*)&m_pread[scan+2];
+				relayname = &m_pread[scan+2];
 				scan += 3 + relayname.length();
 				BOOST_LOG_TRIVIAL(trace) << "DirConnection relayname " << relayname;
 			}
 			else if (m_pread[scan] == 'B' && m_pread[scan+1] == ':')
 			{
-				blockname = (char*)&m_pread[scan+2];
+				blockname = &m_pread[scan+2];
 				scan += 3 + blockname.length();
 				BOOST_LOG_TRIVIAL(trace) << "DirConnection blockname " << blockname;
 			}
 		}
 
-		if (strcmp((char*)&m_pread[scan], "QRB"))
+		if (strcmp(&m_pread[scan], "QRB"))
 		{
 			BOOST_LOG_TRIVIAL(debug) << "DirConnection unrecognized query " << &m_pread[scan];
 
@@ -129,25 +110,25 @@ private:
 		if (blockname.length())
 			g_blockdir.Add(blockname);
 
-		const unsigned nrelay = RELAY_QUERY_RETURNS;
-		const unsigned nblock = BLOCK_QUERY_RETURNS;
+		const unsigned nrelay = RELAY_QUERY_MAX_NAMES;
+		const unsigned nblock = BLOCK_QUERY_MAX_NAMES;
 		unsigned seed = m_random();
 		unsigned bufpos = 0;
 
 		char json1[] = "{\"Relay\":[";
-		strcpy((char*)&m_pread[bufpos], json1);
+		strcpy(&m_pread[bufpos], json1);
 		bufpos += sizeof(json1) - 1;
 
 		g_relaydir.PickN(seed, nrelay, m_namestr, &m_pread[0], bufpos);
 
 		char json2[] = "],\"Block\":[";
-		strcpy((char*)&m_pread[bufpos], json2);
+		strcpy(&m_pread[bufpos], json2);
 		bufpos += sizeof(json2) - 1;
 
 		g_blockdir.PickN(seed, nblock, m_namestr, &m_pread[0], bufpos);
 
 		char json3[] = "]}";
-		strcpy((char*)&m_pread[bufpos], json3);
+		strcpy(&m_pread[bufpos], json3);
 		bufpos += sizeof(json3) - 1;
 
 		m_pread[bufpos++] = 0;
@@ -179,7 +160,7 @@ void RunServer()
 	//add_test_names(g_blockdir, 'z');	// for testing
 
 	// unsigned conn_nreadbuf, unsigned conn_nwritebuf, unsigned sock_nreadbuf, unsigned sock_nwritebuf, unsigned headersize, bool noclose, bool bregister
-	CCServer::ConnectionFactoryInstantiation<DirConnection> connfac((NAME_CHARS+3)*(RELAY_QUERY_RETURNS+BLOCK_QUERY_RETURNS+1) + 80, 0, 0, 0, 0, 0, 0);
+	CCServer::ConnectionFactoryInstantiation<DirConnection> connfac((TOR_HOSTNAME_CHARS+3)*(RELAY_QUERY_MAX_NAMES+BLOCK_QUERY_MAX_NAMES+1) + 80, 0, 0, 0, 0, 0, 0);
 
 	CCServer::Service s("Directory Service");
 
@@ -187,6 +168,9 @@ void RunServer()
 	s.Start(boost::asio::ip::tcp::endpoint(boost::asio::ip::address::from_string(LOCALHOST), g_port),
 			g_nthreads, g_nthreads*g_nconns, g_nthreads*g_nconns, 0, connfac);
 
+	wait_for_shutdown();
+
+	s.StartShutdown();
 	s.WaitForShutdown();
 
 	g_relaydir.DeInit();

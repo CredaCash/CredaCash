@@ -1,12 +1,12 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * dir.cpp
 */
 
-#include "CCdef.h"
+#include "cctracker.h"
 #include "dir.hpp"
 
 #include <CCutil.h>
@@ -33,7 +33,7 @@ void Dir::DeInit()
 
 	BOOST_LOG_TRIVIAL(info) << m_label << ": cleaning up...";
 
-	lock_guard<mutex> lock(m_lock);
+	lock_guard<mutex> lock(m_dir_lock);
 
 #if 0	// for testing
 	for (uint64_t i = 0; i < m_hash_size; ++i)
@@ -60,24 +60,27 @@ void Dir::Init(const char* label, int memfrac)
 
 	strcpy(m_label, label);
 
-	uint64_t nbytes = ((uint64_t)g_datamem) << 30;
+	// note: bytes per entry ~= 64 = (35 + 4) + (35*70 + 50)/100
+	//	(1<<23) bytes would then hold (1<<23) * 0.95 / 64 = 125K entries
+
+	uint64_t nbytes = ((uint64_t)g_datamem) << 23;
 	nbytes = (nbytes * memfrac) / 1000;
-	//nbytes = 50*(2*NAME_BYTES + POINTER_BYTES);	// for testing
-	uint64_t hash_entries = nbytes/(unsigned)((NAME_BYTES + POINTER_BYTES) + NAME_BYTES * g_hashfill/100U);
-	uint64_t hash_bytes = hash_entries * (NAME_BYTES + POINTER_BYTES);
-	uint64_t list_entries = (nbytes - hash_bytes) / NAME_BYTES;
-	uint64_t list_bytes = list_entries * NAME_BYTES;
+	//nbytes = 50*(2*TOR_HOSTNAME_BYTES + POINTER_BYTES);	// for testing
+	uint64_t hash_entries = nbytes/(unsigned)((TOR_HOSTNAME_BYTES + POINTER_BYTES) + (TOR_HOSTNAME_BYTES * g_hashfill + 50U)/100U);
+	uint64_t hash_bytes = hash_entries * (TOR_HOSTNAME_BYTES + POINTER_BYTES);
+	uint64_t list_entries = (nbytes - hash_bytes) / TOR_HOSTNAME_BYTES;
+	uint64_t list_bytes = list_entries * TOR_HOSTNAME_BYTES;
 	nbytes = hash_bytes + list_bytes;
 
 	BOOST_LOG_TRIVIAL(info) << m_label << ": Hash table entries " << hash_entries << " nbytes " << hash_bytes;
 	BOOST_LOG_TRIVIAL(info) << m_label << ": List entries " << list_entries << " nbytes " << list_bytes;
 	BOOST_LOG_TRIVIAL(info) << m_label << ": Total memory " << nbytes;
 
-	CCASSERT(sizeof(hostname_t) == NAME_BYTES);
+	CCASSERT(sizeof(hostname_t) == TOR_HOSTNAME_BYTES);
 	CCASSERT(sizeof(pointer_t) == POINTER_BYTES);
-	CCASSERT(sizeof(hashentry_t) == NAME_BYTES + POINTER_BYTES);
+	CCASSERT(sizeof(hashentry_t) == TOR_HOSTNAME_BYTES + POINTER_BYTES);
 
-	char *p = (char *)malloc(nbytes);
+	char *p = (char*)malloc(nbytes);
 	if (!p)
 	{
 			BOOST_LOG_TRIVIAL(fatal) << m_label << ": FATAL ERROR: Unable to allocate memory for directory data";
@@ -106,7 +109,7 @@ void Dir::Init(const char* label, int memfrac)
 
 	random_device rd;
 
-	if (rd.entropy() < 8*sizeof(unsigned) - 1)
+	if (rd.entropy() < sizeof(unsigned)*CHAR_BIT - 1)
 		BOOST_LOG_TRIVIAL(warning) << m_label << " random_device reports low entropy of " << rd.entropy();
 
 	for (unsigned i = 0; i < sizeof(m_hash_key); ++i)
@@ -134,7 +137,7 @@ uint64_t Dir::HashIndex(const string& namestr, hostname_t& name) const
 
 uint64_t Dir::HashIndex2(const string& namestr, const hostname_t& name) const
 {
-	uint64_t hash_index = sip_hash24(&m_hash_key[0], &name.bytes[0], NAME_BYTES, false) % m_hash_size;
+	uint64_t hash_index = siphash(&m_hash_key[0], &name[0], sizeof(hostname_t)) % m_hash_size;
 
 	//BOOST_LOG_TRIVIAL(trace) << m_label << ": hostname " << namestr << " hashes to " << hash_index;
 
@@ -150,14 +153,15 @@ int Dir::Add(const string& namestr)
 	if (hash_index == NULL_INDEX)
 		return -1;
 
-	lock_guard<mutex> lock(m_lock);
+	lock_guard<mutex> lock(m_dir_lock);
 
 	// prepare to add to hashlist
 
 	if (m_list_nentries == m_list_size)
 	{
 		BOOST_LOG_TRIVIAL(trace) << m_label << ": no room in hashlist for hostname " << namestr;
-		return (unsigned)(-1);
+
+		return -1;
 	}
 
 	// prepare to add to hashtable
@@ -186,6 +190,7 @@ int Dir::Add(const string& namestr)
 		else if (CompareHostnames(m_hashtable[hash_find].hostname, name))
 		{
 			BOOST_LOG_TRIVIAL(trace) << m_label << ": hostname " << namestr << " already in hashtable at " << hash_find << " (start " << hash_index << ")";
+
 			return Update(namestr, name, hash_find);
 		}
 
@@ -249,7 +254,7 @@ void Dir::AddList(const string& namestr, const hostname_t& name, uint64_t hash_f
 }
 
 
-void Dir::PickN(unsigned seed, unsigned n, string& namestr, uint8_t *buf, unsigned &bufpos)
+void Dir::PickN(unsigned seed, unsigned n, string& namestr, char *buf, unsigned &bufpos)
 {
 	auto ne = m_list_nentries;
 
@@ -308,7 +313,7 @@ void Dir::Delete(const string& namestr)
 	if (hash_index == NULL_INDEX)
 		return;
 
-	lock_guard<mutex> lock(m_lock);
+	lock_guard<mutex> lock(m_dir_lock);
 
 	uint64_t hash_find = Find2(namestr, name, hash_index);
 	if (hash_find == NULL_INDEX)
@@ -332,7 +337,7 @@ void Dir::Delete(const string& namestr)
 
 void Dir::ExpireHead()
 {
-	lock_guard<mutex> lock(m_lock);
+	lock_guard<mutex> lock(m_dir_lock);
 
 	if (m_list_nentries == 0)
 		return;
@@ -351,7 +356,7 @@ void Dir::ExpireHead()
 		return;
 	}
 
-	string namestr(NAME_CHARS, 0);
+	string namestr(TOR_HOSTNAME_CHARS, 0);
 	NameToString(name, namestr);
 
 	uint64_t hash_index = HashIndex2(namestr, name);
@@ -432,7 +437,7 @@ void Dir::ExpireProc()
 
 			if (TRACE_EXPIRE) BOOST_LOG_TRIVIAL(trace) << m_label << ": adding to expire " << expired << " + " << m_list_nentries << " - " << m_expire_last_list_nentries;
 
-			lock_guard<mutex> lock(m_lock);
+			lock_guard<mutex> lock(m_dir_lock);
 
 			m_expire_count[m_expire_count_index] = expired + m_list_nentries - m_expire_last_list_nentries;
 			m_expire_last_list_nentries = m_list_nentries;
@@ -442,7 +447,7 @@ void Dir::ExpireProc()
 				m_expire_count_index = 0;
 		}
 
-		sleep(1);
+		ccsleep(1);
 	}
 }
 
@@ -494,12 +499,14 @@ uint64_t Dir::Find2(const string& namestr, const hostname_t& name, uint64_t hash
 		if (p == HASH_POINTER_NULL)
 		{
 			BOOST_LOG_TRIVIAL(trace) << m_label << ": hostname " << namestr << " not found in hashtable (start " << hash_index << " stop " << hash_find << ")";
+
 			return NULL_INDEX;
 		}
 
 		if (p != HASH_POINTER_CHAINED && CompareHostnames(m_hashtable[hash_find].hostname, name))
 		{
 			BOOST_LOG_TRIVIAL(trace) << m_label << ": hostname " << namestr << " found in hashtable at " << hash_find << " (start " << hash_index << ")";
+
 			return hash_find;
 		}
 
@@ -514,6 +521,7 @@ uint64_t Dir::FindTable(const string& namestr, const hostname_t& name, uint64_t 
 	if (p >= m_list_size)
 	{
 		BOOST_LOG_TRIVIAL(error) << m_label << ": ERROR in FindTable: invalid pointer for hostname " << namestr << " hash index " << hash_find << " list size " << m_list_size;
+
 		return NULL_INDEX;
 	}
 
@@ -525,6 +533,7 @@ uint64_t Dir::FindTable(const string& namestr, const hostname_t& name, uint64_t 
 		if (CompareHostnames(m_namelist[list_find], name))
 		{
 			BOOST_LOG_TRIVIAL(trace) << m_label << ": hostname " << namestr << " found in hashlist at " << list_find << " (start " << list_index << ")";
+
 			return list_find;
 		}
 
@@ -542,9 +551,10 @@ uint64_t Dir::FindTable(const string& namestr, const hostname_t& name, uint64_t 
 
 int Dir::NameToBinary(const string& namestr, hostname_t& name)
 {
-	if (namestr.size() != NAME_CHARS)
+	if (namestr.size() != TOR_HOSTNAME_CHARS)
 	{
 		BOOST_LOG_TRIVIAL(trace) << "invalid length hostname " << namestr;
+
 		return -1;
 	}
 
@@ -574,7 +584,7 @@ int Dir::NameToBinary(const string& namestr, hostname_t& name)
 		if (bits >= 8)
 		{
 			bits -= 8;
-			name.bytes[index++] = accum >> bits;
+			name[index++] = accum >> bits;
 		}
 	}
 
@@ -584,6 +594,7 @@ int Dir::NameToBinary(const string& namestr, hostname_t& name)
 
 charerror:
 	BOOST_LOG_TRIVIAL(trace) << "invalid character hostname " << namestr;
+
 	return -1;
 }
 
@@ -594,9 +605,9 @@ void Dir::NameToString(const hostname_t& name, string& namestr)
 	unsigned bits = 0;
 	unsigned accum = 0;
 
-	for (unsigned i = 0; i < NAME_BYTES; ++i)
+	for (unsigned i = 0; i < TOR_HOSTNAME_BYTES; ++i)
 	{
-		uint8_t b = name.bytes[i];
+		uint8_t b = name[i];
 		accum = (accum << 8) | b;
 		bits += 8;
 		while (bits >= 5)
@@ -616,12 +627,12 @@ void Dir::NameToString(const hostname_t& name, string& namestr)
 
 	//BOOST_LOG_TRIVIAL(trace) << "hostname hex " << NameToHex(name) << " string " << namestr;
 
-	CCASSERT(bits == 0);
+	CCASSERTZ(bits);
 
 	//return namestr;
 }
 
 string Dir::NameToHex(const hostname_t& name)
 {
-	return buf2hex(&name, NAME_BYTES);
+	return buf2hex(&name, TOR_HOSTNAME_BYTES);
 }

@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * CompressProof.hpp
 */
@@ -17,27 +17,35 @@
 typedef array<bigint_t, 9> proof_vec_t;
 
 template <typename GROUP>
-void G2Int(bigint_t& x, const GROUP& g, const unsigned i = 0)
+void G2Int(bigint_t& x, bigint_t *x1, const GROUP& g)
 {
 	auto a(g);
 	a.affineCoordinates();
 
-	//std::cerr << "G2Int x = " << a.x()[i].asBigInt() << std::endl;
-	//std::cerr << "G2Int y = " << a.y()[i].asBigInt() << std::endl;
+	//std::cerr << "G2Int x = " << a.x().asBigInt() << std::endl;
+	//std::cerr << "G2Int y = " << a.y().asBigInt() << std::endl;
 
 	//std::cerr << "dimension " << a.x().dimension() << std::endl;
 	//std::cerr << "sizeInBits " << a.x().sizeInBits() << std::endl;
 
-	x = a.x()[i].asBigInt();
+	CCASSERTZ(a.isZero());
 
-	CCASSERT((BIGWORD(x, 3) >> 62) == 0);
+	x = a.x()[0].asBigInt();
 
-	if (i == 0)
-		BIGWORD(x, 3) |= (uint64_t)(a.y()[0].asUnsignedLong() & 1) << 62;
+	CCASSERTZ(BIGWORD(x, 3) >> 62);
+
+	BIGWORD(x, 3) |= (uint64_t)(a.y()[0].asUnsignedLong() & 1) << 62;
 
 	//BIGWORD(x, 3) |= a.isZero() << 63;
 
 	//std::cerr << "G2Int x = " << x << std::endl;
+
+	if (x1)
+	{
+		*x1 = a.x()[1].asBigInt();
+
+		CCASSERTZ(BIGWORD(*x1, 3) >> 62);
+	}
 }
 
 template <typename GROUP>
@@ -45,7 +53,8 @@ void Int2G(bigint_t x, bigint_t x1, GROUP& a)
 {
 	//std::cerr << "Int2G x = " << x << std::endl;
 
-	bool tampered = (BIGWORD(x, 3) >> 63) || (BIGWORD(x1, 3) >> 62);
+	//bool tampered = (BIGWORD(x, 3) >> 63) || (BIGWORD(x1, 3) >> 62);
+	bool tampered = (BIGWORD(x1, 3) >> 62);
 	CCASSERT(!tampered);
 
 	unsigned y_lsb = (BIGWORD(x, 3) >> 62) & 1;
@@ -128,36 +137,66 @@ std::istream& operator>>(std::istream &in, bn128_G2 &g)
 template <typename PAIRING>
 void Proof2Vec(proof_vec_t& vec, const Proof<PAIRING>& proof)
 {
-	G2Int<typename PAIRING::G1>(vec[0], proof.A().G());
-	G2Int<typename PAIRING::G1>(vec[1], proof.A().H());
+	// compress proof
 
-	G2Int<typename PAIRING::G2>(vec[2], proof.B().G(), 0);
-	G2Int<typename PAIRING::G2>(vec[3], proof.B().G(), 1);
-	G2Int<typename PAIRING::G1>(vec[4], proof.B().H());
+	G2Int<typename PAIRING::G1>(vec[0], NULL,    proof.A().G());
+	G2Int<typename PAIRING::G1>(vec[1], NULL,    proof.A().H());
 
-	G2Int<typename PAIRING::G1>(vec[5], proof.C().G());
-	G2Int<typename PAIRING::G1>(vec[6], proof.C().H());
+	G2Int<typename PAIRING::G2>(vec[2], &vec[8], proof.B().G());
+	G2Int<typename PAIRING::G1>(vec[3], NULL,    proof.B().H());
 
-	G2Int<typename PAIRING::G1>(vec[7], proof.H());
-	G2Int<typename PAIRING::G1>(vec[8], proof.K());
+	G2Int<typename PAIRING::G1>(vec[4], NULL,    proof.C().G());
+	G2Int<typename PAIRING::G1>(vec[5], NULL,    proof.C().H());
+
+	G2Int<typename PAIRING::G1>(vec[6], NULL,    proof.H());
+	G2Int<typename PAIRING::G1>(vec[7], NULL,    proof.K());
+
+	// copy the last byte into the highest bits of each value
+
+	uint64_t last_byte = *((uint8_t*)&vec + sizeof(vec) - 1);
+
+	//std::cerr << "Proof2Vec last_byte " << last_byte << std::endl;
+
+	for (unsigned i = 0; i < 8; ++i)
+	{
+		BIGWORD(vec[i], 3) |= (last_byte << 63);
+		last_byte >>= 1;
+	}
 }
 
 template <typename PAIRING>
 void Vec2Proof(const proof_vec_t& vec, Proof<PAIRING>& proof)
 {
+	// extract the last byte into the highest bits of each value
+
+	unsigned last_byte = 0;
+
+	for (unsigned i = 0; i < 8; ++i)
+	{
+		last_byte |= ((BIGWORD(vec[i], 3) >> 63) << 8);
+		last_byte >>= 1;
+	}
+
+	//std::cerr << "Vec2Proof last_byte " << last_byte << " " << (unsigned)*((uint8_t*)&vec + sizeof(vec) - 1) << std::endl;
+
+	bigint_t vec_8 = vec[8];
+	*((uint8_t*)&vec_8 + sizeof(vec_8) - 1) = last_byte;
+
+	// expand proof
+
 	bigint_t dummy;
 
 	Int2G<typename PAIRING::G1>(vec[0], dummy, proof.m_A.m_G);
 	Int2G<typename PAIRING::G1>(vec[1], dummy, proof.m_A.m_H);
 
-	Int2G<typename PAIRING::G2>(vec[2], vec[3], proof.m_B.m_G);
-	Int2G<typename PAIRING::G1>(vec[4], dummy, proof.m_B.m_H);
+	Int2G<typename PAIRING::G2>(vec[2], vec_8, proof.m_B.m_G);
+	Int2G<typename PAIRING::G1>(vec[3], dummy, proof.m_B.m_H);
 
-	Int2G<typename PAIRING::G1>(vec[5], dummy, proof.m_C.m_G);
-	Int2G<typename PAIRING::G1>(vec[6], dummy, proof.m_C.m_H);
+	Int2G<typename PAIRING::G1>(vec[4], dummy, proof.m_C.m_G);
+	Int2G<typename PAIRING::G1>(vec[5], dummy, proof.m_C.m_H);
 
-	Int2G<typename PAIRING::G1>(vec[7], dummy, proof.m_H);
-	Int2G<typename PAIRING::G1>(vec[8], dummy, proof.m_K);
+	Int2G<typename PAIRING::G1>(vec[6], dummy, proof.m_H);
+	Int2G<typename PAIRING::G1>(vec[7], dummy, proof.m_K);
 }
 
 template <typename PAIRING>
@@ -174,7 +213,7 @@ void StreamOutProof(std::ostream& os, const Proof<PAIRING>& proof)
 #if TEST_PROOF_COMPRESSION
 	DumpProof(proof);
 
-	os << proof;	// for testing
+	os << proof;
 #endif
 
 	proof_vec_t vec;
@@ -190,7 +229,7 @@ void StreamInProof(std::istream& is, Proof<PAIRING>& proof)
 {
 #if TEST_PROOF_COMPRESSION
 	Proof<PAIRING> proof2;
-	is >> proof2;	// for testing
+	is >> proof2;
 #endif
 
 	proof_vec_t vec;

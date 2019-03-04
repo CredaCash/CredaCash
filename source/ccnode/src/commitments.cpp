@@ -1,12 +1,12 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * commitments.cpp
 */
 
-#include "CCdef.h"
+#include "ccnode.h"
 #include "commitments.hpp"
 #include "blockchain.hpp"
 #include "block.hpp"
@@ -57,15 +57,9 @@ bool Commitments::AddCommitment(DbConn *dbconn, uint64_t commitnum, const bigint
 {
 	//cerr << "AddCommitment commitnum " << commitnum << endl;
 
-	bigint_t hash;
+	auto rc = dbconn->CommitTreeInsert(0, commitnum, &commitment, TX_MERKLE_BYTES);
 
-	tx_commit_tree_hash_leaf(commitment, commitnum, hash);
-
-	auto rc = dbconn->CommitTreeInsert(0, commitnum, &hash, COMMITMENT_HASH_BYTES);
-	if (rc)
-		return true;
-
-	return false;
+	return rc;
 }
 
 bool Commitments::UpdateCommitTree(DbConn *dbconn, SmartBuf newobj, uint64_t timestamp)
@@ -76,15 +70,17 @@ bool Commitments::UpdateCommitTree(DbConn *dbconn, SmartBuf newobj, uint64_t tim
 
 	bool treechanged = (m_next_tree_update_commitnum != m_next_commitnum.load());
 
-	if (!wire->level || treechanged)
+	if (!wire->level.GetValue() || treechanged)
 	{
 		// stash block level in db
-		auto rc = dbconn->ParameterInsert(DB_KEY_COMMIT_BLOCK_LEVEL, 0, &wire->level, sizeof(wire->level));
+		auto rc = dbconn->ParameterInsert(DB_KEY_COMMIT_BLOCKLEVEL, 0, &wire->level, sizeof(wire->level));
 		if (rc)
 			return true;
 	}
 
 	bigint_t hash1, hash2, hash, nullhash;
+
+	hash = g_params.blockchain;	// merkle root value when tree is empty
 
 	if (treechanged)
 	{
@@ -94,8 +90,8 @@ bool Commitments::UpdateCommitTree(DbConn *dbconn, SmartBuf newobj, uint64_t tim
 		m_next_tree_update_commitnum = m_next_commitnum.load();
 		uint64_t row_end = m_next_tree_update_commitnum - 1;
 
-		memcpy(&nullhash, &auxp->block_hash, COMMITMENT_HASH_BYTES);
-		nullhash = nullhash * bigint_t(1UL);	// mod prime
+		memcpy(&nullhash, &auxp->block_hash, TX_MERKLE_BYTES);
+		nullhash = nullhash * bigint_t(1UL);	// modulo prime
 
 		// stash row_end in db
 		auto rc = dbconn->ParameterInsert(DB_KEY_COMMIT_COMMITNUM_HI, 0, &row_end, sizeof(row_end));
@@ -103,7 +99,7 @@ bool Commitments::UpdateCommitTree(DbConn *dbconn, SmartBuf newobj, uint64_t tim
 			return true;
 
 		// stash the "null" input in db
-		rc = dbconn->ParameterInsert(DB_KEY_COMMIT_NULL_INPUT, 0, &nullhash, COMMITMENT_HASH_BYTES);
+		rc = dbconn->ParameterInsert(DB_KEY_COMMIT_NULL_INPUT, 0, &nullhash, TX_MERKLE_BYTES);
 		if (rc)
 			return true;
 
@@ -113,24 +109,30 @@ bool Commitments::UpdateCommitTree(DbConn *dbconn, SmartBuf newobj, uint64_t tim
 
 			for (uint64_t offset = row_start; offset <= row_end; offset += 2)
 			{
-				auto rc = dbconn->CommitTreeSelect(height, offset, &hash1, COMMITMENT_HASH_BYTES);
+				auto rc = dbconn->CommitTreeSelect(height, offset, &hash1, TX_MERKLE_BYTES);
 				if (rc)
 					return true;
 
+				if (height == 0)
+					tx_commit_tree_hash_leaf(hash1, offset, hash1);
+
 				if (offset >= row_end)
 				{
-					memcpy(&hash2, &nullhash, COMMITMENT_HASH_BYTES);
+					memcpy(&hash2, &nullhash, TX_MERKLE_BYTES);
 				}
 				else
 				{
-					auto rc = dbconn->CommitTreeSelect(height, offset + 1, &hash2, COMMITMENT_HASH_BYTES);
+					auto rc = dbconn->CommitTreeSelect(height, offset + 1, &hash2, TX_MERKLE_BYTES);
 					if (rc)
 						return true;
+
+					if (height == 0)
+						tx_commit_tree_hash_leaf(hash2, offset + 1, hash2);
 				}
 
-				tx_commit_tree_hash_node(hash1, hash2, hash);
+				tx_commit_tree_hash_node(hash1, hash2, hash, height < TX_MERKLE_DEPTH - 1);
 
-				rc = dbconn->CommitTreeInsert(height + 1, offset/2, &hash, COMMITMENT_HASH_BYTES);
+				rc = dbconn->CommitTreeInsert(height + 1, offset/2, &hash, TX_MERKLE_BYTES);
 				if (rc)
 					return true;
 			}
@@ -140,9 +142,9 @@ bool Commitments::UpdateCommitTree(DbConn *dbconn, SmartBuf newobj, uint64_t tim
 		}
 	}
 
-	if (!wire->level || treechanged)
+	if (!wire->level.GetValue() || treechanged)
 	{
-		auto rc = dbconn->CommitRootsInsert(wire->level, (wire->level ? timestamp : 0), &hash, COMMITMENT_HASH_BYTES);
+		auto rc = dbconn->CommitRootsInsert(wire->level.GetValue(), (wire->level.GetValue() ? timestamp : 0), m_next_commitnum.load(), &hash, TX_MERKLE_BYTES);
 		if (rc)
 			return true;
 	}

@@ -1,27 +1,31 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * config.h for sqlite
 */
 
 #pragma once
 
-#define TEST_SQLITE_DEBUG_BUILD			1	// for testing
+//!#define TEST_SQLITE_DEBUG_BUILD			1
 
 #ifndef TEST_SQLITE_DEBUG_BUILD
 #ifdef _DEBUG
-#define TEST_SQLITE_DEBUG_BUILD			1	// test in _DEBUG build
+#define TEST_SQLITE_DEBUG_BUILD			1	// for _DEBUG build
 #else
 #define TEST_SQLITE_DEBUG_BUILD			0	// don't test
 #endif
 #endif
 
-#define SQLITE_MAX_MMAP_SIZE			0
-
-#define SQLITE_OMIT_AUTORESET			1
+#define SQLITE_OMIT_DECLTYPE			1
 #define SQLITE_OMIT_DEPRECATED			1
+#define SQLITE_OMIT_PROGRESS_CALLBACK	1
+#define SQLITE_USE_ALLOCA				1
+
+#define SQLITE_OMIT_AUTOINIT			1
+#define SQLITE_OMIT_AUTORESET			1
+#define SQLITE_OMIT_UTF16				1
 
 #define HAVE_MALLOC_USABLE_SIZE			1
 #define HAVE_USLEEP						1
@@ -42,8 +46,10 @@
 
 #if TEST_SQLITE_DEBUG_BUILD
 #warning SQLITE _DEBUG
-#define SQLITE_ENABLE_API_ARMOR			1
+//#error SQLITE _DEBUG
 #define SQLITE_DEBUG					1
+#define SQLITE_ENABLE_API_ARMOR			1
+#define SQLITE_ENABLE_EXPLAIN_COMMENTS	1
 #ifndef SQLITE_WIN32_MALLOC
 #define SQLITE_MEMDEBUG					1
 #endif

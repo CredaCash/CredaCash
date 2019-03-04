@@ -1,75 +1,44 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * ccnode.cpp
 */
 
 #define DECLARE_EXTERN
 
-#include "CCdef.h"
+#include "ccnode.h"
 
 #include "blockchain.hpp"
 #include "processblock.hpp"
 #include "processtx.hpp"
 #include "witness.hpp"
 #include "expire.hpp"
-#include "util.h"
-#include "tor.h"
 
 #include <CCproof.h>
+
+#include <tor.h>
 
 #include <sqlite/sqlite3.h>
 #include <dblog.h>
 
-#include <boost/log/core.hpp>
-#include <boost/log/trivial.hpp>
-#include <boost/log/expressions.hpp>
-
 #include <boost/program_options/options_description.hpp>
 #include <boost/program_options/parsers.hpp>
-#include <boost/filesystem/fstream.hpp>
-#include <boost/algorithm/string.hpp>
 
-#define DEFAULT_TRACE_LEVEL				4
-#define DEFAULT_TX_VALIDATION_THREADS	16
+//#define TEST_SKIP_RELAY_CONNS_CHECK		1
 
-#define TOR_EXE			"Tor" PATH_DELIMITER "tor.exe"
-#define TOR_CONFIG		"tor.conf"
-
-#define DEFAULT_DIR_SERVERS_FILE		 "rendezvous.lis"
-#define DEFAULT_GENESIS_DATA_FILE		 "genesis.dat"
-#define DEFAULT_PRIVATE_RELAY_HOSTS_FILE "private_relay_hosts.lis"
-
-static void handle_signal(int)
-{
-	g_shutdown = true;
-}
-
-static void handle_terminate()
-{
-	cerr << "handle_terminate" << endl;
-
-#if 0
-	void *array[20];
-
-	auto size = backtrace(array, sizeof(array)/sizeof(void*));
-	auto strings = backtrace_symbols(array, size);
-
-	for (unsigned i = 0; i < size; ++i)
-		cerr << strings[i] << endl;
+#ifndef TEST_SKIP_RELAY_CONNS_CHECK
+#define TEST_SKIP_RELAY_CONNS_CHECK		0	// don't skip
 #endif
 
-	g_shutdown = true;
+#define DEFAULT_TX_VALIDATION_THREADS	16
 
-	//abort();
-}
+#define DEFAULT_DIR_SERVERS_FILE			"rendezvous.lis"
+#define DEFAULT_GENESIS_DATA_FILE			"genesis.dat"
+#define DEFAULT_PRIVATE_RELAY_HOSTS_FILE	"private_relay_hosts.lis"
 
-static void set_trace_level(int level)
-{
-    boost::log::core::get()->set_filter(boost::log::trivial::severity > (((int)(fatal)) - level));
-}
+#define TRACE_SHUTDOWN		1
 
 #if 0 // not yet used
 static void set_storage()
@@ -103,24 +72,24 @@ static void set_storage()
 }
 #endif
 
-#define TRANSACT_PORT		"0"
-#define RELAY_PORT			"1"
-#define PRIVRELAY_PORT		"2"
-#define BLOCKSERVE_PORT		"3"
-#define NODE_CONTROL_PORT	"4"
-#define TOR_CONTROL_PORT	"5"
-#define TOR_PORT			"6"
-
 void set_service_configs()
 {
-	g_transact_service.SetConfig(atoi(TRANSACT_PORT), "transact");
-	g_relay_service.SetConfig(atoi(RELAY_PORT), "relay");
-	g_privrelay_service.SetConfig(atoi(PRIVRELAY_PORT), "privrelay");
-	g_blockserve_service.SetConfig(atoi(BLOCKSERVE_PORT), "blockserve");
-	g_blocksync_client.SetConfig(atoi(0), "blocksync");
-	g_control_service.SetConfig(atoi(NODE_CONTROL_PORT), "control");
-	g_tor_control_service.SetConfig(atoi(TOR_CONTROL_PORT), "tor-control");
-	g_params.torproxy_port = g_params.base_port + atoi(TOR_PORT);
+	g_tor_services.push_back(&g_transact_service);
+	g_tor_services.push_back(&g_relay_service);
+	g_tor_services.push_back(&g_privrelay_service);
+	g_tor_services.push_back(&g_blockserve_service);
+	g_tor_services.push_back(&g_blocksync_client);
+	g_tor_services.push_back(&g_control_service);
+	g_tor_services.push_back(&g_tor_control_service);
+
+	TorService::SetPorts(g_tor_services, g_params.base_port);
+
+	g_params.torproxy_port = g_tor_services[g_tor_services.size()-1]->port + 1;
+
+	//cerr << "torproxy_port " << g_params.torproxy_port << endl;
+
+	for (unsigned i = 0; i < g_tor_services.size(); ++i)
+		g_tor_services[i]->SetConfig();
 }
 
 static void do_show_config()
@@ -140,11 +109,8 @@ static void do_show_config()
 	cout << "   tx validation threads = " << g_params.tx_validation_threads << endl;
 	cout << endl;
 
-	g_transact_service.DumpConfig();
-	g_relay_service.DumpConfig();
-	g_privrelay_service.DumpConfig();
-	g_blockserve_service.DumpConfig();
-	g_blocksync_client.DumpConfig();
+	for (unsigned i = 0; i < g_tor_services.size(); ++i)
+		g_tor_services[i]->DumpConfig();
 
 	if (g_witness.witness_index >= 0)
 	{
@@ -157,9 +123,6 @@ static void do_show_config()
 	cout << "   witness malicious test = " << yesno(g_witness.test_mal) << endl;
 	cout << endl;
 	}
-
-	//g_control_service.DumpConfig();
-	g_tor_control_service.DumpConfig();
 
 	cout << "Trace output settings:" << endl;
 	cout << "   trace level = " << g_params.trace_level << endl;
@@ -185,61 +148,35 @@ static void do_show_config()
 	cout << endl;
 }
 
-static int check_config_values()
+static void check_config_values()
 {
 	if (g_params.genesis_nwitnesses < 1 || g_params.genesis_nwitnesses > MAX_NWITNESSES)
-	{
-		BOOST_LOG_TRIVIAL(fatal) << "FATAL ERROR: invalid value for genesis nwitnesses";
-		return -1;
-	}
+		throw range_error("Invalid value for genesis nwitnesses");
 
 	if (g_params.genesis_maxmal < 0 || g_params.genesis_maxmal >= (g_params.genesis_nwitnesses + 1) / 2)
-	{
-		BOOST_LOG_TRIVIAL(fatal) << "FATAL ERROR: invalid value for genesis malicious witness allowance";
-		return -1;
-	}
+		throw range_error("Invalid value for genesis malicious witness allowance");
 
 	if (g_params.tx_validation_threads < 1 || g_params.tx_validation_threads > 2000)
-	{
-		BOOST_LOG_TRIVIAL(fatal) << "FATAL ERROR: tx validation threads value not in valid range";
-		return -1;
-	}
+		throw range_error("Tx validation threads value not in valid range");
 
 	if (g_params.base_port < 1 || g_params.base_port > 0xFFFF - atoi(TOR_PORT))
-	{
-		BOOST_LOG_TRIVIAL(fatal) << "FATAL ERROR: baseport value not in valid range";
-		return -1;
-	}
+		throw range_error("baseport value not in valid range");
 
 	if (g_transact_service.max_inconns < 0 || g_transact_service.max_inconns > 100000)
-	{
-		BOOST_LOG_TRIVIAL(fatal) << "FATAL ERROR: max connections for transaction support service not in valid range";
-		return -1;
-	}
+		throw range_error("Max connections for transaction support service not in valid range");
 
 	if (g_transact_service.threads_per_conn <= 0 || g_transact_service.threads_per_conn > 2)
-	{
-		BOOST_LOG_TRIVIAL(fatal) << "FATAL ERROR: max connections for transaction support service not in valid range";
-		return -1;
-	}
+		throw range_error("Max connections for transaction support service not in valid range");
 
-	#if 1	// this can be disabled for testing
+	#if !TEST_SKIP_RELAY_CONNS_CHECK
 
-	if (g_relay_service.max_outconns < 4)
-	{
-		BOOST_LOG_TRIVIAL(fatal) << "FATAL ERROR: number of outgoing relay connections must be at least 4";
-		return -1;
-	}
+	if (g_relay_service.enabled && g_relay_service.max_outconns < 4)
+		throw range_error("Number of outgoing relay connections must be at least 4");
 
-	if (g_relay_service.max_inconns * 2 < 3 * g_relay_service.max_outconns)
-	{
-		BOOST_LOG_TRIVIAL(fatal) << "FATAL ERROR: maximum number of incoming relay connections must be at least 1.5 * the number of outgoing relay connections";
-		return -1;
-	}
+	if (g_relay_service.enabled && g_relay_service.max_inconns * 2 < 3 * g_relay_service.max_outconns)
+		throw range_error("Maximum number of incoming relay connections must be at least 1.5 * the number of outgoing relay connections");
 
 	#endif
-
-	return 0;
 }
 
 static int process_options(int argc, char **argv)
@@ -264,9 +201,9 @@ static int process_options(int argc, char **argv)
 		("config", po::wvalue<wstring>(), "Path to file with additional configuration options.")
 		("datadir", po::wvalue<wstring>(), "Path to program data directory (default: \""
 #if _WIN32
-				"LOCAL_APPDATA\\CredaCash\\CCNode\").")
+				"%LOCALAPPDATA%\\CredaCash\\" CCAPPDIR "\").")
 #else
-				"~/.CCNode\").")
+				"~/." CCAPPDIR "\").")
 #endif
 		("tor-exe", po::wvalue<wstring>(&g_params.tor_exe), "Path to Tor executable (default: \"" TOR_EXE "\" in same directory as this program).")
 		("tor-config", po::wvalue<wstring>(&g_params.tor_config), "Path to Tor configuration file (default: \"" TOR_CONFIG "\" in same directory as this program).")
@@ -276,7 +213,7 @@ static int process_options(int argc, char **argv)
 		("genesis-nwitnesses", po::value<int>(&g_params.genesis_nwitnesses)->default_value(3), "Initial # of witnesses generating new genesis block data files.")
 		("genesis-maxmal", po::value<int>(&g_params.genesis_maxmal)->default_value(0), "Initial allowance for malicious witnesses when generating new genesis block data files.")
 		("tx-validation-threads", po::value<int>(&g_params.tx_validation_threads)->default_value(-1), "Transaction validation threads (-1 = auto config).")
-		("baseport", po::value<int>(&g_params.base_port)->default_value(9223), "Base port for node interfaces\n"
+		("baseport", po::value<int>(&g_params.base_port)->default_value(DEFAULT_BASE_PORT), "Base port for node interfaces\n"
 			"(node software uses ports baseport through baseport+" TOR_PORT ").")
 		//("store-blocks", po::value<int>(), "Store entire blockchain;\ndefaults to 0 if micronode=1 or mininode=1.")
 		//("store-created", po::value<int>(), "Store database of created bills;\ndefaults to 0 if micronode=1 or mininode=1.")
@@ -287,9 +224,9 @@ static int process_options(int argc, char **argv)
 				"this setting can be used to bind to another address for access via the local network or internet.")
 		//("transact-password", po::value<string>(&g_transact_service.password_string), "SHA1 hash of password to access transaction support service (default: no password required).")
 		("transact-tor", po::value<bool>(&g_transact_service.tor_service)->default_value(0), "Make the transaction support service available as a Tor hidden service.")
-		("transact-tor-auth", po::value<string>(&g_transact_service.tor_auth_string)->default_value("basic"), "Tor hidden service authentication method (none, basic or stealth).")
+		("transact-tor-auth", po::value<string>(&g_transact_service.tor_auth_string)->default_value("v3"), "Tor hidden service authentication method (none, basic, or v3).")
 		("transact-conns", po::value<int>(&g_transact_service.max_inconns)->default_value(20), "Maximum number of incoming connections for transaction support service.")
-		("transact-threads", po::value<float>(&g_transact_service.threads_per_conn)->default_value(1), "Threads per connection for transaction support service.")	// !!! change this?
+		("transact-threads", po::value<float>(&g_transact_service.threads_per_conn)->default_value(1), "Threads per connection for transaction support service.")
 		("relay", po::value<bool>(&g_relay_service.enabled)->default_value(1), "Fetch and relay blocks and transactions (at port baseport+" RELAY_PORT ");\n"
 				"if no relay is enabled, this node will receive no updates and will only use data previously stored.")
 		("relay-addr", po::value<string>(&g_relay_service.address_string)->default_value(LOCALHOST), "Network address for relay service;\n"
@@ -299,14 +236,14 @@ static int process_options(int argc, char **argv)
 		("relay-in", po::value<int>(&g_relay_service.max_inconns)->default_value(16), "Maximum number of incoming relay connections (must be at least 1.5 * relay-out).")
 		("privrelay", po::value<bool>(&g_privrelay_service.enabled)->default_value(0), "Fetch and relay blocks and transactions (at port baseport+" PRIVRELAY_PORT ");\n"
 				"if no relay is enabled, this node will receive no updates and will only use data previously stored.")
-		("privrelay-file", po::wvalue<wstring>(&g_privrelay_service.priv_hosts_file), "Path to file containing a list of private relay hostnames (default: \"" DEFAULT_PRIVATE_RELAY_HOSTS_FILE "\").")
+		("privrelay-file", po::wvalue<wstring>(&g_privrelay_service.priv_hosts_file), "Path to file containing a list of private relay ip_address:port values or tor onion hostnames (default: \"" DEFAULT_PRIVATE_RELAY_HOSTS_FILE "\").")
 		("privrelay-host-index", po::value<int>(&g_privrelay_service.priv_host_index)->default_value(-1), "Index (zero-based) of this host in the hosts file (-1 = not applicable).")
 		("privrelay-addr", po::value<string>(&g_privrelay_service.address_string)->default_value(LOCALHOST), "Network address for private relay service;\n"
 				"by default, this service binds to localhost and is available as a Tor hidden service;\n"
 				"this setting can be used to bind to another address for direct access via the local network or internet.")
 		("privrelay-tor", po::value<bool>(&g_privrelay_service.tor_service)->default_value(1), "Make the private relay service available as a Tor hidden service.")
 		("privrelay-tor-new-hostname", po::value<bool>(&g_privrelay_service.tor_new_hostname)->default_value(0), "Give the private relay Tor hidden service a new hostname.")
-		("privrelay-tor-auth", po::value<string>(&g_privrelay_service.tor_auth_string)->default_value("none"), "Tor hidden service authentication method (none, basic or stealth).")
+		("privrelay-tor-auth", po::value<string>(&g_privrelay_service.tor_auth_string)->default_value("none"), "Tor hidden service authentication method (none, basic, or v3).")
 		("privrelay-in", po::value<int>(&g_privrelay_service.max_inconns)->default_value(-1), "Maximum number of incoming private relay connections  (-1 = auto config).")
 		("blockserve", po::value<bool>(&g_blockserve_service.enabled)->default_value(1), "Provide blockchain data to other nodes (at port baseport+" BLOCKSERVE_PORT ");\n"
 				"note: this option is disabled when store-blocks=0.")
@@ -316,7 +253,7 @@ static int process_options(int argc, char **argv)
 		//("blockserve-password", po::value<string>(&g_blockserve_service.password_string), "SHA1 hash of password to access blockchain service (default: no password required).")
 		("blockserve-tor", po::value<bool>(&g_blockserve_service.tor_service)->default_value(1), "Make the blockchain service available as a Tor hidden service.")
 		("blockserve-tor-new-hostname", po::value<bool>(&g_blockserve_service.tor_new_hostname)->default_value(1), "Give the blockchain Tor hidden service a new hostname.")
-		("blockserve-tor-auth", po::value<string>(&g_blockserve_service.tor_auth_string)->default_value("none"), "Tor hidden service authentication method (none, basic or stealth).")
+		("blockserve-tor-auth", po::value<string>(&g_blockserve_service.tor_auth_string)->default_value("none"), "Tor hidden service authentication method (none, basic, or v3).")
 		("blockserve-conns", po::value<int>(&g_blockserve_service.max_inconns)->default_value(1), "Maximum number of incoming connections for blockchain service.")
 		("blocksync-conns", po::value<int>(&g_blocksync_client.max_outconns)->default_value(10), "Maximum number of outgoing connections for blockchain synchonization.")
 		("witness-index", po::value<int>(&g_witness.witness_index)->default_value(-1), "Witness index (-1 = disable).")
@@ -331,21 +268,21 @@ static int process_options(int argc, char **argv)
 		//		"this setting can be used to bind to another address for access via the local network or internet.")
 		//("control-password", po::value<string>(&g_control_service.password_string), "SHA1 hash of password to access node control service (default: no password required).")
 		//("control-tor", po::value<bool>(&g_control_service.tor_service)->default_value(0), "Make the node control port available through a Tor hidden service.")
-		//("control-tor-auth", po::value<string>(&g_control_service.tor_auth_string)->default_value("basic"), "Tor hidden service authentication method (none, basic or stealth).")
+		//("control-tor-auth", po::value<string>(&g_control_service.tor_auth_string)->default_value("v3"), "Tor hidden service authentication method (none, basic, or v3).")
 		("tor-control", po::value<bool>(&g_tor_control_service.enabled)->default_value(0), "Allow other programs to control Tor (at port baseport+" TOR_CONTROL_PORT ").")
 		("tor-control-addr", po::value<string>(&g_tor_control_service.address_string)->default_value(LOCALHOST), "Network address for node control service;\n"
 				"by default, this service is available from the localhost only;\n"
 				"this setting can be used to bind to another address for access via the local network or internet.")
 		("tor-control-password", po::value<string>(&g_tor_control_service.password_string), "SHA1 hash of password to access Tor control service (default: no password required).")
 		("tor-control-tor", po::value<bool>(&g_tor_control_service.tor_service)->default_value(0), "Make the Tor control port available through a Tor hidden service.")
-		("tor-control-tor-auth", po::value<string>(&g_tor_control_service.tor_auth_string)->default_value("basic"), "Tor hidden service authentication method (none, basic or stealth).")
+		("tor-control-tor-auth", po::value<string>(&g_tor_control_service.tor_auth_string)->default_value("v3"), "Tor hidden service authentication method (none, basic, or v3).")
 		("trace", po::value<int>(&g_params.trace_level)->default_value(DEFAULT_TRACE_LEVEL), "Trace level; affects all trace settings (0=none, 1=fatal, 2=errors, 3=warnings, 4=info, 5=debug, 6=trace)")
 		("trace-tx-server", po::value<bool>(&g_params.trace_tx_server)->default_value(1), "Trace transaction server")
 		("trace-relay", po::value<bool>(&g_params.trace_relay)->default_value(1), "Trace relay service")
 		("trace-block-serve", po::value<bool>(&g_params.trace_block_serve)->default_value(1), "Trace block server service")
 		("trace-block-sync", po::value<bool>(&g_params.trace_block_sync)->default_value(1), "Trace block sync service")
 		("trace-host-dir", po::value<bool>(&g_params.trace_host_dir)->default_value(1), "Trace host directory queries")
-		("trace_witness", po::value<bool>(&g_params.trace_witness)->default_value(1), "Trace witness")
+		("trace-witness", po::value<bool>(&g_params.trace_witness)->default_value(1), "Trace witness")
 		("trace-tx-validation", po::value<bool>(&g_params.trace_tx_validation)->default_value(1), "Trace tx validation")
 		("trace-block-validation", po::value<bool>(&g_params.trace_block_validation)->default_value(1), "Trace block validation")
 		("trace-serialnum-check", po::value<bool>(&g_params.trace_serialnum_check)->default_value(1), "Trace serial number check")
@@ -366,13 +303,12 @@ static int process_options(int argc, char **argv)
 
 	po::store(po::parse_command_line(argc, argv, all), g_params.config_options);
 
-	set_trace_level(debug);
-
 	if (g_params.config_options.count("help"))
 	{
-		cout << "CredaCash node v" CCVERSION << endl << endl;
+		cout << CCAPPNAME " v" CCVERSION << endl << endl;
 		cout << basic_options << endl;
 		cout << advanced_options << endl;
+
 		return 1;
 	}
 
@@ -382,12 +318,7 @@ static int process_options(int argc, char **argv)
 		auto fname = g_params.config_options.at("config").as<wstring>();
 		fs.open(fname, fstream::in);
 		if(!fs.is_open())
-		{
-			BOOST_LOG_TRIVIAL(fatal) << "FATAL ERROR: Unable to open config file \"" << fname << "\"";
-			exit(-1);
-			throw exception();
-			return -1;
-		}
+			throw runtime_error(string("Unable to open config file \"") + w2s(fname) + "\"");
 
 		po::store(po::parse_config_file(fs, all), g_params.config_options);
 
@@ -415,17 +346,24 @@ static int process_options(int argc, char **argv)
 	if (g_privrelay_service.priv_host_index == -1)
 		g_privrelay_service.priv_host_index = g_witness.witness_index;
 
-	if (init_globals())
-		return -1;
-
 	if (!g_params.tor_exe.length())
 		g_params.tor_exe = g_params.process_dir + WIDE(PATH_DELIMITER) + s2w(TOR_EXE);
 
 	if (!g_params.tor_config.length())
 		g_params.tor_config = g_params.process_dir + WIDE(PATH_DELIMITER) + s2w(TOR_CONFIG);
 
-	g_params.query_work_difficulty = (uint64_t)1 << 44;
-	g_params.tx_work_difficulty = (uint64_t)1 << 41;
+	g_params.server_version = (uint64_t)1 << 32;	//@@!
+	g_params.protocol_version = (uint64_t)1 << 32;	//@@!
+	g_params.effective_level = 0;
+
+	g_params.blockchain = 1;	//@@!
+	g_params.default_pool = 1;		//@@!
+
+	g_params.max_param_age = 16*60*60;
+	//g_params.max_param_age = 30;	// for testing
+
+	g_params.query_work_difficulty = (uint64_t)1 << 20; //@@!
+	g_params.tx_work_difficulty = (uint64_t)1 << 23; //@@!
 
 	//set_storage(); // not implemented
 
@@ -439,46 +377,51 @@ static int process_options(int argc, char **argv)
 		BOOST_LOG_TRIVIAL(warning) << "std::thread::hardware_concurrency is indeterminant; using program default value " << DEFAULT_TX_VALIDATION_THREADS;
 	}
 
+	g_params.app_data_dir = get_app_data_dir(g_params.config_options, WIDE(CCAPPDIR));
+	if (!g_params.app_data_dir.length())
+		throw runtime_error("No data directory specified");
+
 	set_service_configs();
 
 	if (g_params.config_options.count("show-config"))
 		do_show_config();
 
-	if (check_config_values())
-		return -1;
+	check_config_values();
 
 	return 0;
 }
 
+#ifdef __MINGW64__
+int _dowildcard = 0;	// disable wildcard globbing
+#endif
+
 int main(int argc, char **argv)
 {
-	signal(SIGINT, handle_signal);
-	signal(SIGTERM, handle_signal);
-	#if defined(SIGQUIT)
-	signal(SIGQUIT, handle_signal);
-	#endif
+	cerr << endl;
 
-	//set_terminate(handle_terminate);
-	(void)handle_terminate;
+	set_handlers();
 
 	//srand(0);
 	srand(time(NULL));
 
+	//ccticks_test();
+
 	g_params.trace_level = DEFAULT_TRACE_LEVEL;
+	//g_params.trace_level = 9;
 	set_trace_level(g_params.trace_level);
 
-	if (init_app_dir())
+	g_params.process_dir = get_process_dir();
+	if (!g_params.process_dir.length())
 		return -1;
 
 	try
 	{
-		if (process_options(argc, argv))
-			return -1;
+		auto rc = process_options(argc, argv);
+		if (rc) return rc;
 	}
 	catch (const exception& e)
 	{
-		cerr << "FATAL ERROR EXCEPTION: " << e.what() << endl;
-
+		cerr << "ERROR: " << e.what() << endl;
 		return -1;
 	}
 
@@ -501,13 +444,16 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	thread tor_thread(tor_start);
+	bool need_tor_proxy = true;	// always true?
+	thread tor_thread(tor_start, g_params.process_dir, g_params.tor_exe, g_params.tor_config, g_params.app_data_dir, need_tor_proxy, ref(g_tor_services), g_tor_services.size()-1);
 
 	CCProof_Init();
-	CCProof_PreloadVerifyKeys();
+	CCProof_PreloadVerifyKeys(true);
 
 	DbInit dbinit;
 	dbinit.CreateDBs();
+	dbinit.InitDb();
+	dbinit.CheckDb();
 
 	//DbConnPersistData::TestConcurrency();	// for testing
 
@@ -526,46 +472,95 @@ int main(int argc, char **argv)
 	g_transact_service.Start();
 	g_witness.Init();
 
-#if 0 // !!! must be 0 for gdb breakpoints to work
-	string in;
-	cout << "Press return to exit..." << endl;
-	getline(cin, in);
-
-	cout << "Sending SIGTERM..." << endl;
-	g_shutdown = true;
-	raise(SIGTERM);
-#endif
+	if (0) // for testing
+	{
+		//string in;
+		//cout << "Press return to exit..." << endl;
+		//getline(cin, in); // gdb breakpoints don't work when used?
+	}
 
 	while (!g_shutdown)
-		sleep(1);
+		wait_for_shutdown(500);
 
-	cerr << "Shutting down..." << endl;
 	BOOST_LOG_TRIVIAL(info) << "Shutting down...";
 
+	start_shutdown();
+
+	{
+		lock_guard<FastSpinLock> lock(g_cout_lock);
+		cerr << "Shutting down..." << endl;
+	}
+
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 1...";
+
+	g_processblock.Stop();
+
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 2...";
+
+	g_processtx.Stop();
+
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 3...";
+
+	g_transact_service.StartShutdown();
+	g_privrelay_service.StartShutdown();
+	g_relay_service.StartShutdown();
+	g_blocksync_client.StartShutdown();
+	g_blockserve_service.StartShutdown();
+
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 4...";
+
+	g_hostdir.DeInit();
 	g_witness.DeInit();
+
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 5...";
+
 	g_transact_service.WaitForShutdown();
 	g_privrelay_service.WaitForShutdown();
 	g_relay_service.WaitForShutdown();
 	g_blocksync_client.WaitForShutdown();
 	g_blockserve_service.WaitForShutdown();
+
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 6...";
+
 	g_processblock.DeInit();
 
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 7...";
+
 	g_processtx.DeInit();
+
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 8...";
+
 	g_expire.DeInit();
 
 do_fatal:
 
-	g_shutdown = true;
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 9...";
+
+	start_shutdown();
+	wait_for_shutdown();
+
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 10...";
+
 	g_blockchain.DeInit();
+
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 11...";
 
 	dbinit.DeInit();
 
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 12...";
+
 	dblog(sqlite3_shutdown());
+
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 14...";
 
 	tor_thread.join();
 
-	BOOST_LOG_TRIVIAL(info) << "ccnode done";
-	cerr << "ccnode done" << endl;
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 15...";
+
+	BOOST_LOG_TRIVIAL(info) << CCEXENAME << " done";
+	cerr << CCEXENAME << " done" << endl;
+
+	finish_handlers();
 
 	//*(int*)0 = 0;
 

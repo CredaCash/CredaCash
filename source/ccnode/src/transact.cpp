@@ -1,44 +1,39 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * transact.cpp
 */
 
-#include "CCdef.h"
+#include "ccnode.h"
 #include "transact.hpp"
 #include "processtx.hpp"
 #include "blockchain.hpp"
 #include "commitments.hpp"
 #include "dbconn.hpp"
 #include "dbparamkeys.h"
-#include "util.h"
 
 #include <CCobjects.hpp>
-#include <CCutil.h>
-#include <CCticks.hpp>
-
 #include <transaction.h>
-#include <CCproof.h>
-#include <Finally.hpp>
+#include <CCparams.h>
 
 #include <ccserver/server.hpp>
 #include <ccserver/connection_manager.hpp>
 
-#include <blake2/blake2b.h>
+#include <blake2/blake2.h>
 
 #include <boost/date_time/posix_time/posix_time.hpp>
 
 //#define JSON_ENDL	;
-#define JSON_ENDL	<< endl;
+#define JSON_ENDL	<< "\n";
 
 #define TRANSACT_MAX_REQUEST_SIZE		64000
 #define TRANSACT_MAX_REPLY_SIZE			64000
 
-#define TRANSACT_QUERY_MAX_COMMITS		2
+#define TRANSACT_QUERY_MAX_COMMITS		20
 
-#define TRANSACT_READ_TIMEOUT			10
+#define TRANSACT_TIMEOUT				10	// timeout for entire connection, excluding validation
 #define TRANSACT_VALIDATION_TIMEOUT		20
 
 #define TRACE_TRANSACT	(g_params.trace_tx_server)
@@ -47,12 +42,16 @@ thread_local DbConn *tx_dbconn;
 
 void TransactConnection::StartConnection()
 {
-	if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn-" << m_conn_index << " TransactConnection::StartConnection";
+	if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " TransactConnection::StartConnection";
 
-	if (SetTimer(TRANSACT_READ_TIMEOUT))
+	m_conn_state = CONN_CONNECTED;
+
+	// On timeout, the connection will simply Stop. To prevent this, the timer can be reset with a different handler; see for example HandleTx()
+
+	if (SetTimer(TRANSACT_TIMEOUT))
 		return;
 
-	Connection::StartConnection();
+	StartRead();
 }
 
 void TransactConnection::HandleReadComplete()
@@ -61,9 +60,9 @@ void TransactConnection::HandleReadComplete()
 	{
 		static const string outbuf = "ERROR:unexpected short read";
 
-		BOOST_LOG_TRIVIAL(info) << Name() << " Conn-" << m_conn_index << " TransactConnection::HandleReadComplete error short read " << m_nred << "; sending " << outbuf;
+		if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleReadComplete error short read " << m_nred << "; sending " << outbuf;
 
-		WriteAsync("TransactConnection::HandleReadComplete", boost::asio::buffer(outbuf.c_str(), outbuf.size()),
+		WriteAsync("TransactConnection::HandleReadComplete", boost::asio::buffer(outbuf.c_str(), outbuf.size() + 1),
 				boost::bind(&Connection::HandleWrite, this, boost::asio::placeholders::error, AutoCount(this)));
 
 		return;
@@ -72,15 +71,15 @@ void TransactConnection::HandleReadComplete()
 	unsigned size = *(uint32_t*)m_pread;
 	unsigned tag = *(uint32_t*)(m_pread + 4);
 
-	if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn-" << m_conn_index << " TransactConnection::HandleReadComplete read " << m_nred << " bytes msg size " << size << " tag " << tag;
+	if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleReadComplete read " << m_nred << " bytes msg size " << size << " tag " << tag;
 
 	if (size < CC_MSG_HEADER_SIZE + TX_POW_SIZE || size > TRANSACT_MAX_REQUEST_SIZE)
 	{
 		static const string outbuf = "ERROR:message size field invalid";
 
-		BOOST_LOG_TRIVIAL(debug) << Name() << " Conn-" << m_conn_index << " TransactConnection::HandleReadComplete error invalid size " << size << "; sending " << outbuf;
+		if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleReadComplete error invalid size " << size << "; sending " << outbuf;
 
-		WriteAsync("TransactConnection::HandleReadComplete", boost::asio::buffer(outbuf.c_str(), outbuf.size()),
+		WriteAsync("TransactConnection::HandleReadComplete", boost::asio::buffer(outbuf.c_str(), outbuf.size() + 1),
 				boost::bind(&Connection::HandleWrite, this, boost::asio::placeholders::error, AutoCount(this)));
 
 		return;
@@ -92,7 +91,7 @@ void TransactConnection::HandleReadComplete()
 	switch (tag)
 	{
 	case CC_TAG_TX_QUERY_PARAMS:
-		BOOST_LOG_TRIVIAL(trace) << Name() << " Conn-" << m_conn_index << " TransactConnection::HandleReadComplete CC_TAG_TX_QUERY_PARAMS";
+		if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleReadComplete CC_TAG_TX_QUERY_PARAMS";
 
 		clock_allowance = 0;
 		break;
@@ -100,14 +99,15 @@ void TransactConnection::HandleReadComplete()
 	case CC_TAG_TX_QUERY_ADDRESS:
 	case CC_TAG_TX_QUERY_INPUTS:
 	case CC_TAG_TX_QUERY_SERIAL:
-		BOOST_LOG_TRIVIAL(trace) << Name() << " Conn-" << m_conn_index << " TransactConnection::HandleReadComplete CC_TAG_TX_QUERY_ADDRESS/INPUTS/SERIAL";
+		if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleReadComplete CC_TAG_TX_QUERY_ADDRESS/INPUTS/SERIAL";
 
 		clock_allowance = 5*60;
 		break;
 
 	case CC_TAG_TX_WIRE:
+	case CC_TAG_MINT_WIRE:
 	{
-		BOOST_LOG_TRIVIAL(trace) << Name() << " Conn-" << m_conn_index << " TransactConnection::HandleReadComplete CC_TAG_TX_WIRE";
+		if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleReadComplete " << (tag == CC_TAG_TX_WIRE ? "CC_TAG_TX_WIRE" : "CC_TAG_MINT_WIRE");
 
 		clock_allowance = 5*60;
 
@@ -116,7 +116,7 @@ void TransactConnection::HandleReadComplete()
 		smartobj = SmartBuf(size + sizeof(CCObject::Preamble));
 		if (!smartobj)
 		{
-			BOOST_LOG_TRIVIAL(error) << Name() << " Conn-" << m_conn_index << " TransactConnection::HandleReadComplete error smartobj failed";
+			BOOST_LOG_TRIVIAL(error) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleReadComplete error smartobj failed";
 
 			return Stop();
 		}
@@ -125,7 +125,7 @@ void TransactConnection::HandleReadComplete()
 
 		memcpy(obj->ObjPtr(), m_pread, m_nred);
 
-		m_pread = obj->ObjPtr();
+		m_pread = (char*)obj->ObjPtr();
 
 		break;
 	}
@@ -135,9 +135,9 @@ void TransactConnection::HandleReadComplete()
 
 		static const string outbuf = "ERROR:unrecognized message type";
 
-		BOOST_LOG_TRIVIAL(debug) << Name() << " Conn-" << m_conn_index << " TransactConnection::HandleReadComplete error unrecognized message tag " << tag << "; sending " << outbuf;
+		if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleReadComplete error unrecognized message tag " << tag << "; sending " << outbuf;
 
-		WriteAsync("TransactConnection::HandleReadComplete", boost::asio::buffer(outbuf.c_str(), outbuf.size()),
+		WriteAsync("TransactConnection::HandleReadComplete", boost::asio::buffer(outbuf.c_str(), outbuf.size() + 1),
 				boost::bind(&Connection::HandleWrite, this, boost::asio::placeholders::error, AutoCount(this)));
 
 		return;
@@ -145,17 +145,17 @@ void TransactConnection::HandleReadComplete()
 
 	if (clock_allowance && tx_check_timestamp(*(uint64_t*)(m_pread + CC_MSG_HEADER_SIZE), clock_allowance))
 	{
-		char *outbuf = (char*)m_writebuf.data();
+		char *outbuf = m_writebuf.data();
 
 		#if ULONG_MAX == 0xffffffffffffffff
-		sprintf(outbuf, "ERROR:invalid timestamp:%lu", _time64(NULL));
+		sprintf(outbuf, "ERROR:invalid timestamp:%lu", time(NULL));
 		#else
-		sprintf(outbuf, "ERROR:invalid timestamp:%llu", _time64(NULL));
+		sprintf(outbuf, "ERROR:invalid timestamp:%llu", time(NULL));
 		#endif
 
-		BOOST_LOG_TRIVIAL(debug) << Name() << " Conn-" << m_conn_index << " TransactConnection::HandleMsgReadComplete error invalid timestamp; sending " << outbuf;
+		if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleReadComplete error invalid timestamp; sending " << outbuf;
 
-		WriteAsync("TransactConnection::HandleMsgReadComplete", boost::asio::buffer(outbuf, strlen(outbuf)),
+		WriteAsync("TransactConnection::HandleReadComplete", boost::asio::buffer(outbuf, strlen(outbuf) + 1),
 				boost::bind(&Connection::HandleWrite, this, boost::asio::placeholders::error, AutoCount(this)));
 
 		return;
@@ -163,47 +163,50 @@ void TransactConnection::HandleReadComplete()
 
 	m_maxread = size;
 
-	if (m_maxread > m_nred)
+	if (m_nred < m_maxread)
 	{
-		if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn-" << m_conn_index << " TransactConnection::HandleReadComplete queueing read size " << m_maxread - m_nred;
+		if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleReadComplete queueing read size " << m_maxread - m_nred;
 
 		ReadAsync("TransactConnection::HandleReadComplete", boost::asio::buffer(m_pread + m_nred, m_maxread - m_nred), boost::asio::transfer_exactly(m_maxread - m_nred),
 				boost::bind(&TransactConnection::HandleMsgReadComplete, this, boost::asio::placeholders::error, boost::asio::placeholders::bytes_transferred, smartobj, AutoCount(this)));
 	}
 	else
 	{
-		HandleMsgReadComplete(boost::system::error_code(), 0, smartobj, AutoCount());	// don't need to increment op count
+		HandleMsgReadComplete(boost::system::error_code(), 0, smartobj, AutoCount(this));	// don't need to increment op count, but too much effort to chain the AutoCount from the function calling HandleReadComplete
 	}
 }
 
 void TransactConnection::HandleMsgReadComplete(const boost::system::error_code& e, size_t bytes_transferred, SmartBuf smartobj, AutoCount pending_op_counter)
 {
+	if (CheckOpCount(pending_op_counter))
+		return;
+
 	bool sim_err = ((TEST_RANDOM_READ_ERRORS & rand()) == 1);
-	if (sim_err) BOOST_LOG_TRIVIAL(info) << Name() << " Conn-" << m_conn_index << " TransactConnection::HandleMsgReadComplete simulating read error";
+	if (sim_err) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleMsgReadComplete simulating read error";
 
 	if (e || sim_err)
 	{
-		BOOST_LOG_TRIVIAL(info) << Name() << " Conn-" << m_conn_index << " TransactConnection::HandleMsgReadComplete error " << e << " " << e.message() << "; read " << bytes_transferred << " total " << m_nred;
+		if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleMsgReadComplete error " << e << " " << e.message() << "; read " << bytes_transferred << " total " << m_nred;
 
 		return Stop();
 	}
 
 	m_nred += bytes_transferred;
 
-	if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn-" << m_conn_index << " TransactConnection::HandleMsgReadComplete read " << bytes_transferred << " total " << m_nred;
+	if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleMsgReadComplete read " << bytes_transferred << " total " << m_nred;
 
-	unsigned size = *(uint32_t*)m_pread;
-	unsigned tag = *(uint32_t*)(m_pread + 4);
+	auto size = *(uint32_t*)m_pread;
+	auto tag = *(uint32_t*)(m_pread + 4);
 
-	if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn-" << m_conn_index << " TransactConnection::HandleMsgReadComplete read " << m_nred << " bytes msg size " << size << " tag " << tag;
+	if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleMsgReadComplete read " << m_nred << " bytes msg size " << size << " tag " << tag;
 
 	if (size != m_nred)
 	{
 		static const string outbuf = "ERROR:message size field does not match bytes received";
 
-		BOOST_LOG_TRIVIAL(debug) << Name() << " Conn-" << m_conn_index << " TransactConnection::HandleMsgReadComplete error size " << size << " mismatch " << m_nred << "; sending " << outbuf;
+		if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleMsgReadComplete error size " << size << " mismatch " << m_nred << "; sending " << outbuf;
 
-		WriteAsync("TransactConnection::HandleMsgReadComplete", boost::asio::buffer(outbuf.c_str(), outbuf.size()),
+		WriteAsync("TransactConnection::HandleMsgReadComplete", boost::asio::buffer(outbuf.c_str(), outbuf.size() + 1),
 				boost::bind(&Connection::HandleWrite, this, boost::asio::placeholders::error, AutoCount(this)));
 
 		return;
@@ -226,12 +229,13 @@ void TransactConnection::HandleMsgReadComplete(const boost::system::error_code& 
 	{
 		proof_difficulty = g_params.query_work_difficulty;
 		const unsigned data_offset = CC_MSG_HEADER_SIZE + TX_POW_SIZE;
-		auto rc = blake2b(&objhash, sizeof(objhash), NULL, 0, m_pread + data_offset, size - data_offset);
+		auto rc = blake2b(&objhash, sizeof(objhash), &tag, sizeof(tag), m_pread + data_offset, size - data_offset);
 		CCASSERTZ(rc);
 		break;
 	}
 
 	case CC_TAG_TX_WIRE:
+	case CC_TAG_MINT_WIRE:
 	{
 		proof_difficulty = g_params.tx_work_difficulty;
 		auto obj = (CCObject*)smartobj.data();
@@ -239,9 +243,9 @@ void TransactConnection::HandleMsgReadComplete(const boost::system::error_code& 
 		{
 			static const string outbuf = "ERROR:binary object not valid";
 
-			BOOST_LOG_TRIVIAL(debug) << Name() << " Conn-" << m_conn_index << " TransactConnection::HandleMsgReadComplete error object IsValid false; sending " << outbuf;
+			if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleMsgReadComplete error object IsValid false; sending " << outbuf;
 
-			WriteAsync("TransactConnection::HandleTx", boost::asio::buffer(outbuf.c_str(), outbuf.size()),
+			WriteAsync("TransactConnection::HandleMsgReadComplete", boost::asio::buffer(outbuf.c_str(), outbuf.size() + 1),
 					boost::bind(&Connection::HandleWrite, this, boost::asio::placeholders::error, AutoCount(this)));
 
 			return;
@@ -262,9 +266,9 @@ void TransactConnection::HandleMsgReadComplete(const boost::system::error_code& 
 		CCASSERT(0);	// need to handle all tags passed by HandleReadComplete
 	}
 
-	if (proof_difficulty && tx_set_work((char*)m_pread, pobjhash, 0, TX_POW_NPROOFS, 1, proof_difficulty))
+	if (proof_difficulty && tx_set_work_internal(m_pread, pobjhash, 0, TX_POW_NPROOFS, 1, proof_difficulty))
 	{
-		char *outbuf = (char*)m_writebuf.data();
+		char *outbuf = m_writebuf.data();
 
 		#if ULONG_MAX == 0xffffffffffffffff
 		sprintf(outbuf, "ERROR:proof of work failed:%lu", proof_difficulty);
@@ -272,13 +276,16 @@ void TransactConnection::HandleMsgReadComplete(const boost::system::error_code& 
 		sprintf(outbuf, "ERROR:proof of work failed:%llu", proof_difficulty);
 		#endif
 
-		BOOST_LOG_TRIVIAL(debug) << Name() << " Conn-" << m_conn_index << " TransactConnection::HandleMsgReadComplete error proof of work failed; sending " << outbuf;
+		if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleMsgReadComplete error proof of work failed; sending " << outbuf;
 
-		WriteAsync("TransactConnection::HandleMsgReadComplete", boost::asio::buffer(outbuf, strlen(outbuf)),
+		WriteAsync("TransactConnection::HandleMsgReadComplete", boost::asio::buffer(outbuf, strlen(outbuf) + 1),
 				boost::bind(&Connection::HandleWrite, this, boost::asio::placeholders::error, AutoCount(this)));
 
 		return;
 	}
+
+	if (SetTimer(TRANSACT_TIMEOUT))		// allow some more time
+		return;
 
 	m_pread += CC_MSG_HEADER_SIZE + TX_POW_SIZE;
 	size -= CC_MSG_HEADER_SIZE + TX_POW_SIZE;
@@ -295,9 +302,10 @@ void TransactConnection::HandleMsgReadComplete(const boost::system::error_code& 
 		return HandleTxQueryInputs(m_pread, size);
 
 	case CC_TAG_TX_QUERY_SERIAL:
-		return HandleTxQuerySerial(m_pread, size);
+		return HandleTxQuerySerials(m_pread, size);
 
 	case CC_TAG_TX_WIRE:
+	case CC_TAG_MINT_WIRE:
 		return HandleTx(smartobj);
 
 	default:
@@ -307,59 +315,60 @@ void TransactConnection::HandleMsgReadComplete(const boost::system::error_code& 
 
 void TransactConnection::HandleTx(SmartBuf smartobj)
 {
-	if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn-" << m_conn_index << " TransactConnection::HandleTx";
+	if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleTx";
 
-	// !!! check now to see if queue is over full
+	// !!! TODO: check here to see if queue is over full
 
-	// Note: we need to finish use of this connection before calling TxEnqueueValidate, because TxEnqueueValidate will call the callback
-	//	which will call write which will close the connection upon completion and free it for reuse
-	// Note 2: at the moment, nothing needs to be done to finish use of this connection.
+	// Note: use of connection needs to be finished before calling TxEnqueueValidate, because TxEnqueueValidate will call HandleValidateDone
+	//	which will call Write which will close the connection upon completion and free it for reuse
 
-	// set the timer before TxEnqueueValidate so pending ops gets incremented first
-
-	if (SetTimer(TRANSACT_VALIDATION_TIMEOUT))
+	if (CancelTimer())	// cancel timer first, to make sure we send a response instead of just stopping on timeout
 		return;
-
-	// queue Tx for validation
 
 	static atomic<int64_t> medpriority(1);
 
-	auto priority = medpriority.fetch_add(1, memory_order_acq_rel);
-	auto callback_id = expected_callback_id.load();
+	auto priority = medpriority.fetch_add(1);
+	auto callback_id = m_use_count.load();
 
 	auto rc = ProcessTx::TxEnqueueValidate(tx_dbconn, priority, smartobj, m_conn_index, callback_id);
-	if (rc)
+	if (rc)	// TODO: if rc == 1, the tx is already in the validation queue; instead of returning server error, wait for it?
 	{
-		CancelTimer();
-
 		return SendServerError(__LINE__);
 	}
+
+	SetValidationTimer(callback_id, TRANSACT_VALIDATION_TIMEOUT);
 }
 
-void TransactConnection::HandleValidateDone(unsigned callback_id, int64_t result)
+void TransactConnection::HandleValidateDone(uint32_t callback_id, int64_t result)
 {
-	// increment expected_callback_id so either HandleTimeout or HandleValidateDone will run, but not both
-
-	uint32_t expected = callback_id;
-	if (!expected_callback_id.compare_exchange_strong(expected, expected + 1))
-	{
-		BOOST_LOG_TRIVIAL(info) << Name() << " Conn-" << m_conn_index << " TransactConnection::HandleValidateDone ignoring late or unexpected callback id " << callback_id;
-
-		return;
-	}
+	if ((TEST_DELAY_CONN_RELEASE & rand()) == 1) sleep(1);
 
 	// HandleValidateDone was not passed an AutoCount object since we don't want stop to be delayed while the Tx validation runs
-	// But because HandleValidateDone is an async op, we need to acquire an AutoCount now while holding the stop lock
+	// so acquire an AutoCount to prevent Stop from running to completion while this function is running
 
-	auto op_pending = AcquireRef();
-	if (!op_pending)
+	auto autocount = AutoCount(this);
+	if (!autocount)
+		return;
+
+	if ((TEST_DELAY_CONN_RELEASE & rand()) == 1) sleep(1);
+
+	// increment m_use_count so either HandleValidationTimeout or HandleValidateDone will run, but not both
+
+	uint32_t expected_callback_id = m_use_count.fetch_add(1);
+
+	if (callback_id != expected_callback_id)
 	{
-		if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(debug) << Name() << " Conn-" << m_conn_index << " TransactConnection::HandleValidateDone connection is closing";
+		if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleValidateDone ignoring late or unexpected callback id " << callback_id << " expected " << expected_callback_id;
 
 		return;
 	}
 
-	CancelTimer();
+	if ((TEST_RANDOM_VALIDATION_FAILURES & rand()) == 1)
+	{
+		BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleValidateDone simulating validation failure";
+
+		return Stop();
+	}
 
 	const char *poutbuf;
 
@@ -367,7 +376,7 @@ void TransactConnection::HandleValidateDone(unsigned callback_id, int64_t result
 		poutbuf = ProcessTx::ResultString(result);
 	else
 	{
-		char *outbuf = (char*)m_writebuf.data();
+		char *outbuf = m_writebuf.data();
 
 		#if ULONG_MAX == 0xffffffffffffffff
 		sprintf(outbuf, "OK:%lu", result);
@@ -381,38 +390,50 @@ void TransactConnection::HandleValidateDone(unsigned callback_id, int64_t result
 	if (!poutbuf)
 		return SendServerError(__LINE__);
 
-	if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn-" << m_conn_index << " TransactConnection::HandleValidateDone result " << result << " sending " << poutbuf;
+	if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleValidateDone result " << result << " sending " << (poutbuf ? poutbuf : "(null)");
 
-	WriteAsync("TransactConnection::HandleValidateDone", boost::asio::buffer(poutbuf, strlen(poutbuf)),
+	if (SetTimer(TRANSACT_TIMEOUT))
+		return;
+
+	WriteAsync("TransactConnection::HandleValidateDone", boost::asio::buffer(poutbuf, strlen(poutbuf) + 1),
 			boost::bind(&Connection::HandleWrite, this, boost::asio::placeholders::error, AutoCount(this)));
 }
 
-bool TransactConnection::SetTimer(unsigned sec)
+bool TransactConnection::SetValidationTimer(uint32_t callback_id, unsigned sec)
 {
-	auto callback_id = expected_callback_id.load();
+	if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " TransactConnection::SetValidationTimer callback id " << callback_id << " ops pending " << m_ops_pending.load();
 
-	if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn-" << m_conn_index << " TransactConnection::SetTimer callback id " << callback_id;
-
-	auto op_counter = AutoCount();
-	return AsyncTimerWait("TransactConnection::SetTimer", sec*1000, boost::bind(&TransactConnection::HandleTimeout, this, callback_id, boost::asio::placeholders::error, op_counter), op_counter);
+	return AsyncTimerWait("TransactConnection::SetValidationTimer", sec*1000, boost::bind(&TransactConnection::HandleValidationTimeout, this, callback_id, boost::asio::placeholders::error, AutoCount(this)));
 }
 
-void TransactConnection::HandleTimeout(unsigned callback_id, const boost::system::error_code& e, AutoCount pending_op_counter)
+void TransactConnection::HandleValidationTimeout(uint32_t callback_id, const boost::system::error_code& e, AutoCount pending_op_counter)
 {
-	if (e == boost::asio::error::operation_aborted)
-		return;
+	if ((TEST_DELAY_CONN_RELEASE & rand()) == 1) sleep(1);
 
-	// increment expected_callback_id so either HandleTimeout or HandleValidateDone will run, but not both
+	// increment m_use_count so either HandleValidationTimeout or HandleValidateDone will run, but not both
 
-	uint32_t expected = callback_id;
-	if (!expected_callback_id.compare_exchange_strong(expected, expected + 1))
+	uint32_t expected_callback_id = m_use_count.fetch_add(1);
+
+	if (callback_id != expected_callback_id)
 	{
-		BOOST_LOG_TRIVIAL(info) << Name() << " Conn-" << m_conn_index << " TransactConnection::HandleTimeout ignoring late timeout callback id " << callback_id << ", e = " << e << " " << e.message();
+		if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleValidationTimeout ignoring late or unexpected callback id " << callback_id << " expected " << expected_callback_id;
 
 		return;
 	}
 
-	BOOST_LOG_TRIVIAL(info) << Name() << " Conn-" << m_conn_index << " TransactConnection::HandleTimeout callback id " << callback_id << ", e = " << e << " " << e.message();
+	if ((TEST_DELAY_CONN_RELEASE & rand()) == 1) sleep(1);
+
+	if (CheckOpCount(pending_op_counter))
+		return;
+
+	if (e == boost::asio::error::operation_aborted)
+	{
+		//if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleValidationTimeout timer canceled callback id " << callback_id;
+
+		return;
+	}
+
+	if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleValidationTimeout callback id " << callback_id << ", e = " << e << " " << e.message();
 
 	if (e)
 		return SendServerError(__LINE__);
@@ -420,86 +441,126 @@ void TransactConnection::HandleTimeout(unsigned callback_id, const boost::system
 		return SendTimeout();
 }
 
-static void StreamNetParams(ostream &os)
+static void StreamNetParams(ostream& os)
 {
-	os << " \"timestamp\":\"0x" << _time64(NULL) << "\"" JSON_ENDL
+	os << " \"timestamp\":\"0x" << time(NULL) << "\"" JSON_ENDL
+	os << ",\"server-version\":\"0x" << g_params.server_version << "\"" JSON_ENDL
+	os << ",\"protocol-version\":\"0x" << g_params.protocol_version << "\"" JSON_ENDL
+	os << ",\"effective-level\":\"0x" << g_params.effective_level << "\"" JSON_ENDL
 	os << ",\"query-work-difficulty\":\"0x" << g_params.query_work_difficulty << "\"" JSON_ENDL
 	os << ",\"tx-work-difficulty\":\"0x" << g_params.tx_work_difficulty << "\"" JSON_ENDL
+	os << ",\"blockchain-number\":\"0x" << g_params.blockchain << "\"" JSON_ENDL
+	os << ",\"blockchain-highest-indelible-level\":\"0x" << g_blockchain.GetLastIndelibleLevel() << "\"" JSON_ENDL
 	os << ",\"merkle-tree-oldest-commitment-number\":\"0x0\"" JSON_ENDL
-	os << ",\"merkle-tree-next-commitment-number\":\"0x" << g_commitments.GetNextCommitnum() << "\"" JSON_ENDL
+	os << ",\"merkle-tree-next-commitment-number\":\"0x" << g_commitments.GetNextCommitnum() << "\"" JSON_ENDL	// !!! note: small chance this could be out-of-sync with GetLastIndelibleLevel()
 }
 
-static void StreamDonationParams(ostream &os)
+static void StreamPoolParams(ostream& os)
 {
-	os << ",\"donation-per-transaction\":\"0x" << g_blockchain.proof_params.donation_per_tx << "\"" JSON_ENDL
-	os << ",\"donation-per-byte\":\"0x" << g_blockchain.proof_params.donation_per_byte << "\"" JSON_ENDL
-	os << ",\"donation-per-output\":\"0x" << g_blockchain.proof_params.donation_per_output << "\"" JSON_ENDL
-	os << ",\"donation-per-input\":\"0x" << g_blockchain.proof_params.donation_per_input << "\"" JSON_ENDL
+	os << ",\"default-output-pool\":\"0x" << g_params.default_pool << "\"" JSON_ENDL
 }
 
-static void StreamValueLimits(ostream &os)
+static void StreamAmountBits(ostream& os, bool include_donation_bits = true)
 {
-	os << ",\"minimum-output-value\":\"0x" << g_blockchain.proof_params.outvalmin << "\"" JSON_ENDL
-	os << ",\"maximum-output-value\":\"0x" << g_blockchain.proof_params.outvalmax << "\"" JSON_ENDL
-	os << ",\"maximum-input-value\":\"0x" << g_blockchain.proof_params.invalmax << "\"" JSON_ENDL
+	os << dec;
+	if (TEST_EXTRA_ON_WIRE)
+		os << ",\"asset-bits\":" << TX_ASSET_BITS JSON_ENDL
+	else
+		os << ",\"asset-bits\":" << TX_ASSET_WIRE_BITS JSON_ENDL
+	os << ",\"amount-bits\":" << TX_AMOUNT_BITS JSON_ENDL
+	if (include_donation_bits)
+		os << ",\"donation-bits\":" << TX_DONATION_BITS JSON_ENDL
+	os << ",\"exponent-bits\":" << TX_AMOUNT_EXPONENT_BITS JSON_ENDL
+	os << hex;
 }
 
-void TransactConnection::HandleTxQueryParams(const uint8_t *msg, unsigned size)
+static void StreamValueLimits(ostream& os)
 {
-	if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn-" << m_conn_index << " TransactConnection::HandleTxQueryParams size " << size;
+	os << ",\"minimum-output-exponent\":\"0x" << g_blockchain.proof_params.outvalmin << "\"" JSON_ENDL
+	os << ",\"maximum-output-exponent\":\"0x" << g_blockchain.proof_params.outvalmax << "\"" JSON_ENDL
+	os << ",\"maximum-input-exponent\":\"0x" << g_blockchain.proof_params.invalmax << "\"" JSON_ENDL
+}
+
+static void StreamDonationParams(ostream& os)
+{
+	os << ",\"minimum-donation-per-transaction\":\"0x" << g_blockchain.proof_params.minimum_donation_fp << "\"" JSON_ENDL
+	os << ",\"donation-per-transaction\":\"0x" << g_blockchain.proof_params.donation_per_tx_fp << "\"" JSON_ENDL
+	os << ",\"donation-per-byte\":\"0x" << g_blockchain.proof_params.donation_per_byte_fp << "\"" JSON_ENDL
+	os << ",\"donation-per-output\":\"0x" << g_blockchain.proof_params.donation_per_output_fp << "\"" JSON_ENDL	// !!! split between merkle tree outputs and non-merkle tree outputs?
+	os << ",\"donation-per-input\":\"0x" << g_blockchain.proof_params.donation_per_input_fp << "\"" JSON_ENDL		// !!! split between hidden (serialnum) and non-hidden (commitment) inputs?
+}
+
+void TransactConnection::HandleTxQueryParams(const char *msg, unsigned size)
+{
+	if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleTxQueryParams size " << size;
 
 	ostringstream os;
 	os << hex;
-	os.rdbuf()->pubsetbuf((char*)m_writebuf.data(), m_writebuf.size());
+	os.rdbuf()->pubsetbuf(m_writebuf.data(), m_writebuf.size());
 
 	os << "{\"tx-parameters-query-results\":{" JSON_ENDL
 	StreamNetParams(os);
+	StreamAmountBits(os);
+	StreamValueLimits(os);
+	StreamPoolParams(os);
+	StreamDonationParams(os);
 	os << "}}";
 
-	//BOOST_LOG_TRIVIAL(trace) << Name() << " Conn-" << m_conn_index << " TransactConnection::HandleTxQueryParams sending " << (char*)m_writebuf.data();
+	//BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleTxQueryParams sending " << m_writebuf.data();
 
 	SendReply(os);
 }
 
-void TransactConnection::HandleTxQueryAddress(const uint8_t *msg, unsigned size)
+void TransactConnection::HandleTxQueryAddress(const char *msg, unsigned size)
 {
-	if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn-" << m_conn_index << " TransactConnection::HandleTxQueryAddress size " << size;
+	if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleTxQueryAddress size " << size;
 
+	uint64_t blockchain, commitstart;
 	bigint_t address;
-	uint64_t commitstart;
-	static const bool bhex = false;
+	uint16_t maxret;
 
 	uint32_t bufpos = 0;
+	const bool bhex = false;
 
-	copy_from_buf(&address, sizeof(address), bufpos, msg, size, bhex);
-	copy_from_buf(&commitstart, sizeof(commitstart), bufpos, msg, size, bhex);
+	copy_from_buf(blockchain, TX_CHAIN_BYTES, bufpos, msg, size, bhex);
+	copy_from_buf(address, TX_ADDRESS_BYTES, bufpos, msg, size, bhex);
+	copy_from_buf(commitstart, sizeof(commitstart), bufpos, msg, size, bhex);
+	copy_from_buf(maxret, sizeof(maxret), bufpos, msg, size, bhex);
 
 	if (bufpos != size)
 	{
 		static const string outbuf = "ERROR:malformed binary tx-address-query";
 
-		BOOST_LOG_TRIVIAL(debug) << Name() << " Conn-" << m_conn_index << " TransactConnection::HandleTxQueryAddress error malformed query; sending " << outbuf;
+		if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleTxQueryAddress error malformed query; sending " << outbuf;
 
-		WriteAsync("TransactConnection::HandleTxQueryAddress", boost::asio::buffer(outbuf.c_str(), outbuf.size()),
+		WriteAsync("TransactConnection::HandleTxQueryAddress", boost::asio::buffer(outbuf.c_str(), outbuf.size() + 1),
 				boost::bind(&Connection::HandleWrite, this, boost::asio::placeholders::error, AutoCount(this)));
 
 		return;
 	}
 
-	array<uint64_t, TRANSACT_QUERY_MAX_COMMITS> value_enc, commitnums;
-	array<bigint_t, TRANSACT_QUERY_MAX_COMMITS> commitment_iv, commitment;
+	if (blockchain != g_params.blockchain)
+		return SendBlockchainNumberError();
+
+	array<uint32_t, TRANSACT_QUERY_MAX_COMMITS> pool;
+	array<uint64_t, TRANSACT_QUERY_MAX_COMMITS> asset_enc, amount_enc, commitnum;
+	array<char[TX_COMMIT_IV_BYTES], TRANSACT_QUERY_MAX_COMMITS> commitiv;
+	array<bigint_t, TRANSACT_QUERY_MAX_COMMITS> commitment;
 	bool have_more;
 
-	auto nfound = tx_dbconn->TxOutputsSelect(&address, sizeof(address), commitstart, INT64_MAX, &value_enc[0], (char*)&commitment_iv, sizeof(bigint_t), (char*)&commitment, sizeof(bigint_t), &commitnums[0], TRANSACT_QUERY_MAX_COMMITS, &have_more);
+	if (maxret > TRANSACT_QUERY_MAX_COMMITS)
+		maxret = TRANSACT_QUERY_MAX_COMMITS;
+
+	auto nfound = tx_dbconn->TxOutputsSelect(&address, TX_ADDRESS_BYTES, commitstart, &pool[0], &asset_enc[0], &amount_enc[0], (char*)&commitiv, sizeof(commitiv[0]), (char*)&commitment, sizeof(commitment[0]), &commitnum[0], maxret, &have_more);
 	if (nfound < 0)
 		return SendServerError(__LINE__);
 	if (!nfound)
 	{
 		static const string outbuf = "Not Found";
 
-		BOOST_LOG_TRIVIAL(trace) << Name() << " Conn-" << m_conn_index << " TransactConnection::HandleTxQueryAddress not found; sending " << outbuf;
+		if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleTxQueryAddress not found; sending " << outbuf;
 
-		WriteAsync("TransactConnection::HandleTxQueryAddress", boost::asio::buffer(outbuf.c_str(), outbuf.size()),
+		WriteAsync("TransactConnection::HandleTxQueryAddress", boost::asio::buffer(outbuf.c_str(), outbuf.size() + 1),
 				boost::bind(&Connection::HandleWrite, this, boost::asio::placeholders::error, AutoCount(this)));
 
 		return;
@@ -509,59 +570,101 @@ void TransactConnection::HandleTxQueryAddress(const uint8_t *msg, unsigned size)
 
 	ostringstream os;
 	os << hex;
-	os.rdbuf()->pubsetbuf((char*)m_writebuf.data(), m_writebuf.size());
+	os.rdbuf()->pubsetbuf(m_writebuf.data(), m_writebuf.size());
 
 	os << "{\"tx-address-query-report\":" JSON_ENDL
 	os << "{\"address\":\"0x" << address << "\"" JSON_ENDL
 	os << ",\"commitment-number-start\":\"0x" << commitstart << "\"" JSON_ENDL
-	os << ",\"more-results-available\":\"0x" << (int)have_more << "\"" JSON_ENDL
+	os << dec;
+	os << ",\"more-results-available\":" << (int)have_more JSON_ENDL
 	os << ",\"tx-address-query-results\":[" JSON_ENDL
 	for (int i = 0; i < nfound; ++i)
 	{
-		CCASSERT(TX_COMMIT_IV_BITS == 128);
-		for (int j = 2; j < commitment_iv[i].numberLimbs(); ++j)	// looks like a compiler bug doesn't like unsigned j?
-			commitment_iv[i].data()[j] = 0;
-		if (i)
-			os << ",";
-		os << "{\"encrypted-value\":\"0x" << value_enc[i] << "\"" JSON_ENDL
-		os << ",\"commitment-iv\":\"0x" << commitment_iv[i] << "\"" JSON_ENDL
+		#define RETURN_BLOCKLEVEL 0
+
+		#if RETURN_BLOCKLEVEL
+		uint64_t level, timestamp;
+		bigint_t root;
+
+		auto rc = tx_dbconn->CommitRootsSelectCommitnum(commitnum[i], level, timestamp, &root, TX_MERKLE_BYTES);
+		if (rc)
+			return SendServerError(__LINE__);
+		#endif
+
+		bigint_t iv;
+
+		memcpy(&iv, &commitiv[i], sizeof(commitiv[i]));
+
+		if (i) os << ",";
+		os << dec;
+		os << "{\"pool\":" << (pool[i] >> 1) JSON_ENDL
+		StreamAmountBits(os, false);
+		os << hex;
+		if (pool[i] & 1)
+		{
+			os << ",\"encrypted\":0" JSON_ENDL
+			os << ",\"asset\":\"0x" << asset_enc[i] << "\"" JSON_ENDL
+			os << ",\"amount\":\"0x" << amount_enc[i] << "\"" JSON_ENDL
+		}
+		else
+		{
+			os << ",\"encrypted\":1" JSON_ENDL
+			os << ",\"encrypted-asset\":\"0x" << asset_enc[i] << "\"" JSON_ENDL
+			os << ",\"encrypted-amount\":\"0x" << amount_enc[i] << "\"" JSON_ENDL
+		}
+		os << ",\"blockchain\":\"0x" << g_params.blockchain << "\"" JSON_ENDL
+		#if RETURN_BLOCKLEVEL
+		os << ",\"block-level\":\"0x" << level << "\"" JSON_ENDL
+		os << ",\"block-time\":\"0x" << timestamp << "\"" JSON_ENDL
+		#endif
+		os << ",\"commitment-iv\":\"0x" << iv << "\"" JSON_ENDL
 		os << ",\"commitment\":\"0x" << commitment[i] << "\"" JSON_ENDL
-		os << ",\"commitment-number\":\"0x" << commitnums[i] << "\"" JSON_ENDL
+		os << ",\"commitment-number\":\"0x" << commitnum[i] << "\"" JSON_ENDL
 		os << "}" JSON_ENDL
 	}
 	os << "]}}";
 
-	BOOST_LOG_TRIVIAL(trace) << Name() << " Conn-" << m_conn_index << " TransactConnection::HandleTxQueryAddress found";	// sending " << (char*)m_writebuf.data();
+	if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleTxQueryAddress found";	// sending " << m_writebuf.data();
 
 	SendReply(os);
 }
 
-void TransactConnection::HandleTxQueryInputs(const uint8_t *msg, unsigned size)
+void TransactConnection::HandleTxQueryInputs(const char *msg, unsigned size)
 {
-	if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn-" << m_conn_index << " TransactConnection::HandleTxQueryInputs size " << size;
+	if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleTxQueryInputs size " << size;
 
-	bigint_t address, commitment_iv, commitment, hash, nullhash;
-	uint64_t param_level, row_end, commitstart, value_enc, commitnum;
-	static const bool bhex = false;
+	bigint_t hash, nullhash;
+	uint64_t blockchain, param_level, merkle_time, next_commitnum, row_end, commitnum;
 
-	static const unsigned entry_size = sizeof(address) + sizeof(commitstart);
-	unsigned nin = size / entry_size;
+	const unsigned entry_size = sizeof(commitnum);
+	unsigned nin = (size - TX_CHAIN_BYTES) / entry_size;
 
 	//cerr << "size " << size << " entry_size " << entry_size << " nin " << nin << endl;
 
-	if (nin * entry_size != size)
+	if (size < TX_CHAIN_BYTES || TX_CHAIN_BYTES + nin * entry_size != size)
 	{
 		static const string outbuf = "ERROR:malformed binary tx-input-query";
 
-		BOOST_LOG_TRIVIAL(debug) << Name() << " Conn-" << m_conn_index << " TransactConnection::HandleTxQueryInputs error malformed query; sending " << outbuf;
+		if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleTxQueryInputs error malformed query; sending " << outbuf;
 
-		WriteAsync("TransactConnection::HandleTxQueryInputs", boost::asio::buffer(outbuf.c_str(), outbuf.size()),
+		WriteAsync("TransactConnection::HandleTxQueryInputs", boost::asio::buffer(outbuf.c_str(), outbuf.size() + 1),
 				boost::bind(&Connection::HandleWrite, this, boost::asio::placeholders::error, AutoCount(this)));
 
 		return;
 	}
 
-	// ensure we get a consistent snapshot of the merkle tree
+	if (nin > TX_MAXINPATH)
+		return SendTooManyObjectsError();
+
+	uint32_t bufpos = 0;
+	const bool bhex = false;
+
+	copy_from_buf(blockchain, TX_CHAIN_BYTES, bufpos, msg, size, bhex);
+
+	if (blockchain && blockchain != g_params.blockchain)
+		return SendBlockchainNumberError();
+
+	// ensure we get a consistent snapshot of the Merkle tree
 
 	Finally finally(boost::bind(&DbConnPersistData::EndRead, tx_dbconn));
 
@@ -569,9 +672,11 @@ void TransactConnection::HandleTxQueryInputs(const uint8_t *msg, unsigned size)
 	if (rc)
 		return SendServerError(__LINE__);
 
-	CCASSERT(COMMITMENT_HASH_BYTES <= sizeof(hash));
+	rc = tx_dbconn->ParameterSelect(DB_KEY_COMMIT_BLOCKLEVEL, 0, &param_level, sizeof(param_level), TX_BLOCKLEVEL_BYTES < sizeof(param_level));
+	if (rc)
+		return SendServerError(__LINE__);
 
-	rc = tx_dbconn->ParameterSelect(DB_KEY_COMMIT_BLOCK_LEVEL, 0, &param_level, sizeof(param_level));
+	rc = tx_dbconn->CommitRootsSelectLevel(param_level, false, merkle_time, next_commitnum, &hash, TX_MERKLE_BYTES);
 	if (rc)
 		return SendServerError(__LINE__);
 
@@ -581,11 +686,7 @@ void TransactConnection::HandleTxQueryInputs(const uint8_t *msg, unsigned size)
 		if (rc)
 			return SendServerError(__LINE__);
 
-		rc = tx_dbconn->ParameterSelect(DB_KEY_COMMIT_NULL_INPUT, 0, &nullhash, COMMITMENT_HASH_BYTES);
-		if (rc)
-			return SendServerError(__LINE__);
-
-		rc = tx_dbconn->CommitTreeSelect(TX_MERKLE_DEPTH, 0, &hash, COMMITMENT_HASH_BYTES);
+		rc = tx_dbconn->ParameterSelect(DB_KEY_COMMIT_NULL_INPUT, 0, &nullhash, TX_MERKLE_BYTES);
 		if (rc)
 			return SendServerError(__LINE__);
 	}
@@ -593,66 +694,57 @@ void TransactConnection::HandleTxQueryInputs(const uint8_t *msg, unsigned size)
 	//cerr << "parameter-level " << param_level << endl;
 	//cerr << "merkle-root " << hash << endl;
 
+	uint64_t param_time = 0;
+	if (merkle_time > TX_TIME_OFFSET)
+		param_time = (merkle_time - TX_TIME_OFFSET) / TX_TIME_DIVISOR;
+
 	ostringstream os;
 	os << hex;
-	os.rdbuf()->pubsetbuf((char*)m_writebuf.data(), m_writebuf.size());
+	os.rdbuf()->pubsetbuf(m_writebuf.data(), m_writebuf.size());
 
 	os << "{\"tx-input-query-report\":{" JSON_ENDL
 	StreamNetParams(os);
-	StreamDonationParams(os);
+	StreamAmountBits(os);		// !!! if these change, need to make sure they stay sync'ed with parameter-level
+	StreamDonationParams(os);	// !!! if these change, need to make sure they stay sync'ed with parameter-level
 	os << ",\"tx-input-query-results\":" JSON_ENDL
 	os << "{\"parameter-level\":\"0x" << param_level << "\"" JSON_ENDL
+	os << ",\"parameter-time\":\"0x" << param_time << "\"" JSON_ENDL
 	os << ",\"merkle-root\":\"0x" << hash << "\"" JSON_ENDL
-	StreamValueLimits(os);
+	StreamValueLimits(os);		// !!! if these change, need to make sure they stay sync'ed with parameter-level
+	StreamPoolParams(os);
 	os << ",\"inputs\":[" JSON_ENDL
 
-	if (!param_level)
+	if (!param_level && !nin)
 	{
 		os << "]}}}";
 
-		BOOST_LOG_TRIVIAL(trace) << Name() << " Conn-" << m_conn_index << " TransactConnection::HandleTxQueryInputs Merkle tree is empty"; // sending " << (char*)m_writebuf.data();
+		if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleTxQueryInputs Merkle tree is empty"; // sending " << m_writebuf.data();
 
 		return SendReply(os);
 	}
 
-	uint32_t bufpos = 0;
-
 	for (unsigned i = 0; i < nin; ++i)
 	{
-		copy_from_buf(&address, sizeof(address), bufpos, msg, size, bhex);
-		copy_from_buf(&commitstart, sizeof(commitstart), bufpos, msg, size, bhex);
+		copy_from_buf(commitnum, sizeof(commitnum), bufpos, msg, size, bhex);
 
-		//cerr << "address " << hex << address << dec << endl;
-		//cerr << "commitstart " << hex << commitstart << dec << endl;
+		//cerr << "commitnum " << hex << commitnum << dec << endl;
 
-		auto rc = tx_dbconn->TxOutputsSelect(&address, sizeof(address), commitstart, INT64_MAX, &value_enc, (char*)&commitment_iv, sizeof(commitment_iv), (char*)&commitment, sizeof(commitment), &commitnum);
-		if (rc < 0)
-			return SendServerError(__LINE__);
-		if (!rc)
+		if (!param_level || commitnum > row_end)
 		{
-			char *outbuf = (char*)m_writebuf.data();
+			char *outbuf = m_writebuf.data();
 
 			sprintf(outbuf, "Not Found:%u", i);
 
-			BOOST_LOG_TRIVIAL(trace) << Name() << " Conn-" << m_conn_index << " TransactConnection::HandleTxQueryInputs not found"; // sending " << outbuf;
+			if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleTxQueryInputs not found"; // sending " << outbuf;
 
-			WriteAsync("TransactConnection::HandleTxQueryInputs", boost::asio::buffer(outbuf, strlen(outbuf)),
+			WriteAsync("TransactConnection::HandleTxQueryInputs", boost::asio::buffer(outbuf, strlen(outbuf) + 1),
 					boost::bind(&Connection::HandleWrite, this, boost::asio::placeholders::error, AutoCount(this)));
 
 			return;
 		}
 
-		CCASSERT(TX_COMMIT_IV_BITS == 128);
-		for (unsigned j = 2; j < commitment_iv.numberLimbs(); ++j)
-			commitment_iv.data()[j] = 0;
-
-		if (i)
-			os << ",";
-		os << "{\"address\":\"0x" << address << "\"" JSON_ENDL
-		os << ",\"encrypted-value\":\"0x" << value_enc << "\"" JSON_ENDL
-		os << ",\"commitment-iv\":\"0x" << commitment_iv << "\"" JSON_ENDL
-		os << ",\"commitment\":\"0x" << commitment << "\"" JSON_ENDL
-		os << ",\"commitment-number\":\"0x" << commitnum << "\"" JSON_ENDL
+		if (i) os << ",";
+		os << "{\"commitment-number\":\"0x" << commitnum << "\"" JSON_ENDL
 		os << ",\"merkle-path\":[" JSON_ENDL
 		uint64_t offset = commitnum;
 		uint64_t end = row_end;
@@ -671,9 +763,13 @@ void TransactConnection::HandleTxQueryInputs(const uint8_t *msg, unsigned size)
 			}
 			else
 			{
-				auto rc = tx_dbconn->CommitTreeSelect(height, offset, &hash, COMMITMENT_HASH_BYTES);
+				auto rc = tx_dbconn->CommitTreeSelect(height, offset, &hash, TX_MERKLE_BYTES);
 				if (rc)
 					return SendServerError(__LINE__);
+
+				if (height == 0)
+					tx_commit_tree_hash_leaf(hash, offset, hash);
+
 				os << "\"0x" << hash << "\"" JSON_ENDL
 			}
 
@@ -687,69 +783,111 @@ void TransactConnection::HandleTxQueryInputs(const uint8_t *msg, unsigned size)
 
 	os << "]}}}";
 
-	BOOST_LOG_TRIVIAL(trace) << Name() << " Conn-" << m_conn_index << " TransactConnection::HandleTxQueryInputs found"; // sending " << (char*)m_writebuf.data();
+	if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleTxQueryInputs found"; // sending " << m_writebuf.data();
 
 	SendReply(os);
 }
 
-void TransactConnection::HandleTxQuerySerial(const uint8_t *msg, unsigned size)
+void TransactConnection::HandleTxQuerySerials(const char *msg, unsigned size)
 {
-	if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn-" << m_conn_index << " TransactConnection::HandleTxQuerySerial size " << size;
+	if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleTxQuerySerials size " << size;
 
-	bigint_t serialnum;
-	static const bool bhex = false;
+	const unsigned entry_size = TX_SERIALNUM_BYTES;
+	unsigned nserials = (size - TX_CHAIN_BYTES) / entry_size;
 
-	uint32_t bufpos = 0;
+	//cerr << "size " << size << " entry_size " << entry_size << " nserials " << nserials << endl;
 
-	copy_from_buf(&serialnum, sizeof(serialnum), bufpos, msg, size, bhex);
-
-	if (bufpos != size)
+	if (size < TX_CHAIN_BYTES || nserials < 1 || TX_CHAIN_BYTES + nserials * entry_size != size)
 	{
 		static const string outbuf = "ERROR:malformed binary tx-serial-number-query";
 
-		BOOST_LOG_TRIVIAL(debug) << Name() << " Conn-" << m_conn_index << " TransactConnection::HandleTxQuerySerial error malformed query; sending " << outbuf;
+		if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleTxQuerySerials error malformed query; sending " << outbuf;
 
-		WriteAsync("TransactConnection::HandleTxQuerySerial", boost::asio::buffer(outbuf.c_str(), outbuf.size()),
+		WriteAsync("TransactConnection::HandleTxQuerySerials", boost::asio::buffer(outbuf.c_str(), outbuf.size() + 1),
 				boost::bind(&Connection::HandleWrite, this, boost::asio::placeholders::error, AutoCount(this)));
 
 		return;
 	}
 
-	auto nfound = tx_dbconn->SerialnumCheck(&serialnum, sizeof(serialnum));
-	if (nfound < 0)
-		return SendServerError(__LINE__);
-	if (!nfound)
+	if (nserials > TX_MAXIN)
+		return SendTooManyObjectsError();
+
+	uint64_t blockchain;
+	uint32_t bufpos = 0;
+	const bool bhex = false;
+
+	copy_from_buf(blockchain, TX_CHAIN_BYTES, bufpos, msg, size, bhex);
+
+	if (blockchain != g_params.blockchain)
+		return SendBlockchainNumberError();
+
+	ostringstream os;
+	os << hex;
+	os.rdbuf()->pubsetbuf(m_writebuf.data(), m_writebuf.size());
+
+	os << "{\"tx-serial-number-query-results\":[" JSON_ENDL
+
+	for (unsigned i = 0; i < nserials; ++i)
 	{
-		static const string outbuf = "Not Found";
+		bigint_t serialnum;
 
-		BOOST_LOG_TRIVIAL(trace) << Name() << " Conn-" << m_conn_index << " TransactConnection::HandleTxQuerySerial not found; sending " << outbuf;
+		copy_from_buf(serialnum, TX_SERIALNUM_BYTES, bufpos, msg, size, bhex);
 
-		WriteAsync("TransactConnection::HandleTxQuerySerial", boost::asio::buffer(outbuf.c_str(), outbuf.size()),
-				boost::bind(&Connection::HandleWrite, this, boost::asio::placeholders::error, AutoCount(this)));
+		bigint_t hashkey;
+		unsigned hashkey_size = sizeof(hashkey);
 
-		return;
+		auto rc1 = tx_dbconn->SerialnumSelect(&serialnum, TX_SERIALNUM_BYTES, &hashkey, &hashkey_size);
+		if (rc1 < 0)
+			return SendServerError(__LINE__);
+
+		int rc2 = 0;
+		if (rc1)
+		{
+			rc2 = tx_dbconn->TempSerialnumSelect(&serialnum, TX_SERIALNUM_BYTES, NULL, NULL, 0);
+			if (rc2 < 0)
+				return SendServerError(__LINE__);
+		}
+
+		// @@! TODO: Check the "mempool" to prevent the wallet from making a double-spend attempt after a tx submit appears to fail but actually succeeds?
+
+		if (i)
+			os << ",";
+		os << "{\"serial-number\":\"0x" << serialnum << "\"" JSON_ENDL
+		os << ",\"status\":";
+		if (!rc1)
+		{
+			os << "\"indelible\"" JSON_ENDL
+			if (hashkey_size)
+				os << ",\"hashkey\":\"0x" << hashkey << "\"}" JSON_ENDL
+			else
+				os << "}";
+		}
+		else if (rc2)
+			os << "\"pending\"}" JSON_ENDL
+		else
+			os << "\"unspent\"}" JSON_ENDL
 	}
-	else
-	{
-		static const string outbuf = "Indelible";
 
-		BOOST_LOG_TRIVIAL(trace) << Name() << " Conn-" << m_conn_index << " TransactConnection::HandleTxQuerySerial found; sending " << outbuf;
+	os << "]}";
 
-		WriteAsync("TransactConnection::HandleTxQuerySerial", boost::asio::buffer(outbuf.c_str(), outbuf.size()),
-				boost::bind(&Connection::HandleWrite, this, boost::asio::placeholders::error, AutoCount(this)));
-
-		return;
-	}
+	SendReply(os);
 }
 
 void TransactConnection::SendReply(ostringstream& os)
 {
+	os.put(0);
+
 	unsigned size = os.tellp();
 
 	if (!os.good() || size >= m_writebuf.size())
 		return SendReplyWriteError();
 
-	//BOOST_LOG_TRIVIAL(trace) << Name() << " Conn-" << m_conn_index << " TransactConnection::SendReply sending " << (char*)m_writebuf.data();
+	if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " TransactConnection::SendReply sending " << size << " bytes: " << m_writebuf.data();
+
+	// !!! at some point, add a config param for connection keep-alive after SendReply
+
+	if (SetTimer(TRANSACT_TIMEOUT))
+		return;
 
 	WriteAsync("TransactConnection::SendReply", boost::asio::buffer(m_writebuf.data(), size),
 			boost::bind(&Connection::HandleWrite, this, boost::asio::placeholders::error, AutoCount(this)));
@@ -757,13 +895,44 @@ void TransactConnection::SendReply(ostringstream& os)
 	//cerr << "SendReply done" << endl;
 }
 
+void TransactConnection::SendBlockchainNumberError()
+{
+	static const string outbuf = "ERROR:requested blockchain not tracked by this server";
+
+	BOOST_LOG_TRIVIAL(error) << Name() << " Conn " << m_conn_index << " TransactConnection::SendBlockchainNumberError sending " << outbuf;
+
+	if (SetTimer(TRANSACT_TIMEOUT))
+		return;
+
+	WriteAsync("TransactConnection::SendBlockchainNumberError", boost::asio::buffer(outbuf.c_str(), outbuf.size() + 1),
+			boost::bind(&Connection::HandleWrite, this, boost::asio::placeholders::error, AutoCount(this)));
+}
+
+void TransactConnection::SendTooManyObjectsError()
+{
+	static const string outbuf = "ERROR:too many query objects";
+
+	if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " TransactConnection::SendTooManyObjectsError too many query objects; sending " << outbuf;
+
+	if (SetTimer(TRANSACT_TIMEOUT))
+		return;
+
+	WriteAsync("TransactConnection::SendTooManyObjectsError", boost::asio::buffer(outbuf.c_str(), outbuf.size() + 1),
+			boost::bind(&Connection::HandleWrite, this, boost::asio::placeholders::error, AutoCount(this)));
+
+	return;
+}
+
 void TransactConnection::SendServerError(unsigned line)
 {
 	static const string outbuf = "ERROR:server error";
 
-	BOOST_LOG_TRIVIAL(error) << Name() << " Conn-" << m_conn_index << " TransactConnection::SendServerError from line " << line << " sending " << outbuf;
+	BOOST_LOG_TRIVIAL(error) << Name() << " Conn " << m_conn_index << " TransactConnection::SendServerError from line " << line << " sending " << outbuf;
 
-	WriteAsync("TransactConnection::SendServerError", boost::asio::buffer(outbuf.c_str(), outbuf.size()),
+	if (SetTimer(TRANSACT_TIMEOUT))
+		return;
+
+	WriteAsync("TransactConnection::SendServerError", boost::asio::buffer(outbuf.c_str(), outbuf.size() + 1),
 			boost::bind(&Connection::HandleWrite, this, boost::asio::placeholders::error, AutoCount(this)));
 }
 
@@ -771,9 +940,12 @@ void TransactConnection::SendReplyWriteError()
 {
 	static const string outbuf = "ERROR:server reply buffer write error";
 
-	BOOST_LOG_TRIVIAL(error) << Name() << " Conn-" << m_conn_index << " TransactConnection::SendReplyWriteError sending " << outbuf;
+	BOOST_LOG_TRIVIAL(error) << Name() << " Conn " << m_conn_index << " TransactConnection::SendReplyWriteError sending " << outbuf;
 
-	WriteAsync("TransactConnection::SendReplyWriteError", boost::asio::buffer(outbuf.c_str(), outbuf.size()),
+	if (SetTimer(TRANSACT_TIMEOUT))
+		return;
+
+	WriteAsync("TransactConnection::SendReplyWriteError", boost::asio::buffer(outbuf.c_str(), outbuf.size() + 1),
 			boost::bind(&Connection::HandleWrite, this, boost::asio::placeholders::error, AutoCount(this)));
 }
 
@@ -781,9 +953,12 @@ void TransactConnection::SendTimeout()
 {
 	static const string outbuf = "ERROR:server timeout";
 
-	BOOST_LOG_TRIVIAL(error) << Name() << " Conn-" << m_conn_index << " TransactConnection::SendTimeout sending " << outbuf;
+	BOOST_LOG_TRIVIAL(error) << Name() << " Conn " << m_conn_index << " TransactConnection::SendTimeout sending " << outbuf;
 
-	WriteAsync("TransactConnection::SendTimeout", boost::asio::buffer(outbuf.c_str(), outbuf.size()),
+	if (SetTimer(TRANSACT_TIMEOUT))
+		return;
+
+	WriteAsync("TransactConnection::SendTimeout", boost::asio::buffer(outbuf.c_str(), outbuf.size() + 1),
 			boost::bind(&Connection::HandleWrite, this, boost::asio::placeholders::error, AutoCount(this)));
 }
 
@@ -795,7 +970,7 @@ void TransactService::Start()
 	if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(trace) << Name() << " TransactService port " << port;
 
 	// unsigned conn_nreadbuf, unsigned conn_nwritebuf, unsigned sock_nreadbuf, unsigned sock_nwritebuf, unsigned headersize, bool noclose, bool bregister
-	CCServer::ConnectionFactoryInstantiation<TransactConnection> connfac(TRANSACT_MAX_REQUEST_SIZE, TRANSACT_MAX_REPLY_SIZE, 0, 0, CC_MSG_HEADER_SIZE + TX_POW_SIZE, 0, 1);
+	CCServer::ConnectionFactoryInstantiation<TransactConnection> connfac(TRANSACT_MAX_REQUEST_SIZE + 2, TRANSACT_MAX_REPLY_SIZE, 0, 0, CC_MSG_HEADER_SIZE + TX_POW_SIZE, 0, 1);
 	CCThreadFactoryInstantiation<TransactThread> threadfac;
 
 	unsigned maxconns = (unsigned)(max_inconns + max_outconns);
@@ -804,6 +979,11 @@ void TransactService::Start()
 	// unsigned nthreads, unsigned maxconns, unsigned maxincoming, unsigned backlog
 	m_service.Start(boost::asio::ip::tcp::endpoint(address, port),
 			nthreads, maxconns, max_inconns, 0, connfac, threadfac);
+}
+
+void TransactService::StartShutdown()
+{
+	m_service.StartShutdown();
 }
 
 void TransactService::WaitForShutdown()

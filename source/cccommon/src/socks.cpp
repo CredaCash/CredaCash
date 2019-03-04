@@ -1,23 +1,15 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * socks.cpp
 */
 
+#include "CCdef.h"
+#include "CCboost.hpp"
 #include "socks.hpp"
 #include "CCcrypto.hpp"
-#include "CCutil.h"
-
-#include <boost/system/error_code.hpp>
-#include <boost/log/trivial.hpp>
-
-#include <string>
-#include <iostream>
-
-using namespace std;
-using namespace boost::log::trivial;
 
 boost::asio::ip::basic_endpoint<boost::asio::ip::tcp> Socks::ConnectPoint(unsigned port)
 {
@@ -26,27 +18,23 @@ boost::asio::ip::basic_endpoint<boost::asio::ip::tcp> Socks::ConnectPoint(unsign
 	return boost::asio::ip::basic_endpoint<boost::asio::ip::tcp>(boost::asio::ip::address_v4::loopback(), port);
 }
 
-const string Socks::UsernamePrefix()
+string Socks::ConnectString(const string& dest, const string& toruser)
 {
-	//static string prefix;		// if the prefix string is static, this function can return a const string&
-
-	string prefix;				// pick a unique username for every connection to isolate circuits
-
-	if (prefix.empty())
-		prefix = PseudoRandomLetters(12);
-
-	BOOST_LOG_TRIVIAL(trace) << "Socks::UsernamePrefix = " << prefix;
-
-	return prefix;
-}
-
-string Socks::ConnectString(const string& dest)
-{
-	static char start[] = "\x04\x01\x01\xBB\x00\x00\x00\x01";	// socks4, connect, port 443, ip 0.0.0.1
+	static const char start[] = "\x04\x01\x01\xBB\x00\x00\x00\x01";	// socks4, connect, port 443, ip 0.0.0.1
 	string result = string(start, sizeof(start)-1);
-	result += UsernamePrefix() + dest;		// user id
+
+	if (toruser.length())
+		result += toruser;					// proxy user id
+	else
+	{
+		char user[21];
+		PseudoRandomLetters(user, sizeof(user) - 1);
+		user[sizeof(user) - 1] = 0;
+		result += user;						// proxy user id
+	}
+
 	result.push_back(0);
-	result += dest + ".onion";					// destination
+	result += dest + ".onion";				// destination
 	result.push_back(0);
 
 	return result;
@@ -54,7 +42,7 @@ string Socks::ConnectString(const string& dest)
 
 // socks4a reply should be 8 bytes. on success, 2nd byte should be 0x90
 
-boost::system::error_code Socks::SendString(const unsigned port, const string& str, string& reply)
+boost::system::error_code Socks::SendString(boost::asio::ip::tcp::socket& socket, const unsigned port, const string& str, string& reply)
 {
 	size_t ntotal = 0;
 	boost::system::error_code e;
@@ -62,16 +50,15 @@ boost::system::error_code Socks::SendString(const unsigned port, const string& s
 	{
 		auto dest = ConnectPoint(port);
 
-		boost::asio::io_service io_service;
-		boost::asio::ip::tcp::socket socket(io_service);
+		BOOST_LOG_TRIVIAL(trace) << "torproxy synchronous connect...";
 
-		// !!! make this asynchronous?
-		// !!! because it is synchronous, it can take a while to finish and lead to a long delay when shutting down
+		socket.connect(dest, e);	// !!! need to make this connect async?
 
-		socket.connect(dest, e);
+		BOOST_LOG_TRIVIAL(trace) << "torproxy synchronous connect done";
+
 		if (e)
 		{
-			BOOST_LOG_TRIVIAL(warning) << "torproxy connect failed error " << e << " " << e.message();
+			BOOST_LOG_TRIVIAL(info) << "torproxy connect failed error " << e << " " << e.message();
 			goto done;
 		}
 
@@ -146,6 +133,12 @@ boost::system::error_code Socks::SendString(const unsigned port, const string& s
 	}
 
 done:
+
+	if (socket.is_open())
+	{
+		boost::system::error_code ec;
+		socket.close(ec);
+	}
 
 	reply.resize(ntotal);
 

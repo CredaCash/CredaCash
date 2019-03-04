@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * zkhash.hpp
 */
@@ -22,13 +22,9 @@
 using namespace std;
 using namespace snarkfront;
 
-//#define DEBUG_ZKHASH			1	// for debugging
+#define DEBUG_ZKHASH			0	// for debugging
 
-#ifndef DEBUG_ZKHASH
-#define DEBUG_ZKHASH			0	// don't debug
-#endif
-
-namespace Hasher
+namespace CCHasher
 {
 
 class HashBases
@@ -57,7 +53,7 @@ public:
 		for (unsigned i = 0; i < size; ++i)
 		{
 			FieldBases.emplace_back(bigint(i));
-			//cerr << i << " " << bigint(i) << endl << BN128_FR(bigint(i)) << endl << FieldBases.at(i) << endl;
+			//cerr << i << " " << hex << bigint(i) << endl << BN128_FR(bigint(i)) << endl << FieldBases.at(i) << dec << endl;
 		}
 	}
 
@@ -96,7 +92,7 @@ class ASTValue
 public:
 	static ZKRESULT value(const ZKVAR& a)
 	{
-		return a->value() * ZKRESULT(1UL);	// multiply by 1 results in mod prime
+		return a->value();
 	}
 };
 
@@ -119,7 +115,7 @@ public:
 	{
 		ZKRESULT rv = a;
 
-		rv.data()[2] &= (((uint64_t)1) << (MERKLE_HASH_BITS-128)) - 1;	// mask off the extra bits
+		rv.data()[2] &= ((uint64_t)1 << (MERKLE_BITS-128)) - 1;	// mask off the extra bits
 
 		return rv;
 	}
@@ -133,12 +129,11 @@ public:
 	{
 		ZKRESULT rv = a[0].asBigInt();
 
-		rv.data()[2] &= (((uint64_t)1) << (MERKLE_HASH_BITS-128)) - 1;	// mask off the extra bits
+		rv.data()[2] &= ((uint64_t)1 << (MERKLE_BITS-128)) - 1;	// mask off the extra bits
 
 		return rv;
 	}
 };
-#endif
 
 template <typename ZKVAR>
 class ModPrime
@@ -146,13 +141,19 @@ class ModPrime
 public:
 	static ZKVAR Condition(const ZKVAR& a)
 	{
-		return a * ZKVAR(1UL);	// multiply by 1 results in a mod prime
+		return a * ZKVAR(1UL);	// multiply by 1 results in modulo prime
 	}
 };
+#endif
 
 template <typename ZKVAR>
-class NoMod
+class NoOp
 {
+public:
+	static ZKVAR Condition(const ZKVAR& a)
+	{
+		return a;
+	}
 };
 
 template <typename ZKPAIRING, typename ZKVAR, typename ZKBOOL>
@@ -201,7 +202,6 @@ public:
 		snarklib::R1Combination<typename ZKPAIRING::Fr> LC;
 		LC.reserveTerms(bits.size() + ((premainder && !pbitval) ? 1 : 0));
 
-		int i;
 		auto nbits = bits.size();
 
 		uint16_t basesi = 0;
@@ -209,11 +209,11 @@ public:
 		if (!pbases)
 			pbases = &basesi;
 
-		for (i = 0; i < nbits; ++i)
+		for (unsigned i = 0; i < nbits; ++i)
 		{
 			LC.addTerm(bits[i]->r1Terms()[0] * hashbases[*pbases]);
 
-			if (DEBUG_ZKHASH) cerr << "constrainValue: bit " << i << " value " << ASTValue<ZKBOOL,bigint_t>::value(bits[i]) << " scale " << FieldValue<typename ZKPAIRING::Fr,bigint_t>::value(hashbases[*pbases]) << endl;
+			if (DEBUG_ZKHASH) cerr << "constrainValue: bit " << i << " value " << hex << ASTValue<ZKBOOL,bigint_t>::value(bits[i]) << " scale " << FieldValue<typename ZKPAIRING::Fr,bigint_t>::value(hashbases[*pbases]) << dec << endl;
 
 			if (bases)
 				++pbases;
@@ -225,7 +225,7 @@ public:
 
 		if (pbitval)
 		{
-			if (DEBUG_ZKHASH) cerr << "constrainValue: use bitval" << ASTValue<ZKVAR,bigint_t>::value(*pbitval) << endl;
+			if (DEBUG_ZKHASH) cerr << "constrainValue: use bitval " << hex << ASTValue<ZKVAR,bigint_t>::value(*pbitval) << dec << endl;
 
 			RS->m_constraintSystem.addConstraint(LC == (*pbitval)->r1Terms()[0]);
 
@@ -236,12 +236,12 @@ public:
 
 		if (premainder)
 		{
-			if (DEBUG_ZKHASH) cerr << "constrainValue: use remainder " << ASTValue<ZKVAR,bigint_t>::value(*premainder) << " scale " << FieldValue<typename ZKPAIRING::Fr,bigint_t>::value(hashbases[*pbases]) << endl;
+			if (DEBUG_ZKHASH) cerr << "constrainValue: use remainder " << hex << ASTValue<ZKVAR,bigint_t>::value(*premainder) << " scale " << FieldValue<typename ZKPAIRING::Fr,bigint_t>::value(hashbases[*pbases]) << dec << endl;
 
 			LC.addTerm((*premainder)->r1Terms()[0] * hashbases[*pbases]);
 		}
 
-		if (DEBUG_ZKHASH) cerr << "constrainValue: var " << ASTValue<ZKVAR,bigint_t>::value(var) << endl;
+		if (DEBUG_ZKHASH) cerr << "constrainValue: var " << hex << ASTValue<ZKVAR,bigint_t>::value(var) << dec << endl;
 
 		RS->m_constraintSystem.addConstraint(LC == var->r1Terms()[0]);
 	}
@@ -252,17 +252,15 @@ class HashInput
 public:
 	unsigned nbits;
 	bool mask_higher_bits;
-	bool independent_collection_of_bits;
 
 	void DumpBase() const
 	{
 		cerr << "HashInput nbits " << nbits << endl;
-		cerr << "HashInput mask_higher_bits " << mask_higher_bits << endl;
-		cerr << "HashInput independent_collection_of_bits " << independent_collection_of_bits << endl;
+		//cerr << "HashInput mask_higher_bits " << mask_higher_bits << endl;
 	}
 };
 
-template <typename ZKIPARAM, typename ZKBOOL, template <typename ZKIPARAM> class ZKIFIX, template<typename ZKVAR, typename ZKRESULT> class ZKVAL>
+template <typename ZKIPARAM, typename ZKBOOL, template <typename ZKIPARAM2> class ZKIFIX, template<typename ZKVAR, typename ZKRESULT> class ZKVAL>
 class EvalHashInput : public HashInput
 {
 	ZKIPARAM value;
@@ -272,6 +270,14 @@ public:
 	{
 		value = ZKIFIX<ZKIPARAM>::Condition(val);
 		nbits = bits;
+
+		#if LIMIT_ZKPROOF_INPUTS_TO_PRIME_FIELD
+		if (bits > TX_FIELD_BITS)
+		{
+			value = value * bigint_t(1UL);
+			nbits = TX_FIELD_BITS;
+		}
+		#endif
 
 		//cerr << "EvalHashInput val " << hex << val << " value " << value << dec << endl;
 	}
@@ -285,6 +291,7 @@ public:
 	{
 		CCASSERT(0);
 		static vector<ZKBOOL> null_vector;
+
 		return null_vector;
 	}
 
@@ -295,7 +302,7 @@ public:
 	}
 };
 
-template <typename ZKIPARAM, typename ZKBOOL, template <typename ZKIPARAM> class ZKIFIX, template<typename ZKVAR, typename ZKRESULT> class ZKVAL>
+template <typename ZKIPARAM, typename ZKBOOL, template <typename ZKIPARAM2> class ZKIFIX, template<typename ZKVAR, typename ZKRESULT> class ZKVAL>
 class ZKHashInput : public HashInput
 {
 	const void *pvalue;
@@ -306,26 +313,34 @@ public:
 		isvector = false;
 		pvalue = &val;
 		nbits = bits;
+		#if LIMIT_ZKPROOF_INPUTS_TO_PRIME_FIELD
+		if (nbits > TX_FIELD_BITS) nbits = TX_FIELD_BITS;
+		#endif
 	}
 
 	void SetValue(const vector<ZKBOOL>& val, unsigned bits)
 	{
-		CCASSERT(val.size() == bits);
-
 		isvector = true;
 		pvalue = &val;
 		nbits = bits;
+		#if LIMIT_ZKPROOF_INPUTS_TO_PRIME_FIELD
+		if (nbits > TX_FIELD_BITS) nbits = TX_FIELD_BITS;
+		#endif
+
+		CCASSERT(val.size() == nbits);
 	}
 
 	const ZKIPARAM& GetValue() const
 	{
 		CCASSERT(!isvector);
+
 		return *(ZKIPARAM *)pvalue;
 	}
 
 	const vector<ZKBOOL>& GetValueAsVector() const
 	{
 		CCASSERT(isvector);
+
 		return *(vector<ZKBOOL> *)pvalue;
 	}
 
@@ -361,13 +376,13 @@ public:
 // ZKBOOL		zk variable				uint16_t				bit values
 
 template <typename ZKPAIRING, typename ZKPPARAM, typename ZKIPARAM, typename ZKCONST, typename ZKVAR, typename ZKBOOL,
-template <typename ZKIPARAM, typename ZKBOOL, template <typename ZKIPARAM> class ZKIFIX, template <typename ZKVAR, typename ZKRESULT> class ZKVAL> class ZKHASHINPUT,
-template <typename ZKIPARAM> class ZKIFIX,
-template <typename ZKVAR, typename ZKRESULT> class ZKVAL,
-template <typename ZKBOOL, typename ZKRESULT> class ZKBVAL,
-template <typename ZKVAR, typename ZKRESULT> class ZKIVAL,
-template <typename ZKPAIRING, typename ZKVAR, typename ZKBOOL> class ZKCONSTRAINTS>
-class Hasher
+template <typename ZKIPARAM2, typename ZKBOOL2, template <typename ZKIPARAM9> class ZKIFIX2, template <typename ZKVAR9, typename ZKRESULT9> class ZKVAL2> class ZKHASHINPUT,
+template <typename ZKIPARAM3> class ZKIFIX,
+template <typename ZKVAR4, typename ZKRESULT4> class ZKVAL,
+template <typename ZKBOOL5, typename ZKRESULT5> class ZKBVAL,
+template <typename ZKVAR6, typename ZKRESULT6> class ZKIVAL,
+template <typename ZKPAIRING7, typename ZKVAR7, typename ZKBOOL7> class ZKCONSTRAINTS>
+class ZKHasher
 {
 public:
 	typedef const ZKCONST Const;
@@ -383,27 +398,34 @@ public:
 	//	if pbitval, the lower nbits of var, i.e., (var & ((1 << nbits) - 1)), is returned in *pbitval
 	// If enforce_value is set, the sum(bit[i]*2^i) + *premainder (if not NULL) is contrained to equal var
 	//	and if pbitval is not NULL, sum(bit[i]*2^i) is constrained to equal *pbitval
-	// If dont_enforce_value is set, then var is treated as a collection of independent boolean variables,
-	//	i.e., there is no enforcement that sum(bit[i]*2^i) must equal var
-	//	This might be appropriate if the value of var is not used as an integer, but the bits are used as a vector<ZKBOOL>
 
-	static vector<ZKBOOL> extractBits(const ZKVAR& var, const int nbits, ZKVAR *premainder = NULL, ZKVAR *pbitval = NULL, const bool dont_enforce_value = false)
+	static vector<ZKBOOL> extractBits(const ZKVAR& var, int nbits, ZKVAR *premainder = NULL, ZKVAR *pbitval = NULL)
 	{
-		vector<ZKBOOL> bits;
-		bits.reserve(nbits);
+		bigint_t val = ZKVAL<ZKVAR, bigint_t>::value(var);
 
-		if (premainder && nbits >= CC_HASH_BITS)
+		if (DEBUG_ZKHASH) cerr << "extractBits: nbits " << nbits << " val " << hex << val << dec << endl;
+
+		#if LIMIT_ZKPROOF_INPUTS_TO_PRIME_FIELD
+		if (nbits > TX_FIELD_BITS)
 		{
+			nbits = TX_FIELD_BITS;
+		}
+
+		if (premainder && nbits >= TX_FIELD_BITS)
+		{
+			(int*)0 = 0;	// make sure this code path isn't used
+
 			*premainder = 0UL;
 			premainder = NULL;	// there can be no reminder, so ignore this
 
-			if (DEBUG_ZKHASH) cerr << "extractBits ignoring remainder because nbits = " << nbits << " >= " << CC_HASH_BITS << endl;
+			if (DEBUG_ZKHASH) cerr << "extractBits ignoring remainder because nbits = " << nbits << " >= " << TX_FIELD_BITS << endl;
 		}
+		#endif
 
-		bigint_t val = ZKVAL<ZKVAR, bigint_t>::value(var);
+		vector<ZKBOOL> bits;
+		bits.reserve(nbits);
+
 		bigint_t bval = 0UL;
-
-		if (DEBUG_ZKHASH) cerr << "extractBits: nbits " << nbits << " val " << hex << val << dec << endl;
 
 		for (int i = 0; i < nbits; ++i)
 		{
@@ -411,9 +433,9 @@ public:
 			mpn_rshift(BIGDATA(val), BIGDATA(val), BIGINT(val).numberLimbs(), 1);
 
 			if (pbitval && bit)
-				bval = bval + hashbases.bigint(i);
+				addBigInt(bval, hashbases.bigint(i), bval, false);
 
-			if (DEBUG_ZKHASH) cerr << "extractBits: index " << i << " bit " << bit << " bitval " << bval << " remainder " << hex << val << dec << endl;
+			if (DEBUG_ZKHASH) cerr << "extractBits: index " << i << " bit " << bit << " bitval " << hex << bval << " remainder " << val << dec << endl;
 
 			bits.emplace_back(bit);
 
@@ -426,12 +448,13 @@ public:
 
 			*premainder = _remainder;
 
-			if (DEBUG_ZKHASH) cerr << "extractBits: set remainder = " << ZKVAL<ZKVAR,bigint_t>::value(*premainder) << endl;
+			if (DEBUG_ZKHASH) cerr << "extractBits: set remainder = " << hex << ZKVAL<ZKVAR,bigint_t>::value(*premainder) << dec << endl;
 		}
 		else if (val)
 		{
-			cout << "extractBits error: remainder = " << hex << val << " but premainder is NULL" << dec << endl;
-			CCASSERT(!val);
+			if (DEBUG_ZKHASH) cerr << "extractBits warning: val = " << hex << ZKVAL<ZKVAR, bigint_t>::value(var) << " remainder = " << val << dec << endl;
+			//CCASSERTZ(val && !premainder);
+			//CCASSERT(0);
 		}
 
 		if (pbitval)
@@ -440,11 +463,10 @@ public:
 
 			*pbitval = _bitval;
 
-			if (DEBUG_ZKHASH) cerr << "extractBits: set bitval = " << ZKVAL<ZKVAR,bigint_t>::value(*pbitval) << endl;
+			if (DEBUG_ZKHASH) cerr << "extractBits: set bitval = " << hex << ZKVAL<ZKVAR,bigint_t>::value(*pbitval) << dec << endl;
 		}
 
-		if (!dont_enforce_value)
-			ZKCONSTRAINTS<ZKPAIRING,ZKVAR,ZKBOOL>::constrainValue(var, bits, NULL, premainder, pbitval);
+		ZKCONSTRAINTS<ZKPAIRING,ZKVAR,ZKBOOL>::constrainValue(var, bits, NULL, premainder, pbitval);
 
 		return bits;
 	}
@@ -455,7 +477,7 @@ public:
 
 		unsigned nbits = bits.size();
 
-		CCASSERT(nbits < sizeof(bases)/sizeof(uint16_t));
+		CCASSERT(nbits <= sizeof(bases)/sizeof(uint16_t));
 		CCASSERTZ(HASHBASES_NRANDOM & (HASHBASES_NRANDOM - 1));	// must be a power of 2
 
 		//auto basisi0 = basisi;
@@ -469,7 +491,7 @@ public:
 				if (sequential)
 					bases[i] = *(uint16_t*)prfkey + basisi;
 				else
-					bases[i] = sip_hash24((uint8_t*)prfkey, (uint8_t*)&basisi, sizeof(basisi), 0);
+					bases[i] = siphash((uint8_t*)prfkey, (uint8_t*)&basisi, sizeof(basisi));
 
 				bases[i] &= (HASHBASES_NRANDOM - 1);
 				bases[i] += HASHBASES_RANDOM_START;
@@ -494,7 +516,7 @@ public:
 			{
 				sum = sum + hashbases.bigint(bases[i]);
 
-				if (DEBUG_ZKHASH) cerr << "Knapsack: bit " << i << " adding basis " << bases[i] << endl << " value " << hashbases.bigint(bases[i]) << endl << " sum " << sum << endl;
+				if (DEBUG_ZKHASH) cerr << "Knapsack: bit " << i << " adding basis " << bases[i] << endl << " value " << hex << hashbases.bigint(bases[i]) << endl << " sum " << sum << dec << endl;
 			}
 		}
 
@@ -515,12 +537,12 @@ public:
 		return ks;
 	}
 
-	static ZKIPARAM HashFinish(ZKVAR& acc, ZKVAR& ks0, ZKVAR& ks1, const void *prfkey, uint32_t& basisi, const unsigned outbits)
+	static ZKIPARAM HashFinish(ZKVAR& acc, ZKVAR& ks0, ZKVAR& ks1, const void *prfkey, uint32_t& basisi, const unsigned outbits, bool skip_final_knapsack)
 	{
 		if (DEBUG_ZKHASH) cerr << "Hash: Knapsack output:" << endl;
-		if (DEBUG_ZKHASH) cerr << ZKVAL<ZKIPARAM,bigint_t>::value(acc) << endl;
-		if (DEBUG_ZKHASH) cerr << ZKVAL<ZKIPARAM,bigint_t>::value(ks0) << endl;
-		if (DEBUG_ZKHASH) cerr << ZKVAL<ZKIPARAM,bigint_t>::value(ks1) << endl;
+		if (DEBUG_ZKHASH) cerr << hex << ZKVAL<ZKIPARAM,bigint_t>::value(acc) << dec << endl;
+		if (DEBUG_ZKHASH) cerr << hex << ZKVAL<ZKIPARAM,bigint_t>::value(ks0) << dec << endl;
+		if (DEBUG_ZKHASH) cerr << hex << ZKVAL<ZKIPARAM,bigint_t>::value(ks1) << dec << endl;
 
 		for (unsigned i = 0; i < 8; ++i)
 		{
@@ -533,26 +555,40 @@ public:
 		acc = acc + ks0 + ks1;
 
 		if (DEBUG_ZKHASH) cerr << "Hash: Diophantine output:" << endl;
-		if (DEBUG_ZKHASH) cerr << ZKVAL<ZKIPARAM,bigint_t>::value(acc) << endl;
-		if (DEBUG_ZKHASH) cerr << ZKVAL<ZKIPARAM,bigint_t>::value(ks0) << endl;
-		if (DEBUG_ZKHASH) cerr << ZKVAL<ZKIPARAM,bigint_t>::value(ks1) << endl;
+		if (DEBUG_ZKHASH) cerr << hex << ZKVAL<ZKIPARAM,bigint_t>::value(acc) << dec << endl;
+		if (DEBUG_ZKHASH) cerr << hex << ZKVAL<ZKIPARAM,bigint_t>::value(ks0) << dec << endl;
+		if (DEBUG_ZKHASH) cerr << hex << ZKVAL<ZKIPARAM,bigint_t>::value(ks1) << dec << endl;
 
-		// do a second knapsack
+		if (!skip_final_knapsack)
+		{
+			// do a final knapsack
 
-		ZKVAR fr;
-		auto fbits = extractBits(acc, outbits, &fr);
-		auto out = Knapsack1(fbits, prfkey, basisi, true);
+			auto inbits = outbits * 2;
+			if (inbits > TX_FIELD_BITS)
+				inbits = TX_FIELD_BITS;
 
-		return ZKIVAL<ZKVAR,ZKIPARAM>::value(out);
+			ZKVAR rem;
+			auto accbits = extractBits(acc, inbits, (inbits >= TX_FIELD_BITS ? NULL : &rem));
+			acc = Knapsack1(accbits, prfkey, basisi, true);
+		}
+
+		if (outbits >= TX_FIELD_BITS)
+			return ZKIVAL<ZKVAR,ZKIPARAM>::value(acc);
+		else
+		{
+			ZKVAR result, rem;
+			auto accbits = extractBits(acc, outbits, &rem, &result);
+			return ZKIVAL<ZKVAR,ZKIPARAM>::value(result);
+		}
 	}
 
-	static ZKIPARAM Hash(vector<ZKHASHINPUT<ZKIPARAM, ZKBOOL, ZKIFIX, ZKVAL>>& a, int basis, const unsigned outbits, bool bit_inputs = false)
+	static ZKIPARAM Hash(vector<ZKHASHINPUT<ZKIPARAM, ZKBOOL, ZKIFIX, ZKVAL>>& a, int basis, const unsigned outbits, bool skip_final_knapsack = false, bool bit_inputs = false)
 	{
 		ZKVAR acc, ks0, ks1;
 
-		if (DEBUG_ZKHASH) cerr << "Hash nin " << a.size() << " basis " << basis << " outbits " << outbits << " bit_inputs " << bit_inputs << endl;
+		if (DEBUG_ZKHASH) cerr << "Hash nin " << a.size() << " basis " << basis << " outbits " << outbits << " skip_final_knapsack " << skip_final_knapsack << " bit_inputs " << bit_inputs << endl;
 
-		//acc = 0UL;	//for testing
+		//acc = 0UL;	// for testing
 
 		CCASSERT(basis < (int)sizeof(hash_bases_prfkeys)/(128/8));
 		CCASSERT(HASH_BASES_MERKLE_NODE < 0);
@@ -565,8 +601,8 @@ public:
 
 		for (unsigned i = 0; i < a.size(); ++i)
 		{
-			//acc = acc + a[i].GetValue();	//for testing
-			//continue;						//for testing
+			//acc = acc + a[i].GetValue();	// for testing
+			//continue;						// for testing
 
 			vector<ZKBOOL> abits;
 			ZKVAR ar;
@@ -574,7 +610,7 @@ public:
 			if (bit_inputs)
 				abits = a[i].GetValueAsVector();
 			else
-				abits = extractBits(a[i].GetValue(), a[i].nbits, (a[i].mask_higher_bits ? &ar : NULL), NULL, a[i].independent_collection_of_bits);
+				abits = extractBits(a[i].GetValue(), a[i].nbits, (a[i].mask_higher_bits ? &ar : NULL));
 
 			auto ks = Knapsack2(abits, prfkey, basisi);
 
@@ -595,17 +631,17 @@ public:
 			}
 		}
 
-		return HashFinish(acc, ks0, ks1, prfkey, basisi, outbits);
+		return HashFinish(acc, ks0, ks1, prfkey, basisi, outbits, skip_final_knapsack);
 	}
 
-	static ZKIPARAM HashBits(vector<ZKHASHINPUT<ZKIPARAM, ZKBOOL, ZKIFIX, ZKVAL>>& a, unsigned basis, const unsigned outbits)
+	static ZKIPARAM HashBits(vector<ZKHASHINPUT<ZKIPARAM, ZKBOOL, ZKIFIX, ZKVAL>>& a, unsigned basis, const unsigned outbits, bool skip_final_knapsack = false)
 	{
 		ZKVAR acc, ks0, ks1;
 
-		return Hash(a, basis, outbits, true);
+		return Hash(a, basis, outbits, skip_final_knapsack, true);
 	}
 
-	static ZKIPARAM Merkle(const ZKIPARAM& leafval, const unsigned leafbits, const vector<ZKIPARAM>& inputs, const unsigned pathbits, const unsigned outbits)
+	static ZKIPARAM Merkle(const ZKIPARAM& leafval, const unsigned leafbits, const vector<ZKIPARAM>& inputs, const unsigned pathbits)
 	{
 		CCASSERT(inputs.size() >= 1);
 
@@ -615,21 +651,21 @@ public:
 
 		a[0].SetValue(leafval, leafbits);
 
-		a[0].mask_higher_bits = (leafbits < CC_HASH_BITS);
+		a[0].mask_higher_bits = (leafbits < TX_FIELD_BITS);
 
 		if (DEBUG_ZKHASH) cerr << "Merkle: leaf" << endl;
 		if (DEBUG_ZKHASH) a[0].Dump();
 
 		ZKVAR hash;	// need to declare this here since SetValue stores a pointer to it
 
-		for (int i = 0; i < inputs.size(); ++i)
+		for (unsigned i = 0; i < inputs.size(); ++i)
 		{
 			a[1].SetValue(inputs[i], pathbits);
 
 			if (DEBUG_ZKHASH) cerr << "Merkle: input " << i << endl;
 			if (DEBUG_ZKHASH) a[1].Dump();
 
-			hash = Hash(a, HASH_BASES_MERKLE_NODE, pathbits);
+			hash = Hash(a, HASH_BASES_MERKLE_NODE, pathbits, i < inputs.size() - 1);
 
 			// iteration: a[0] = hash output, a[1] = next path input (at top of loop)
 
@@ -639,51 +675,48 @@ public:
 			if (DEBUG_ZKHASH) a[0].Dump();
 		}
 
-		if (outbits >= CC_HASH_BITS)
-			return ZKIVAL<ZKVAR,ZKIPARAM>::value(a[0].GetValue());
-		else
-		{
-			// extract the bottom bits after the final iteration
-			ZKVAR result, rem;
-			auto lbits = extractBits(a[0].GetValue(), outbits, &rem, &result);
-			return ZKIVAL<ZKVAR,ZKIPARAM>::value(result);
-		}
+		return ZKIVAL<ZKVAR,ZKIPARAM>::value(a[0].GetValue());
 	}
 };
 
 // Namespaces to construct zk proofs.  Uses slow datatypes.
 // If BIGINT_MOD is defined (see below), the proof it computes is correct but the values are not.  In that case, the eval or inteval namespaces must be used to compute the values.
+
+#define zk_VAR		bigint_x<typename ZKPAIRING::Fr>
+#define zk_CONST	c_bigint<typename ZKPAIRING::Fr>
+
 namespace zk
 {
 	template <typename ZKPAIRING> using
-	HashInput = ZKHashInput<bigint_x<typename ZKPAIRING::Fr>, bigint_x<typename ZKPAIRING::Fr>, NoMod, ASTValue>;
+	HashInput = ZKHashInput<zk_VAR, zk_VAR, NoOp, ASTValue>;
 
 	template <typename ZKPAIRING> using
-	Hasher = Hasher<ZKPAIRING, bigint_t, bigint_x<typename ZKPAIRING::Fr>, c_bigint<typename ZKPAIRING::Fr>, bigint_x<typename ZKPAIRING::Fr>, bigint_x<typename ZKPAIRING::Fr>,
-		ZKHashInput, NoMod, ASTValue, ASTValue, Coerce, BitConstraints>;
+	Hasher = ZKHasher<ZKPAIRING, bigint_t, zk_VAR, zk_CONST, zk_VAR, zk_VAR,
+		ZKHashInput, NoOp, ASTValue, ASTValue, Coerce, BitConstraints>;
 }
 
 // Namespace to compute values.  Uses faster datatypes than zk namespace.
 namespace eval
 {
-	typedef EvalHashInput<bigint_t, uint16_t, ModPrime, Coerce> HashInput;
+	typedef EvalHashInput<bigint_t, uint16_t, NoOp, Coerce> HashInput;
 
 	template <typename ZKPAIRING> using
-	Hasher = Hasher<ZKPAIRING, bigint_t, bigint_t, typename ZKPAIRING::Fr, typename ZKPAIRING::Fr, uint16_t,
-		EvalHashInput, ModPrime, FieldValue, Coerce, FieldValue, NOPConstraints>;
+	Hasher = ZKHasher<ZKPAIRING, bigint_t, bigint_t, typename ZKPAIRING::Fr, typename ZKPAIRING::Fr, uint16_t,
+		EvalHashInput, NoOp, FieldValue, Coerce, FieldValue, NOPConstraints>;
 
 }
 
 // Namespace to compute values using BigInts hacked to do modulo arithmetic, which is the fastest method.
 // This method only works only if BIGINT_MOD is defined.
+
 namespace inteval
 {
 	template <typename T> using
-	HashInput = EvalHashInput<T, uint16_t, ModPrime, Coerce>;
+	HashInput = EvalHashInput<T, uint16_t, NoOp, Coerce>;
 
 	template <typename T> using
-	Hasher = Hasher<void, T, T, T, T, uint16_t,
-		EvalHashInput, ModPrime, Coerce, Coerce, Coerce, NOPConstraints>;
+	Hasher = ZKHasher<void, T, T, T, T, uint16_t,
+		EvalHashInput, NoOp, Coerce, Coerce, Coerce, NOPConstraints>;
 }
 
-} // namespace Hasher
+} // namespace CCHasher

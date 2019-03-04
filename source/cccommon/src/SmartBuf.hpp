@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * SmartBuf.hpp
 */
@@ -15,11 +15,6 @@
 
 #define TRACE_SMARTBUF		0
 
-#define USE_SMARTBUF_GUARD	1
-
-#define SMARTBUF_GUARD	0x84758362
-#define SMARTBUF_FREE	0x28472919
-
 class SmartBuf
 {
 	typedef std::atomic<std::uint32_t> refcount_t;
@@ -27,7 +22,7 @@ class SmartBuf
 
 	std::atomic<std::uint8_t*> buf;				// atomic in case a SmartBuf instance is accessed from more than one thread
 
-	std::size_t alloc_size() const;
+	static std::size_t alloc_size(const std::uint8_t* bufp);
 
 public:
 
@@ -41,9 +36,11 @@ public:
 
 	SmartBuf(std::size_t bufsize);
 
-	void CheckGuard(bool refcount_iszero = false) const;
+	void CheckGuard(const std::uint8_t* bufp, bool refcount_iszero = false) const;
 
 	std::size_t size() const;
+
+	static std::size_t size(const std::uint8_t* bufp);
 
 	std::uint8_t* data(int refcount_iszero = false) const;
 
@@ -51,9 +48,9 @@ public:
 
 	unsigned GetAuxPtrCount() const;
 
-	void SetRefCount(unsigned count);
+	static void SetRefCount(const std::uint8_t* bufp, unsigned count);
 
-	unsigned GetRefCount() const;
+	static unsigned GetRefCount(const std::uint8_t* bufp);
 
 	unsigned IncRef();
 
@@ -77,14 +74,17 @@ public:
 
 	void* BasePtr() const;
 
-	operator bool() const;
+	operator bool() const
+	{
+		return BasePtr();
+	}
 
-	bool operator== (const SmartBuf &s) const
+	bool operator== (const SmartBuf& s) const
 	{
 		return BasePtr() == s.BasePtr();
 	}
 
-	bool operator!= (const SmartBuf &s) const
+	bool operator!= (const SmartBuf& s) const
 	{
 		return !(*this == s);
 	}

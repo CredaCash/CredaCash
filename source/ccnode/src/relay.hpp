@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * relay.hpp
 */
@@ -11,7 +11,6 @@
 #include <ccserver/service.hpp>
 #include <ccserver/connection.hpp>
 
-#include "service_base.hpp"
 #include "relay_request_params.h"
 
 #include <CCobjdefs.h>
@@ -20,7 +19,7 @@
 class RelayConnection : public CCServer::Connection
 {
 public:
-	RelayConnection(class CCServer::ConnectionManager& manager, boost::asio::io_service& io_service, const class CCServer::ConnectionFactory& connfac)
+	RelayConnection(class CCServer::ConnectionManagerBase& manager, boost::asio::io_service& io_service, const class CCServer::ConnectionFactoryBase& connfac)
 	 :	CCServer::Connection(manager, io_service, connfac),
 		private_peer_index(-1),
 		request_param_queue(sizeof(relay_request_params_extended_t), CC_TX_SEND_MAX),
@@ -43,12 +42,12 @@ private:
 
 	atomic<int> request_objs_pending;
 	atomic<int64_t> request_bytes_pending;
-	ObjQueue request_param_queue;
 	FastSpinLock request_queue_lock;
+	ObjQueue request_param_queue;
 
-	ObjQueue send_queue;
-	FastSpinLock send_queue_lock;
 	atomic_flag send_one;
+	FastSpinLock send_queue_lock;
+	ObjQueue send_queue;
 
 	void StartConnection();
 
@@ -60,7 +59,7 @@ private:
 	void CheckToSend();
 	void HandleObjWrite(const boost::system::error_code& e, SmartBuf smartobj, AutoCount pending_op_counter);
 
-	bool SetTimer();
+	bool SetHeartbeatTimer();
 	void HandleHeartbeat(const boost::system::error_code& e, AutoCount pending_op_counter);
 	void HandleAnnounceMsgWrite(const boost::system::error_code& e, AutoCount pending_op_counter);
 
@@ -68,7 +67,7 @@ private:
 };
 
 
-class RelayService : public ServiceBase
+class RelayService : public TorService
 {
 	CCServer::Service m_service;
 
@@ -93,8 +92,8 @@ class RelayService : public ServiceBase
 	vector<uint32_t> m_connect_time;
 
 public:
-	RelayService(string n, string s, bool b)
-	 :	ServiceBase(n, s),
+	RelayService(const string& n, const wstring& d, const string& s, bool b)
+	 :	TorService(n, d, s),
 		m_service(n),
 		m_bprivate(b),
 		m_nprivhosts(0),
@@ -132,6 +131,7 @@ public:
 	void PrivateConnected(int peer);
 	void PrivateDisconnected(int peer);
 
+	void StartShutdown();
 	void WaitForShutdown();
 };
 

@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * CCobjdefs.h
 */
@@ -10,6 +10,14 @@
 
 #include <cstdint>
 #include <array>
+
+// Object Type
+
+#define CC_TYPE_BLOCK			1
+#define CC_TYPE_TXPAY			2
+#define CC_TYPE_MINT			3
+
+// Object Tags
 
 // CC-Message
 #define CC_MSG_HAVE_BLOCK		0xCC4D0001
@@ -33,14 +41,18 @@
 // CC-Error
 #define CC_ERROR_BAD_CMD		0xCC450001
 #define CC_ERROR_BAD_PARAM		0xCC450002
-#define CC_ERROR_NO_OBJ			0xCC450003
+#define CC_NO_OBJ			0xCC450003
 #define CC_ERROR_SEND_Q_RESET	0xCC450004
+
+//@@! change these into bit fields
 
 // CC-Objects
 #define CC_TAG_BLOCK			0xCC010001
 #define CC_TAG_TX_STRUCT		0xCC020001
-#define CC_TAG_TX_WIRE			0xCC030001
-#define CC_TAG_TX_BLOCK			0xCC040001
+#define CC_TAG_MINT_WIRE		0xCC030001
+#define CC_TAG_MINT_BLOCK		0xCC040001
+#define CC_TAG_TX_WIRE			0xCC050001
+#define CC_TAG_TX_BLOCK			0xCC060001
 
 // CC-Query
 #define CC_TAG_TX_QUERY_PARAMS	0xCC510001
@@ -73,7 +85,7 @@ typedef std::array<uint8_t, CC_OID_SIZE> ccoid_t;
 
 #define TX_POW_NPROOFS			8
 #define TX_POW_NONCE_BITS		40
-#define TX_POW_NONCE_MASK		((((uint64_t)1 << ((TX_POW_NONCE_BITS) - 1)) - 1) * 2 + 1)
+#define TX_POW_NONCE_MASK		((((uint64_t)1 << (TX_POW_NONCE_BITS - 1)) - 1) * 2 + 1)
 #define TX_POW_NONCE_SIZE		((TX_POW_NONCE_BITS)/8)
 #define TX_POW_SIZE				(sizeof(uint64_t) + (TX_POW_NPROOFS) * (TX_POW_NONCE_SIZE))
 

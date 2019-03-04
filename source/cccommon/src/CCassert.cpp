@@ -1,55 +1,51 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * CCassert.cpp
 */
 
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#endif
+#include "CCdef.h"
+#include "CCassert.h"
 
-#include <CCassert.h>
-
-#include <iostream>
-
-using namespace std;
-
-//#define TEST_BREAK_ON_ASSERT	1	// !!! must be commented out for production
+//#define TEST_BREAK_ON_ASSERT	1	// must be commented out for production
 
 #ifndef TEST_BREAK_ON_ASSERT
 #define TEST_BREAK_ON_ASSERT	0	// don't break
 #endif
 
-static unsigned threadid()
+static unsigned thread_id()
 {
-#ifdef _WIN32
+	#ifdef _WIN32
 	return GetCurrentThreadId();
-#else
+	#else
 	return syscall(SYS_gettid);
-#endif
+	#endif
 }
 
 extern "C" void __ccassert(const char *msg, const char *file, int line)
 {
-	cout << "error thread 0x" << hex << threadid() << dec << " assert(" << msg << ") false at " << file << ":" << line << endl;
+	ostringstream os;
+	os << "error thread 0x" << hex << thread_id() << dec << " assert(" << msg << ") false at " << file << ":" << line;
+	cout << os.str() << endl;
 
 #if TEST_BREAK_ON_ASSERT
 	*(int*)0 = 0;
 #endif
 
-	throw -1;
+	throw runtime_error(os.str());
 }
 
 extern "C" void __ccassertz(const char *msg, uintptr_t x, const char *file, int line)
 {
-	cout << "error thread 0x" << hex << threadid() << dec << " assertz(" << msg << ") is " << x << " at " << file << ":" << line << endl;
+	ostringstream os;
+	os << "error thread 0x" << hex << thread_id() << dec << " assertz(" << msg << ") is " << x << " at " << file << ":" << line;
+	cout << os.str() << endl;
 
 #if TEST_BREAK_ON_ASSERT
 	*(int*)0 = 0;
 #endif
 
-	throw -1;
+	throw runtime_error(os.str());
 }

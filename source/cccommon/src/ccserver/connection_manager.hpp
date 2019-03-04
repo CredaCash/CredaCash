@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * connection_manager.hpp
 */
@@ -22,7 +22,7 @@ class Server;
 
 /// Manages a pool of connections
 
-class ConnectionManager
+class ConnectionManagerBase
 	: private boost::noncopyable
 {
 	const string m_name;
@@ -34,9 +34,22 @@ public:
 		return m_name;
 	}
 
+	ConnectionManagerBase(const string& name)
+	 :	m_name(name)
+	{ }
+
+	virtual ~ConnectionManagerBase() = default;
+
+	virtual void FreeConnection(pconnection_t connection)
+	{ }
+};
+
+class ConnectionManager : public ConnectionManagerBase
+{
+public:
 	ConnectionManager(const string& name, boost::asio::io_service& io_service)
-	 :	m_name(name),
-	 	m_io_service(io_service),
+	 :	ConnectionManagerBase(name),
+		m_io_service(io_service),
 		m_free_callback_obj(NULL),
 		m_maxincoming(0),
 		m_incoming_count(0)
@@ -44,12 +57,12 @@ public:
 
 	~ConnectionManager();
 
-	void Init(unsigned maxconns, unsigned maxincoming, const class ConnectionFactory &connfac);
+	void Init(unsigned maxconns, unsigned maxincoming, const class ConnectionFactory& connfac);
 
 	/// Register Server object to receive notification when a Connection becomes free
 	void SetFreeConnectionHandler(Server *p);
 
-	pconnection_t GetFreeConnection(bool incoming);
+	pconnection_t GetFreeConnection(bool incoming = false);
 
 	unsigned GetOutgoingConnectionCount();
 
@@ -74,7 +87,7 @@ protected:
 
 	unsigned m_maxincoming;
 	unsigned m_incoming_count;
-	FastSpinLock m_lock;
+	FastSpinLock m_conn_mgr_lock;
 };
 
 void set_int_opt(int sockfd, int level, int optname, int opt);

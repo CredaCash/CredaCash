@@ -1,12 +1,12 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * processtx.cpp
 */
 
-#include "CCdef.h"
+#include "ccnode.h"
 #include "processtx.hpp"
 #include "transact.hpp"
 #include "blockchain.hpp"
@@ -39,11 +39,18 @@ void ProcessTx::Init()
 	}
 }
 
+void ProcessTx::Stop()
+{
+	if (TRACE_PROCESS) BOOST_LOG_TRIVIAL(trace) << "ProcessTx::Stop";
+
+	DbConnProcessQ::StopQueuedWork(PROCESS_Q_TYPE_TX);
+
+	if (TRACE_PROCESS) BOOST_LOG_TRIVIAL(trace) << "ProcessTx::Stop done";
+}
+
 void ProcessTx::DeInit()
 {
 	if (TRACE_PROCESS) BOOST_LOG_TRIVIAL(trace) << "ProcessTx::DeInit";
-
-	DbConnProcessQ::StopQueuedWork(PROCESS_Q_TYPE_TX);
 
 	for (auto t : m_threads)
 	{
@@ -62,31 +69,28 @@ const char* ProcessTx::ResultString(int result)
 
 	static const char *tx_result_warn_strings[] =
 	{
+		"OK",
 		"INVALID:parameter level too old",
+		"INVALID:already spent"
 	};
 
 	static const char *tx_result_stop_strings[] =
 	{
-		"INVALID:parameter level invalid",
-		"INVALID:duplicate serial number",
-		"INVALID:already spent",
-		"INVALID:binary data invalid",
-		"INVALID:published commitments not yet supported",
-		"INVALID:zero knowledge proof verification failed"
+		/* TX_RESULT_SERVER_ERROR */				"ERROR:server error",
+		/* TX_RESULT_PARAM_LEVEL_INVALID */			"INVALID:parameter level invalid",
+		/* TX_RESULT_DUPLICATE_SERIALNUM */			"INVALID:duplicate serial number",
+		/* TX_RESULT_BINARY_DATA_INVALID */			"INVALID:binary data invalid",
+		/* TX_RESULT_OPTION_NOT_SUPPORTED */		"INVALID:option not yet supported",
+		/* TX_RESULT_INSUFFICIENT_DONATION */		"INVALID:insufficient donation",
+		/* TX_RESULT_PROOF_VERIFICATION_FAILED */	"INVALID:zero knowledge proof verification failed"
 	};
 
-	result = -result;
-
-	if (result < -PROCESS_RESULT_STOP_THRESHOLD)
-	{
-		result -= -TX_RESULT_STRING_CODE_START;
-
-		if (result < 0 || result >= (int)(sizeof(tx_result_warn_strings) / sizeof(char*)))
-			return NULL;
-
-		return tx_result_warn_strings[result];
-	}
+	if (result >= 0)
+		result = 0;
 	else
+		result *= -1;
+
+	if (result >= -PROCESS_RESULT_STOP_THRESHOLD)
 	{
 		result -= -PROCESS_RESULT_STOP_THRESHOLD;
 
@@ -95,9 +99,16 @@ const char* ProcessTx::ResultString(int result)
 
 		return tx_result_stop_strings[result];
 	}
+	else
+	{
+		if (result < 0 || result >= (int)(sizeof(tx_result_warn_strings) / sizeof(char*)))
+			return NULL;
+
+		return tx_result_warn_strings[result];
+	}
 }
 
-int ProcessTx::TxEnqueueValidate(DbConn *dbconn, int64_t priority, SmartBuf smartobj, unsigned conn_index, unsigned callback_id)
+int ProcessTx::TxEnqueueValidate(DbConn *dbconn, int64_t priority, SmartBuf smartobj, unsigned conn_index, uint32_t callback_id)
 {
 	if (TRACE_PROCESS) BOOST_LOG_TRIVIAL(debug) << "ProcessTx::TxEnqueueValidate priority " << priority << " smartobj " << (uintptr_t)&smartobj;
 
@@ -107,44 +118,325 @@ int ProcessTx::TxEnqueueValidate(DbConn *dbconn, int64_t priority, SmartBuf smar
 	memset(&req_params, 0, sizeof(req_params));
 	memcpy(&req_params.oid, obj->OidPtr(), sizeof(ccoid_t));
 
-	dbconn->RelayObjsInsert(0, CC_TAG_TX_WIRE, req_params, RELAY_STATUS_DOWNLOADED, 0);	// so we don't download it after sending it to someone else
+	dbconn->RelayObjsInsert(0, CC_TYPE_TXPAY, req_params, RELAY_STATUS_DOWNLOADED, 0);	// so we don't download it after sending it to someone else
 
-	if (TRACE_PROCESS) BOOST_LOG_TRIVIAL(trace) << "ProcessTx::TxEnqueueValidate priority " << priority << " bufp " << (uintptr_t)(smartobj.BasePtr()) << " oid " << buf2hex(obj->OidPtr(), sizeof(ccoid_t)) << " conn_index Conn-" << conn_index << " callback_id " << callback_id;
+	if (TRACE_PROCESS) BOOST_LOG_TRIVIAL(trace) << "ProcessTx::TxEnqueueValidate priority " << priority << " bufp " << (uintptr_t)(smartobj.BasePtr()) << " oid " << buf2hex(obj->OidPtr(), sizeof(ccoid_t)) << " conn_index Conn " << conn_index << " callback_id " << callback_id;
 
 	auto rc = dbconn->ProcessQEnqueueValidate(PROCESS_Q_TYPE_TX, smartobj, NULL, 0, PROCESS_Q_STATUS_PENDING, priority, conn_index, callback_id);
 
 	return rc;
 }
 
-int ProcessTx::TxValidate(DbConn *dbconn, struct TxPay& tx, SmartBuf smartobj)
+int ProcessTx::TxValidate(DbConn *dbconn, TxPay& tx, SmartBuf smartobj)
 {
 	auto obj = (CCObject*)smartobj.data();
 
 	if (tx_from_wire(tx, (char*)obj->ObjPtr(), obj->ObjSize()))
 	{
-		BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::TxValidate error tx_from_wire failed";
+		BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::TxValidate INVALID tx_from_wire failed";
 
 		return TX_RESULT_BINARY_DATA_INVALID;
 	}
 
 #if !TEST_EXTRA_ON_WIRE
 
-	if (tx.nin != tx.nin_with_path)		// inputs with published commitments are not currently allowed because code to check them isn't implemented
-	{
-		BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::TxValidate tx.nin " << tx.nin << " != tx.nin_with_path" << tx.nin_with_path;
+	//tx_dump_stream(cerr, tx);
 
-		return TX_RESULT_PUBLISHED_COMMITMENT_NOT_SUPPORTED;
+	tx.source_chain = g_params.blockchain;
+
+	if (tx.tx_type)
+	{
+		BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::TxValidate INVALID tx type != 0";
+
+		return TX_RESULT_OPTION_NOT_SUPPORTED;
 	}
+
+	if (tx.source_chain != g_params.blockchain)
+	{
+		BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::TxValidate INVALID source-chain != " << g_params.blockchain;
+
+		return TX_RESULT_OPTION_NOT_SUPPORTED;
+	}
+
+	if (tx.revision)
+	{
+		BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::TxValidate INVALID revision != 0";
+
+		return TX_RESULT_OPTION_NOT_SUPPORTED;
+	}
+
+	if (tx.expiration)
+	{
+		BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::TxValidate INVALID expiration != 0";
+
+		return TX_RESULT_OPTION_NOT_SUPPORTED;
+	}
+
+	if (tx.refhash)
+	{
+		BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::TxValidate INVALID reference-hash != 0";
+
+		return TX_RESULT_OPTION_NOT_SUPPORTED;
+	}
+
+	if (tx.reserved)
+	{
+		BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::TxValidate INVALID reserved != 0";
+
+		return TX_RESULT_OPTION_NOT_SUPPORTED;
+	}
+
+	if (tx.tag_type == CC_TYPE_MINT && tx.nin != 1)
+	{
+		BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::TxValidate INVALID tx.nin " << tx.nin << " != 1 in mint tx";
+
+		return TX_RESULT_OPTION_NOT_SUPPORTED;
+	}
+
+	if (tx.tag_type != CC_TYPE_MINT && tx.nin != tx.nin_with_path)		// inputs with published commitments are not currently allowed because code to check them isn't implemented
+	{
+		BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::TxValidate INVALID tx.nin " << tx.nin << " != tx.nin_with_path " << tx.nin_with_path;
+
+		return TX_RESULT_OPTION_NOT_SUPPORTED;
+	}
+
+	unsigned total_nout = 0;
+
+	if (!tx.nout)
+		tx.allow_restricted_addresses = false;
+
+	for (unsigned i = 0; i < tx.nout; ++i)
+	{
+		TxOut& txout = tx.outputs[i];
+
+		txout.addrparams.dest_chain = g_params.blockchain;
+		txout.M_pool = g_params.default_pool;
+
+		total_nout += (txout.repeat_count + 1);
+
+		if (txout.no_address)
+			tx.allow_restricted_addresses = false;
+
+		if (txout.addrparams.dest_chain != g_params.blockchain)
+		{
+			BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::TxValidate INVALID destination-chain != " << g_params.blockchain;
+
+			return TX_RESULT_OPTION_NOT_SUPPORTED;
+		}
+
+		if (txout.M_pool != g_params.default_pool)
+		{
+			BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::TxValidate INVALID pool != " << g_params.default_pool;
+
+			return TX_RESULT_OPTION_NOT_SUPPORTED;
+		}
+
+		if (txout.no_address)
+		{
+			BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::TxValidate INVALID no-address true";
+
+			return TX_RESULT_OPTION_NOT_SUPPORTED;
+		}
+
+		if (txout.acceptance_required)
+		{
+			BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::TxValidate INVALID acceptance-required true";
+
+			return TX_RESULT_OPTION_NOT_SUPPORTED;
+		}
+
+		if (txout.repeat_count)
+		{
+			BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::TxValidate INVALID repeat-count > 0";
+
+			return TX_RESULT_OPTION_NOT_SUPPORTED;
+		}
+
+		if (txout.no_asset)
+		{
+			BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::TxValidate INVALID no-asset true";
+
+			return TX_RESULT_OPTION_NOT_SUPPORTED;
+		}
+
+		if (txout.no_amount)
+		{
+			BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::TxValidate INVALID no-amount true";
+
+			return TX_RESULT_OPTION_NOT_SUPPORTED;
+		}
+
+		if (tx.tag_type == CC_TYPE_MINT)
+		{
+			if (txout.asset_mask)
+			{
+				BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::TxValidate INVALID mint tx asset-mask != 0";
+
+				return TX_RESULT_OPTION_NOT_SUPPORTED;
+			}
+
+			if (txout.amount_mask)
+			{
+				BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::TxValidate INVALID mint tx amount-mask != 0";
+
+				return TX_RESULT_OPTION_NOT_SUPPORTED;
+			}
+
+			if (txout.M_asset_enc)
+			{
+				BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::TxValidate INVALID mint tx encrypted-asset != 0";
+
+				return TX_RESULT_OPTION_NOT_SUPPORTED;
+			}
+		}
+		else
+		{
+			if (txout.asset_mask != TX_ASSET_WIRE_MASK)
+			{
+				BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::TxValidate INVALID asset-mask != all one's";
+
+				return TX_RESULT_OPTION_NOT_SUPPORTED;
+			}
+
+			if (txout.amount_mask != TX_AMOUNT_MASK)
+			{
+				BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::TxValidate INVALID amount-mask != all one's";
+
+				return TX_RESULT_OPTION_NOT_SUPPORTED;
+			}
+		}
+	}
+
+	for (unsigned i = 0; i < tx.nin; ++i)
+	{
+		TxIn& txin = tx.inputs[i];
+
+		if (tx.tag_type != CC_TYPE_MINT)
+			txin.M_pool = g_params.default_pool;
+
+		if (txin.enforce_master_secret)
+		{
+			BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::TxValidate INVALID enforce-master-secret true";
+
+			return TX_RESULT_OPTION_NOT_SUPPORTED;
+		}
+
+		if (txin.enforce_spend_secrets)
+		{
+			BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::TxValidate INVALID enforce-spend-secrets true";
+
+			return TX_RESULT_OPTION_NOT_SUPPORTED;
+		}
+
+		if (!txin.enforce_trust_secrets)
+		{
+			BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::TxValidate INVALID enforce-trust-secrets false";
+
+			return TX_RESULT_OPTION_NOT_SUPPORTED;
+		}
+
+		if (txin.enforce_freeze)
+		{
+			BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::TxValidate INVALID enforce-freeze true";
+
+			return TX_RESULT_OPTION_NOT_SUPPORTED;
+		}
+
+		if (txin.enforce_unfreeze)
+		{
+			BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::TxValidate INVALID enforce-unfreeze true";
+
+			return TX_RESULT_OPTION_NOT_SUPPORTED;
+		}
+
+		if (txin.delaytime)
+		{
+			BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::TxValidate INVALID delaytime > 0";
+
+			return TX_RESULT_OPTION_NOT_SUPPORTED;
+		}
+
+		if (tx.tag_type != CC_TYPE_MINT && txin.no_serialnum)
+		{
+			BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::TxValidate INVALID no-serial-number true";
+
+			return TX_RESULT_OPTION_NOT_SUPPORTED;
+		}
+
+		if (tx.tag_type == CC_TYPE_MINT && !txin.no_serialnum)
+		{
+			BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::TxValidate INVALID mint tx no-serial-number false";
+
+			return TX_RESULT_OPTION_NOT_SUPPORTED;
+		}
+
+		if (txin.S_spendspec_hashed)
+		{
+			BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::TxValidate INVALID hashed-spendspec != 0";
+
+			return TX_RESULT_OPTION_NOT_SUPPORTED;
+		}
+
+		if (tx.tag_type == CC_TYPE_MINT && txin.pathnum)
+		{
+			BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::TxValidate INVALID pathnum != 0 in mint tx";
+
+			return TX_RESULT_OPTION_NOT_SUPPORTED;
+		}
+
+		if (tx.tag_type != CC_TYPE_MINT && !txin.pathnum)
+		{
+			BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::TxValidate INVALID pathnum = 0";
+
+			return TX_RESULT_OPTION_NOT_SUPPORTED;
+		}
+
+		/*if (txin.nsigkeys)
+		{
+			BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::TxValidate INVALID nsigkeys > 0";
+
+			return TX_RESULT_OPTION_NOT_SUPPORTED;
+		}*/
+	}
+
+	bigint_t donation;
+	tx_amount_decode(tx.donation_fp, donation, true, TX_DONATION_BITS, TX_AMOUNT_EXPONENT_BITS);
+
+	unsigned tx_size = sizeof(CCObject::Header) + obj->BodySize();
+
+	bigint_t min_donation =
+											g_blockchain.proof_params.donation_per_tx
+			+ (bigint_t)(tx_size) *			g_blockchain.proof_params.donation_per_byte
+			+ (bigint_t)(total_nout) *		g_blockchain.proof_params.donation_per_output
+			+ (bigint_t)(tx.nin) *			g_blockchain.proof_params.donation_per_input;
+
+	if (min_donation < g_blockchain.proof_params.minimum_donation)
+		min_donation = g_blockchain.proof_params.minimum_donation;
+
+	if (tx.tag_type == CC_TYPE_MINT)
+		min_donation = TX_CC_MINT_DONATION;
+
+	BOOST_LOG_TRIVIAL(trace) << "DbConnProcessQ::TxValidate donation " << hex << tx.donation_fp << dec << " decoded " << donation << " min_donation " << min_donation << " tx bytes " << tx_size << " nout " << total_nout << " nin " << tx.nin;
+
+	if (donation < min_donation && tx.donation_fp < TX_DONATION_MASK)
+	{
+		BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::TxValidate INVALID donation " << donation << " < minimum donation " << min_donation;
+
+		return TX_RESULT_INSUFFICIENT_DONATION;
+	}
+
+	if (donation > min_donation * bigint_t(4UL))
+		tx.allow_restricted_addresses = false;
 
 	auto last_indelible_block = g_blockchain.GetLastIndelibleBlock();
 	auto block = (Block*)last_indelible_block.data();
 	auto wire = block->WireData();
 
-	uint64_t merkle_time;
+	uint64_t merkle_time, next_commitnum;
 
-	// merkle root can be used until 48 hours after it is replaced with a new merkle root
-	// so we need to check the timestamp of the next param_level, which is when the merkle root was replaced
-	auto rc = dbconn->CommitRootsSelect(tx.param_level + 1, true, merkle_time, &tx.merkle_root, sizeof(tx.merkle_root));
+	// Merkle root can be used until "max_param_age" seconds after it is replaced with a new Merkle root
+	// so we need to check the timestamp of the next param_level, which is when the Merkle root was replaced
+	auto rc = dbconn->CommitRootsSelectLevel(tx.param_level + 1, true, merkle_time, next_commitnum, &tx.tx_merkle_root, TX_MERKLE_BYTES);
 	if (rc < 0)
 	{
 		BOOST_LOG_TRIVIAL(error) << "DbConnProcessQ::TxValidate error retrieving next Merkle root level " << tx.param_level + 1;
@@ -153,22 +445,21 @@ int ProcessTx::TxValidate(DbConn *dbconn, struct TxPay& tx, SmartBuf smartobj)
 	}
 	else if (rc)
 	{
-		merkle_time = wire->timestamp;
+		merkle_time = wire->timestamp.GetValue();
 	}
 
-	int64_t dt = wire->timestamp - merkle_time;
+	int64_t dt = wire->timestamp.GetValue() - merkle_time;
 
-	BOOST_LOG_TRIVIAL(trace) << "DbConnProcessQ::TxValidate last indelible level " << wire->level << " timestamp " << wire->timestamp << " param_level " << tx.param_level << " timestamp " << merkle_time << " age " << dt;
+	BOOST_LOG_TRIVIAL(trace) << "DbConnProcessQ::TxValidate last indelible level " << wire->level.GetValue() << " timestamp " << wire->timestamp.GetValue() << " param_level " << tx.param_level << " timestamp " << merkle_time << " age " << dt;
 
-	//if (dt > 30)	// for testing
-	if (dt > 48*60*60)
+	if (dt > g_params.max_param_age)
 	{
-		BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::TxValidate error tx.param_level too old age " << dt;
+		BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::TxValidate INVALID tx.param_level too old age " << dt;
 
 		return TX_RESULT_PARAM_LEVEL_TOO_OLD;
 	}
 
-	rc = dbconn->CommitRootsSelect(tx.param_level, false, merkle_time, &tx.merkle_root, sizeof(tx.merkle_root));
+	rc = dbconn->CommitRootsSelectLevel(tx.param_level, false, merkle_time, next_commitnum, &tx.tx_merkle_root, TX_MERKLE_BYTES);
 	if (rc < 0)
 	{
 		BOOST_LOG_TRIVIAL(error) << "DbConnProcessQ::TxValidate error retrieving Merkle root level " << tx.param_level;
@@ -177,26 +468,49 @@ int ProcessTx::TxValidate(DbConn *dbconn, struct TxPay& tx, SmartBuf smartobj)
 	}
 	else if (rc)
 	{
-		BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::TxValidate error Merkle root level " << tx.param_level << " not found";
+		BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::TxValidate INVALID Merkle root level " << tx.param_level << " not found";
 
 		return TX_RESULT_PARAM_LEVEL_INVALID;
 	}
 
-	tx.outvalmin = g_blockchain.proof_params.outvalmin;
+	if (merkle_time > TX_TIME_OFFSET)
+		tx.param_time = (merkle_time - TX_TIME_OFFSET) / TX_TIME_DIVISOR;
+	else
+		tx.param_time = 0;
+
+	tx.outvalmin = g_blockchain.proof_params.outvalmin;		// !!! should come from param_level
 	tx.outvalmax = g_blockchain.proof_params.outvalmax;
-	tx.invalmax = g_blockchain.proof_params.invalmax;
+
+	for (unsigned i = 0; i < tx.nin; ++i)
+	{
+		TxIn& txin = tx.inputs[i];
+
+		if (tx.tag_type == CC_TYPE_MINT)
+		{
+			txin.invalmax = TX_CC_MINT_EXPONENT;
+		}
+		else
+		{
+			txin.merkle_root = tx.tx_merkle_root;
+			txin.invalmax = g_blockchain.proof_params.invalmax;
+		}
+	}
 
 #endif // !TEST_EXTRA_ON_WIRE
 
+	tx_set_commit_iv(tx);
+
+	//tx_dump_stream(cerr, tx);
+
 	if (CCProof_VerifyProof(tx))
 	{
-		BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::TxValidate error CCProof_VerifyProof failed";
+		BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::TxValidate INVALID CCProof_VerifyProof failed";
 
 		return TX_RESULT_PROOF_VERIFICATION_FAILED;
 	}
 
-	bool found_spent = false;
-	bool found_not_spent = false;
+	bool found_one_spent = false;
+	bool found_one_not_spent = false;
 
 	if (tx.nin == 0)
 		return 2;	// could check pseudo-serial num, but it's easier to just return next_commitnum = 0
@@ -205,20 +519,23 @@ int ProcessTx::TxValidate(DbConn *dbconn, struct TxPay& tx, SmartBuf smartobj)
 	{
 		for (unsigned j = 0; j < i; ++j)
 		{
-			if (!memcmp(&tx.input[i].S_serialnum, &tx.input[j].S_serialnum, sizeof(tx.input[i].S_serialnum)))
+			if (!memcmp(&tx.inputs[i].S_serialnum, &tx.inputs[j].S_serialnum, TX_SERIALNUM_BYTES))
 			{
 				if (g_witness.IsMalTest() && !(rand() & 1))
 					BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::TxValidate allowing transaction with duplicate serialnums for double-spend testing";
 				else
 				{
-					BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::TxValidate duplicate serialnums " << i << " and " << j;
+					BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::TxValidate INVALID duplicate serialnums " << i << " and " << j;
 
 					return TX_RESULT_DUPLICATE_SERIALNUM;
 				}
 			}
 		}
 
-		auto rc = dbconn->SerialnumCheck(&tx.input[i].S_serialnum, sizeof(tx.input[i].S_serialnum));
+		bigint_t hashkey;
+		unsigned hashkey_size = sizeof(hashkey);
+
+		auto rc = dbconn->SerialnumSelect(&tx.inputs[i].S_serialnum, TX_SERIALNUM_BYTES, &hashkey, &hashkey_size);
 		if (rc < 0)
 		{
 			BOOST_LOG_TRIVIAL(error) << "DbConnProcessQ::TxValidate error checking persistent serialnums";
@@ -227,19 +544,24 @@ int ProcessTx::TxValidate(DbConn *dbconn, struct TxPay& tx, SmartBuf smartobj)
 		}
 		else if (rc)
 		{
-			BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::TxValidate serialnum " << i << " of " << tx.nin << " already in persistent db";
-
-			found_spent = true;
+			found_one_not_spent = true;
 		}
 		else
-			found_not_spent = true;
+		{
+			BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::TxValidate serialnum " << i << " of " << tx.nin << " already in persistent db";
 
-		if (found_spent && found_not_spent)
-			return TX_RESULT_ALREADY_SPENT;
+			if (hashkey_size && hashkey != tx.inputs[i].S_hashkey)
+					return TX_RESULT_ALREADY_SPENT;		// found a different tx with same serialnum
+
+			found_one_spent = true;
+		}
+
+		if (found_one_not_spent && found_one_spent)
+			return TX_RESULT_ALREADY_SPENT;				// found one serialnum in tx not spent and one spent, so the latter was spent in a different conflicting tx
 	}
 
-	if (found_spent)
-		return 1;	// all were spent so tx may have been submitted twice
+	if (found_one_spent)
+		return 1;			// don't flag this tx as invalid since all of the serialnums in tx have been spent using the same hashkeys, which likely means this tx has been re-submitted due to a dropped network connection
 
 	return 0;
 }
@@ -265,7 +587,7 @@ void ProcessTx::ThreadProc()
 
 		SmartBuf smartobj;
 		unsigned conn_index = 0;
-		unsigned callback_id = 0;
+		uint32_t callback_id = 0;
 		int64_t result = TX_RESULT_SERVER_ERROR;
 
 		while (true)	// so we can use break on error
@@ -280,7 +602,7 @@ void ProcessTx::ThreadProc()
 			SmartBuf retobj;
 			auto obj = (CCObject*)smartobj.data();
 
-			BOOST_LOG_TRIVIAL(debug) << "ProcessTx Validating tx " << buf2hex(obj->OidPtr(), sizeof(ccoid_t)) << " conn_index Conn-" << conn_index << " callback_id " << callback_id;
+			BOOST_LOG_TRIVIAL(debug) << "ProcessTx Validating tx " << buf2hex(obj->OidPtr(), sizeof(ccoid_t)) << " conn_index Conn " << conn_index << " callback_id " << callback_id;
 
 			auto rc = dbconn->ValidObjsGetObj(*obj->OidPtr(), &retobj);
 			//retobj.ClearRef();	// for testing

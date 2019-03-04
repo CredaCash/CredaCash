@@ -26,8 +26,6 @@ SUBDIRS := \
 src/blake2 \
 src/ed25519 \
 src/jsoncpp \
-src/keccak \
 src/siphash \
-src/skein \
 src/sqlite \
 

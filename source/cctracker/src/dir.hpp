@@ -1,17 +1,14 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * dir.hpp
 */
 
 #pragma once
 
-#define NAME_CHARS		16
-#define NAME_BYTES		10
 #define POINTER_BYTES	4
-
 #define EXPIRE_ENTRIES	120
 //#define EXPIRE_ENTRIES	20		// for testing
 
@@ -21,17 +18,7 @@ class Dir
 
 #pragma pack(push, 1)
 
-	union hostname_t
-	{
-		array<uint8_t, NAME_BYTES> bytes;
-
-		struct
-		{
-			uint64_t a;
-			uint16_t b;
-
-		} words;
-	};
+	typedef array<uint8_t, TOR_HOSTNAME_BYTES> hostname_t;
 
 	struct hashentry_t
 	{
@@ -60,28 +47,28 @@ class Dir
 	array<uint64_t, EXPIRE_ENTRIES> m_expire_count;
 	thread m_expire_thread;
 
-	mutex m_lock;
-
-	void inline ClearHostname(hostname_t& dest) const
-	{
-		dest.words.a = (uint64_t)(-1);
-		dest.words.b = (uint16_t)(-1);
-	}
-
-	bool inline IsClearedHostname(const hostname_t& h) const
-	{
-		return h.words.a == (uint64_t)(-1) && h.words.b == (uint16_t)(-1);
-	}
+	mutex m_dir_lock;
 
 	void inline CopyHostname(hostname_t& dest, const hostname_t& src) const
 	{
-		dest.words.a = src.words.a;
-		dest.words.b = src.words.b;
+		memcpy(&dest, &src, sizeof(hostname_t));
 	}
 
 	bool inline CompareHostnames(const hostname_t& h1, const hostname_t& h2) const
 	{
-		return h1.words.a == h2.words.a && h1.words.b == h2.words.b;
+		return !memcmp(&h1, &h2, sizeof(hostname_t));
+	}
+
+	void inline ClearHostname(hostname_t& dest) const
+	{
+		memset(&dest, 0, sizeof(hostname_t));
+	}
+
+	bool inline IsClearedHostname(const hostname_t& h) const
+	{
+		static hostname_t z;
+
+		return CompareHostnames(h, z);
 	}
 
 	uint64_t HashIndex(const string& namestr, hostname_t& name) const;
@@ -99,7 +86,7 @@ public:
 	void DeInit();
 
 	int Add(const string& namestr);
-	void PickN(unsigned seed, unsigned n, string& namestr, uint8_t *buf, unsigned &bufpos);
+	void PickN(unsigned seed, unsigned n, string& namestr, char *buf, unsigned &bufpos);
 	//void Delete(const string& namestr);
 	//uint64_t Find(const string& namestr) const;
 

@@ -1,20 +1,17 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * dbconn-relay.cpp
 */
 
-#include "CCdef.h"
+#include "ccnode.h"
 #include "dbconn.hpp"
 #include "witness.hpp"
 
 #include <dblog.h>
 #include <CCobjects.hpp>
-#include <CCobjdefs.h>
-#include <Finally.hpp>
-#include <CCutil.h>
 
 #define TRACE_DBCONN	(g_params.trace_relay_db)
 
@@ -31,10 +28,12 @@
 static atomic<int64_t> g_relay_block_seqnum(VALID_BLOCK_SEQNUM_START);
 static atomic<int64_t> g_relay_tx_seqnum(1);
 
-static mutex Relay_Objs_db_mutex; 	// to avoid SQLITE_LOCKED errors when writing to database
+static mutex Relay_Objs_db_mutex;	// to avoid inconsistency problems with shared cache
 
 DbConnRelayObjs::DbConnRelayObjs()
 {
+	ClearDbPointers();
+
 	lock_guard<mutex> lock(Relay_Objs_db_mutex);
 
 	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnRelayObjs::DbConnRelayObjs dbconn " << (uintptr_t)this;
@@ -54,7 +53,7 @@ DbConnRelayObjs::DbConnRelayObjs()
 #endif
 	CCASSERTZ(dblog(sqlite3_prepare_v2(Relay_Objs_db, "update Relay_Objs set Status = ?2, Timeout = strftime('%s','now') + ?3 where ObjId = ?1;", -1, &Relay_Objs_update, NULL)));
 
-	CCASSERTZ(dblog(sqlite3_prepare_v2(Relay_Objs_db, "select Seqnum, Time from Relay_Objs where Seqnum >= ?1 and Seqnum <= ?2 order by Seqnum limit 1;", -1, &Relay_Objs_select_oldest, NULL)));
+	CCASSERTZ(dblog(sqlite3_prepare_v2(Relay_Objs_db, "select Seqnum, Time from Relay_Objs where Seqnum between ?1 and ?2 order by Seqnum limit 1;", -1, &Relay_Objs_select_oldest, NULL)));
 	CCASSERTZ(dblog(sqlite3_prepare_v2(Relay_Objs_db, "delete from Relay_Objs where Seqnum = ?1;", -1, &Relay_Objs_delete_seqnum, NULL)));
 	CCASSERTZ(dblog(sqlite3_prepare_v2(Relay_Objs_db, "delete from Relay_Objs where ObjId = ?1;", -1, &Relay_Objs_delete_oid, NULL)));
 
@@ -144,7 +143,7 @@ void DbConnRelayObjs::RelayObjsInsert(unsigned peer, unsigned type, const relay_
 	lock_guard<mutex> lock(Relay_Objs_db_mutex);	// sql statements must be reset before lock is released
 	Finally finally(boost::bind(&DbConnRelayObjs::DoRelayObjsFinish, this, 1));		// 1 = rollback
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnRelayObjs::RelayObjsInsert peer Conn-" << peer << " type " << type << " oid " << buf2hex(&req_params.oid, sizeof(ccoid_t)) << " size " << req_params.size << " level " << req_params.level << " obj status " << obj_status << " peer status " << peer_status;
+	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnRelayObjs::RelayObjsInsert peer Conn " << peer << " type " << type << " oid " << buf2hex(&req_params.oid, sizeof(ccoid_t)) << " size " << req_params.size << " level " << req_params.level << " obj status " << obj_status << " peer status " << peer_status;
 
 	// BEGIN
 
@@ -159,14 +158,14 @@ void DbConnRelayObjs::RelayObjsInsert(unsigned peer, unsigned type, const relay_
 
 	if (dblog(rc = sqlite3_step(Relay_Objs_select_seqnum), DB_STMT_SELECT)) return;
 
-	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1) // for testing
+	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnRelayObjs::RelayObjsInsert simulating database error post-select";
 
 		return;
 	}
 
-	if (rc == SQLITE_ROW)
+	if (dbresult(rc) == SQLITE_ROW)
 	{
 		if (sqlite3_data_count(Relay_Objs_select_seqnum) != 2)
 		{
@@ -191,11 +190,11 @@ void DbConnRelayObjs::RelayObjsInsert(unsigned peer, unsigned type, const relay_
 			return;
 		}
 	}
-	else if (rc == SQLITE_DONE)
+	else if (dbresult(rc) == SQLITE_DONE)
 	{
 		// add ObjId to db with new Seqnum
 
-		if (type == CC_TAG_BLOCK)
+		if (type == CC_TYPE_BLOCK)
 			seqnum = g_relay_block_seqnum.fetch_add(1);
 		else
 			seqnum = g_relay_tx_seqnum.fetch_add(1);
@@ -227,7 +226,7 @@ void DbConnRelayObjs::RelayObjsInsert(unsigned peer, unsigned type, const relay_
 		if (dblog(sqlite3_bind_int64(Relay_Peers_insert, 3, req_params.size))) return;
 		if (dblog(sqlite3_bind_int64(Relay_Peers_insert, 4, req_params.level))) return;
 		if (dblog(sqlite3_bind_int(Relay_Peers_insert, 5, peer_status))) return;
-		if (type == CC_TAG_BLOCK)
+		if (type == CC_TYPE_BLOCK)
 		{
 			if (dblog(sqlite3_bind_blob(Relay_Peers_insert, 6, &req_params.prior_oid, sizeof(ccoid_t), SQLITE_STATIC))) return;
 			if (dblog(sqlite3_bind_int(Relay_Peers_insert, 7, req_params.witness))) return;
@@ -239,7 +238,7 @@ void DbConnRelayObjs::RelayObjsInsert(unsigned peer, unsigned type, const relay_
 		}
 
 		auto rc = sqlite3_step(Relay_Peers_insert);
-		if (rc == SQLITE_CONSTRAINT)
+		if (dbresult(rc) == SQLITE_CONSTRAINT)
 		{
 			// peer sent CC_MSG_HAVE_BLOCK or CC_MSG_HAVE_TX more than once?
 
@@ -252,7 +251,7 @@ void DbConnRelayObjs::RelayObjsInsert(unsigned peer, unsigned type, const relay_
 
 	// COMMIT
 
-	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1) // for testing
+	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnRelayObjs::RelayObjsInsert simulating database error pre-commit";
 
@@ -268,17 +267,21 @@ void DbConnRelayObjs::RelayObjsInsert(unsigned peer, unsigned type, const relay_
 	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnRelayObjs::RelayObjsInsert success";
 }
 
-int DbConnRelayObjs::RelayObjsFindDownloads(unsigned conn_index, uint64_t tx_level_max, uint8_t *output, unsigned bufsize, relay_request_param_buf_t& req_params, int maxobjs, int64_t bytes_pending, unsigned &nobjs, unsigned &nbytes)
+int DbConnRelayObjs::RelayObjsFindDownloads(unsigned conn_index, uint64_t tx_level_max, uint8_t *output, unsigned bufsize, relay_request_param_buf_t& req_params, int maxobjs, int64_t bytes_pending, bool &have_blocks, unsigned &nobjs, unsigned &nbytes)
 {
+	have_blocks = false;
 	nobjs = 0;
 	nbytes = 0;
 
-	if (maxobjs <= 0)
+	if (maxobjs < 0)
 	{
 		BOOST_LOG_TRIVIAL(warning) << "DbConnRelayObjs::RelayObjsFindDownloads maxobjs = " << maxobjs << " bytes_pending " << bytes_pending;
 
 		return -1;
 	}
+
+	if (!maxobjs)
+		return 0;
 
 	uint64_t total_size = bytes_pending;
 	int timeout = RELAY_DOWLOAD_RETRY_SECS + total_size/RELAY_DOWLOAD_RETRY_BYTES_PER_SEC;
@@ -293,7 +296,7 @@ int DbConnRelayObjs::RelayObjsFindDownloads(unsigned conn_index, uint64_t tx_lev
 	lock_guard<mutex> lock(Relay_Objs_db_mutex);	// sql statements must be reset before lock is released
 	Finally finally(boost::bind(&DbConnRelayObjs::DoRelayObjsFinish, this, 1));		// 1 = rollback
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnRelayObjs::RelayObjsFindDownloads peer Conn-" << conn_index << " max objs " << maxobjs;
+	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnRelayObjs::RelayObjsFindDownloads peer Conn " << conn_index << " max objs " << maxobjs;
 
 	// BEGIN
 
@@ -305,7 +308,6 @@ int DbConnRelayObjs::RelayObjsFindDownloads(unsigned conn_index, uint64_t tx_lev
 	if (dblog(sqlite3_bind_int64(Relay_Objs_select_download, 2, tx_level_max))) return -1;
 	if (dblog(sqlite3_bind_int(Relay_Objs_select_download, 3, maxobjs))) return -1;
 
-	bool have_blocks = false;
 	int nfound = 0;
 	uint32_t bufpos = 0;
 
@@ -315,17 +317,17 @@ int DbConnRelayObjs::RelayObjsFindDownloads(unsigned conn_index, uint64_t tx_lev
 
 		if (dblog(rc = sqlite3_step(Relay_Objs_select_download), DB_STMT_SELECT)) return -1;
 
-		if ((TEST_RANDOM_DB_ERRORS & rand()) == 1) // for testing
+		if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
 		{
 			BOOST_LOG_TRIVIAL(info) << "DbConnRelayObjs::RelayObjsFindDownloads simulating database error post-select";
 
 			return -1;
 		}
 
-		if (rc == SQLITE_DONE)
+		if (dbresult(rc) == SQLITE_DONE)
 			break;
 
-		if (rc != SQLITE_ROW)
+		if (dbresult(rc) != SQLITE_ROW)
 		{
 			BOOST_LOG_TRIVIAL(error) << "DbConnRelayObjs::RelayObjsFindDownloads select returned " << rc;
 
@@ -340,13 +342,13 @@ int DbConnRelayObjs::RelayObjsFindDownloads(unsigned conn_index, uint64_t tx_lev
 		}
 
 		// Seqnum, Time, ObjId, Size, Level, PriorOid, Witness
-		int64_t seqnum = sqlite3_column_int64(Relay_Objs_select_download, 0);
+		auto seqnum = sqlite3_column_int64(Relay_Objs_select_download, 0);
 		uint32_t announce_time = sqlite3_column_int(Relay_Objs_select_download, 1);
 		auto objid_blob = sqlite3_column_blob(Relay_Objs_select_download, 2);
-		int64_t size = sqlite3_column_int64(Relay_Objs_select_download, 3);
-		int64_t level = sqlite3_column_int64(Relay_Objs_select_download, 4);
+		auto size = sqlite3_column_int64(Relay_Objs_select_download, 3);
+		auto level = sqlite3_column_int64(Relay_Objs_select_download, 4);
 		auto priorid_blob = sqlite3_column_blob(Relay_Objs_select_download, 5);
-		int witness = sqlite3_column_int64(Relay_Objs_select_download, 6);
+		auto witness = sqlite3_column_int(Relay_Objs_select_download, 6);
 
 		if (seqnum < 0)
 			have_blocks = true;
@@ -375,7 +377,7 @@ int DbConnRelayObjs::RelayObjsFindDownloads(unsigned conn_index, uint64_t tx_lev
 
 		if (dblog(sqlite3_extended_errcode(Relay_Objs_db), DB_STMT_SELECT)) return -1;	// check if error retrieving results
 
-		if ((TEST_RANDOM_DB_ERRORS & rand()) == 1) // for testing
+		if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
 		{
 			BOOST_LOG_TRIVIAL(info) << "DbConnRelayObjs::RelayObjsFindDownloads simulating database error post-error check";
 
@@ -385,7 +387,7 @@ int DbConnRelayObjs::RelayObjsFindDownloads(unsigned conn_index, uint64_t tx_lev
 		total_size += size;
 		timeout = RELAY_DOWLOAD_RETRY_SECS + total_size/RELAY_DOWLOAD_RETRY_BYTES_PER_SEC;
 
-		if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnRelayObjs::RelayObjsFindDownloads found seqnum " << seqnum << " announced " << announce_time << " peer Conn-" << conn_index << " oid " << buf2hex(objid_blob, sizeof(ccoid_t)) << " size " << size << " total size " << total_size << " timeout " << timeout;
+		if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnRelayObjs::RelayObjsFindDownloads found seqnum " << seqnum << " announced " << announce_time << " peer Conn " << conn_index << " oid " << buf2hex(objid_blob, sizeof(ccoid_t)) << " size " << size << " total size " << total_size << " timeout " << timeout;
 
 		// UPDATE PeerStatus so the object will not get downloaded again from this peer
 
@@ -393,7 +395,7 @@ int DbConnRelayObjs::RelayObjsFindDownloads(unsigned conn_index, uint64_t tx_lev
 		if (dblog(sqlite3_bind_int64(Relay_Peers_update_seqnum, 1, seqnum))) return -1;
 		if (dblog(sqlite3_bind_int(Relay_Peers_update_seqnum, 2, RELAY_PEER_STATUS_STARTED))) return -1;
 
-		if ((TEST_RANDOM_DB_ERRORS & rand()) == 1) // for testing
+		if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
 		{
 			BOOST_LOG_TRIVIAL(info) << "DbConnRelayObjs::RelayObjsFindDownloads simulating database error pre-peer status update";
 
@@ -417,7 +419,7 @@ int DbConnRelayObjs::RelayObjsFindDownloads(unsigned conn_index, uint64_t tx_lev
 
 			if (dblog(sqlite3_step(Relay_Objs_update), DB_STMT_STEP)) return -1;
 
-			if ((TEST_RANDOM_DB_ERRORS & rand()) == 1) // for testing
+			if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
 			{
 				BOOST_LOG_TRIVIAL(info) << "DbConnRelayObjs::RelayObjsFindDownloads simulating database error post-update";
 
@@ -429,23 +431,25 @@ int DbConnRelayObjs::RelayObjsFindDownloads(unsigned conn_index, uint64_t tx_lev
 
 		// output object in SEND command
 
-		BOOST_LOG_TRIVIAL(debug) << "DbConnRelayObjs::RelayObjsFindDownloads preparing to send CC_CMD_SEND_BLOCK/CC_CMD_SEND_TX seqnum " << seqnum << " oid " << buf2hex(objid_blob, sizeof(ccoid_t));
+		BOOST_LOG_TRIVIAL(debug) << "DbConnRelayObjs::RelayObjsFindDownloads preparing to send CC_CMD_SEND_BLOCK/CC_CMD_SEND_TX seqnum " << seqnum << " level " << level << " oid " << buf2hex(objid_blob, sizeof(ccoid_t));
 
 		if (!bufpos)
 		{
-			copy_to_buf(&bufpos, sizeof(bufpos), bufpos, output, bufsize);  // save space for size word
+			copy_to_buf(bufpos, sizeof(bufpos), bufpos, output, bufsize);  // save space for size word
 
 			uint32_t tag = seqnum < 0 ? CC_CMD_SEND_BLOCK : CC_CMD_SEND_TX;
 
-			copy_to_buf(&tag, sizeof(tag), bufpos, output, bufsize);
+			copy_to_buf(tag, sizeof(tag), bufpos, output, bufsize);
 		}
 
-		copy_to_buf(objid_blob, sizeof(ccoid_t), bufpos, output, bufsize);
+		copy_to_bufp(objid_blob, sizeof(ccoid_t), bufpos, output, bufsize);
 
 		memcpy(&req_params[nfound].oid, objid_blob, sizeof(ccoid_t));
 		req_params[nfound].size = size;
 		if (priorid_blob)
 			memcpy(&req_params[nfound].prior_oid, priorid_blob, sizeof(ccoid_t));
+		else
+			memset(&req_params[nfound].prior_oid, 0, sizeof(ccoid_t));
 		req_params[nfound].level = level;
 		req_params[nfound].witness = witness;
 		req_params[nfound].announce_time = announce_time;
@@ -468,7 +472,7 @@ int DbConnRelayObjs::RelayObjsFindDownloads(unsigned conn_index, uint64_t tx_lev
 
 	// COMMIT
 
-	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1) // for testing
+	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnRelayObjs::RelayObjsFindDownloads simulating database error pre-commit";
 
@@ -508,17 +512,17 @@ int DbConnRelayObjs::RelayObjsSetStatus(const ccoid_t& oid, int obj_status, int 
 
 		if (dblog(rc = sqlite3_step(Relay_Objs_select_seqnum), DB_STMT_SELECT)) break;
 
-		if ((TEST_RANDOM_DB_ERRORS & rand()) == 1) // for testing
+		if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
 		{
 			BOOST_LOG_TRIVIAL(info) << "DbConnRelayObjs::RelayObjsSetStatus simulating database error post-select";
 
 			break;
 		}
 
-		if (rc == SQLITE_DONE)	// should only happen if there was an earlier db error; if so, the update below will also result in changes == 0 error and log a warning
+		if (dbresult(rc) == SQLITE_DONE)	// should only happen if there was an earlier db error; if so, the update below will also result in changes == 0 error and log a warning
 			break;
 
-		if (rc == SQLITE_ROW)
+		if (dbresult(rc) == SQLITE_ROW)
 		{
 			if (sqlite3_data_count(Relay_Objs_select_seqnum) != 2)
 			{
@@ -552,7 +556,7 @@ int DbConnRelayObjs::RelayObjsSetStatus(const ccoid_t& oid, int obj_status, int 
 	if (dblog(sqlite3_bind_int(Relay_Objs_update, 2, obj_status))) return -1;
 	if (dblog(sqlite3_bind_int(Relay_Objs_update, 3, timeout))) return -1;
 
-	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1) // for testing
+	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnRelayObjs::RelayObjsSetStatus simulating database error pre-update";
 
@@ -602,11 +606,11 @@ int DbConnRelayObjs::RelayObjsDeletePeer(unsigned peer)
 	lock_guard<mutex> lock(Relay_Objs_db_mutex);	// sql statements must be reset before lock is released
 	Finally finally(boost::bind(&DbConnRelayObjs::DoRelayObjsFinish, this, 0));		// 0 = reset only
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnRelayObjs::RelayObjsDeletePeer peer Conn-" << peer;
+	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnRelayObjs::RelayObjsDeletePeer peer Conn " << peer;
 
 	if (dblog(sqlite3_bind_int(Relay_Peers_delete_peer, 1, peer))) return -1;
 
-	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1) // for testing
+	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnRelayObjs::RelayObjsDeletePeer simulating database error pre-delete";
 
@@ -615,7 +619,7 @@ int DbConnRelayObjs::RelayObjsDeletePeer(unsigned peer)
 
 	if (dblog(sqlite3_step(Relay_Peers_delete_peer), DB_STMT_STEP)) return -1;
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnRelayObjs::RelayObjsDeletePeer deleted peer Conn-" << peer;
+	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnRelayObjs::RelayObjsDeletePeer deleted peer Conn " << peer;
 
 	return 0;
 }
@@ -648,7 +652,7 @@ int DbConnRelayObjs::RelayObjsDeleteSeqnum(int64_t seqnum)
 		break;
 	}
 
-	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1) // for testing
+	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnRelayObjs::RelayObjsDeleteSeqnum simulating database error pre-commit";
 
@@ -682,17 +686,17 @@ int DbConnRelayObjs::RelayObjsGetExpires(int64_t min_seqnum, int64_t max_seqnum,
 
 	if (dblog(rc = sqlite3_step(Relay_Objs_select_oldest), DB_STMT_SELECT)) return -1;
 
-	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1) // for testing
+	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnRelayObjs::RelayObjsGetExpires simulating database error post-select";
 
 		return -1;
 	}
 
-	if (rc == SQLITE_DONE)
+	if (dbresult(rc) == SQLITE_DONE)
 		return 1;
 
-	if (rc != SQLITE_ROW)
+	if (dbresult(rc) != SQLITE_ROW)
 	{
 		BOOST_LOG_TRIVIAL(error) << "DbConnRelayObjs::RelayObjsGetExpires select returned " << rc;
 
@@ -719,7 +723,7 @@ int DbConnRelayObjs::RelayObjsGetExpires(int64_t min_seqnum, int64_t max_seqnum,
 
 	if (dblog(sqlite3_extended_errcode(Relay_Objs_db), DB_STMT_SELECT)) return -1;	// check if error retrieving results
 
-	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1) // for testing
+	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnRelayObjs::RelayObjsGetExpires simulating database error post-select";
 

@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * CChash.hpp
 */
@@ -10,5 +10,5 @@
 
 #include "zkhash.hpp"
 
-typedef Hasher::inteval::HashInput<bigint_t> CCHashInput;
-typedef Hasher::inteval::Hasher<bigint_t> CCHash;
+typedef CCHasher::inteval::HashInput<bigint_t> CCHashInput;
+typedef CCHasher::inteval::Hasher<bigint_t> CCHash;

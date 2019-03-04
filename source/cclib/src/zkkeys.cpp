@@ -1,20 +1,25 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * zkkeys.cpp
 */
 
-#include "CCdef.h"
-
-#include <chrono>
-
+#include "cclib.h"
 #include "zkkeys.hpp"
+
+//#define TEST_PREFIX_ZKKEY_PATHS	1	// for development
+
+#ifndef TEST_PREFIX_ZKKEY_PATHS
+#define TEST_PREFIX_ZKKEY_PATHS	0	// don't test
+#endif
+
+static mutex keylock;
 
 unsigned ZKKeyStore::GetKeyId(unsigned keyindex)
 {
-	if (keyindex == (unsigned)(-1))
+	if ((int)keyindex == -1)
 		return -1;
 
 	CCASSERT(keyindex < nproof);
@@ -35,12 +40,12 @@ void ZKKeyStore::Init(bool reset)
 	if (nproof)
 		return;
 
-	nproof = 4*(TX_MAXINPATH + 1);
-	//nproof = 4*(TX_MAXINPATH/2 + 1);			// for testing
-	//nproof = 4*(2 + 1);						// for testing
-	//nproof = 1;								// for testing
+	nproof = (4 * 2 + 8) + (5 * 2 + 5);	// all keys, for testing
+	nproof = 4 * 2;		// @@! for beta release
+	//nproof = 2;			// for testing
 
-	nproofsave = 4*(8 + 1);		// !!! allow this to be changed
+	nproofsave = 4 * 2 + 8;
+	nproofsave = nproof;	// for releases with smaller keysets, and for benchmarking
 
 	keytable.resize(nproof);
 	workorder.resize(nproof);
@@ -52,19 +57,59 @@ void ZKKeyStore::Init(bool reset)
 	for (unsigned i = 0; i < nproof; ++i)
 	{
 		keytable[i].keyid = i;	// if mapping ever changes, the verify keys will need their own keytable in SetTxCounts()
-		unsigned gen = i;
-		//gen = 10;								// for testing
-		//gen = 4*(TX_MAXINPATH + 1) - 1;		// for testing
-		keytable[i].nout = (gen % 2)*12 + 4;
-		keytable[i].nin_with_path = gen / 4;
-		unsigned nwo = ((gen / 2) % 2) * 2;
-		if (!keytable[i].nin_with_path)
-			nwo = (nwo * 6) + 4;
-		keytable[i].nin = keytable[i].nin_with_path + nwo;
-		unsigned work = keytable[i].nout * 21 + keytable[i].nin_with_path * 380 + nwo * 19; // !!! re-benchmark this and adjust coefficients
+
+		// ninw =  {[0], 1, 2, 3, 4 [5, 6, 7, 8]}
+		// nout = {2, 5, [10]}
+		// nwo =  {0, [4]}
+
+		unsigned nout, ninw, nwo = 0;
+
+		if (i < 4*2)
+		{
+			ninw = i % 4 + 1;
+			nout = (i / 4) * 3 + 2;
+		}
+		else if (i < 4*2 + 8)
+		{
+			nout = 10;
+			ninw = i - 4*2 + 1;
+		}
+		else
+		{
+			nwo = 4;
+
+			unsigned j = i - (4*2 + 8);
+
+			if (j < 5*2)
+			{
+				ninw = j % 5 + 0;
+				nout = (j / 5) * 3 + 2;
+			}
+			else
+			{
+				nout = 10;
+				ninw = j - 5*2;
+
+				if (ninw + nwo > 8)
+					nwo = 8 - ninw;
+			}
+		}
+
+		if (nproof < 3)
+		{
+			nout = 2;
+			nwo = !i;
+			ninw = i;
+		}
+
+		keytable[i].nout = nout;
+		keytable[i].nin = ninw + nwo;
+		keytable[i].nin_with_path = ninw;
+
+		unsigned work = 12 * keytable[i].nout + 45 * nwo + 114 * ninw;
 		keytable[i].work = work;
 
-		//cerr << "keytable " << i << " keyid " << keytable[i].keyid << " nin_with_path " << keytable[i].nin_with_path << " nin " << keytable[i].nin << " nout " << keytable[i].nout << " work " << keytable[i].work << endl;
+		//cerr << "keyid " << (i > 9 ? "" : " ") << keytable[i].keyid << " nin_with_path " << keytable[i].nin_with_path << " nin " << keytable[i].nin << " nout " << keytable[i].nout << " work " << keytable[i].work << endl;
 
 		unsigned j = i;
 		for ( ; j > 0 && keytable[workorder[j-1]].work > work; --j)
@@ -76,27 +121,40 @@ void ZKKeyStore::Init(bool reset)
 	//	cerr << "workorder[" << i << "] = keytable index " << workorder[i] << " work " << keytable[workorder[i]].work << endl;
 }
 
-string ZKKeyStore::GetKeyFileName(const unsigned keyindex, bool verifykey)
+string ZKKeyStore::GetKeyFileName(const unsigned keyindex, bool verify)
 {
-	string name = "zkkeys\\";							// !!! make this configuable?
+	string name;
+
+	if (TEST_PREFIX_ZKKEY_PATHS)
+	{
+		name += PATH_DELIMITER;
+		name += "CredaCash";
+		name += PATH_DELIMITER;
+	}
+
+	name += "zkkeys";			// !!! make this configuable?
+	name += PATH_DELIMITER;
 	name += "CC-ZK-";
-	if (verifykey)
+	if (verify)
 		name += "Verify";
 	else
 		name += "Prove";
 
-	name += "-Key-v0-";
+	name += "-Key-";
+	name += to_string(keytable[keyindex].keyid);
+	name += "-";
 	name += to_string(keytable[keyindex].nout);
 	name += "-";
 	name += to_string(keytable[keyindex].nin_with_path);
 	name += "-";
 	name += to_string(keytable[keyindex].nin - keytable[keyindex].nin_with_path);
 	name += ".dat";
+	name += "b";	// @@! remove this for release keygen
 
 	return name;
 }
 
-#if SUPPORT_ZK_KEYGEN
+#if TEST_SUPPORT_ZK_KEYGEN
 
 void ZKKeyStore::SaveKeyPair(const unsigned keyindex, const Keypair<ZKPAIRING>& keypair)
 {
@@ -118,9 +176,9 @@ void ZKKeyStore::SaveKeyPair(const unsigned keyindex, const Keypair<ZKPAIRING>& 
 	fs.close();
 }
 
-#endif // SUPPORT_ZK_KEYGEN
+#endif // TEST_SUPPORT_ZK_KEYGEN
 
-const shared_ptr<ZKKeyStore::ProvingKey> ZKKeyStore::LoadProofKey(const unsigned keyindex)
+shared_ptr<const ZKKeyStore::ProveKey> ZKKeyStore::LoadProofKey(const unsigned keyindex)
 {
 	CCASSERT(keyindex < nproof);
 
@@ -128,10 +186,17 @@ const shared_ptr<ZKKeyStore::ProvingKey> ZKKeyStore::LoadProofKey(const unsigned
 	if (key)
 		return key;
 
-	key = shared_ptr<ProvingKey>(new ProvingKey);
+	lock_guard<mutex> lock(keylock);
+
+	key = proofkey[keyindex];
+	if (key)
+		return key;
+
+	key = shared_ptr<ProveKey>(new ProveKey);
 	if (!key)
 	{
 		cerr << "*** error allocating proof key" << endl;
+
 		return NULL;
 	}
 
@@ -141,6 +206,7 @@ const shared_ptr<ZKKeyStore::ProvingKey> ZKKeyStore::LoadProofKey(const unsigned
 	if (!fs.is_open())
 	{
 		//cerr << "LoadProofKey error opening file (file not found?) " << name << endl;
+
 		return NULL;
 	}
 
@@ -150,6 +216,7 @@ const shared_ptr<ZKKeyStore::ProvingKey> ZKKeyStore::LoadProofKey(const unsigned
 	if (!rc || fs.bad())
 	{
 		cerr << "*** error reading proof key file " << name << endl;
+
 		return NULL;
 	}
 
@@ -161,7 +228,7 @@ const shared_ptr<ZKKeyStore::ProvingKey> ZKKeyStore::LoadProofKey(const unsigned
 	return key;
 }
 
-const shared_ptr<ZKKeyStore::ProvingKey> ZKKeyStore::GetProofKey(const unsigned keyindex)
+shared_ptr<const ZKKeyStore::ProveKey> ZKKeyStore::GetProofKey(const unsigned keyindex)
 {
 	return LoadProofKey(keyindex);
 }
@@ -170,12 +237,19 @@ void ZKKeyStore::UnloadProofKey(const unsigned keyindex)
 {
 	CCASSERT(keyindex < nproof);
 
+	lock_guard<mutex> lock(keylock);
+
 	proofkey[keyindex] = NULL;
 }
 
 bool ZKKeyStore::LoadVerifyKey(const unsigned keyid)
 {
 	CCASSERT(keyid < nverify);
+
+	if (verifykey[keyid])
+		return false;
+
+	lock_guard<mutex> lock(keylock);
 
 	if (verifykey[keyid])
 		return false;
@@ -193,7 +267,7 @@ bool ZKKeyStore::LoadVerifyKey(const unsigned keyid)
 
 	//@cerr << "preprocessing verify keyid " << keyid << " file " << name << endl;
 
-	verifykey[keyid] = unique_ptr<snarklib::PPZK_PrecompVerificationKey<ZKPAIRING>>(new snarklib::PPZK_PrecompVerificationKey<ZKPAIRING>(vk));
+	verifykey[keyid] = shared_ptr<VerifyKey>(new VerifyKey(vk));
 
 	//cerr << "done preprocessing verify keyid " << keyid << " file " << name << endl;
 
@@ -213,7 +287,7 @@ void ZKKeyStore::PreLoadProofKeys()
 	CCASSERT(nloaded);
 }
 
-void ZKKeyStore::PreLoadVerifyKeys()
+void ZKKeyStore::PreLoadVerifyKeys(bool require_all)
 {
 	unsigned nloaded = 0;
 
@@ -223,7 +297,10 @@ void ZKKeyStore::PreLoadVerifyKeys()
 			++nloaded;
 	}
 
-	CCASSERT(nloaded);
+	if (require_all)
+		CCASSERT(nloaded == nverify);
+	else
+		CCASSERT(nloaded);
 }
 
 void ZKKeyStore::SetTxCounts(unsigned keyindex, uint16_t& nout, uint16_t& nin, uint16_t& nin_with_path, bool verify)
@@ -291,11 +368,9 @@ unsigned ZKKeyStore::GetKeyIndex(uint16_t& nout, uint16_t& nin, uint16_t& nin_wi
 	return -1;
 }
 
-const snarklib::PPZK_PrecompVerificationKey<ZKPAIRING> ZKKeyStore::GetVerifyKey(const unsigned keyid)
+shared_ptr<const ZKKeyStore::VerifyKey> ZKKeyStore::GetVerifyKey(const unsigned keyid)
 {
 	LoadVerifyKey(keyid);
 
-	CCASSERT(verifykey[keyid]);
-
-	return *verifykey[keyid];
+	return verifykey[keyid];
 }

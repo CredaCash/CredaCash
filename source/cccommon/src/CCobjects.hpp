@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * CCobjects.hpp
 */
@@ -108,10 +108,12 @@ public:
 			return ObjSize() - sizeof(header);
 	}
 
-	inline unsigned ObjTag() const
+	inline std::uint32_t ObjTag() const
 	{
 		return header.tag;
 	}
+
+	unsigned ObjType() const;
 
 	bool IsValid() const;
 

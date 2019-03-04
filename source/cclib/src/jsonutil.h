@@ -1,51 +1,57 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * jsonutil.h
 */
 
 #pragma once
 
+#include "CCapi.h"
+#include "CCbigint.hpp"
+
+#include "encodings.h"
+
 #include <jsoncpp/json/json.h>
 
-//#define JSON_ENDL	;
-#define JSON_ENDL	<< endl;
+//#define TEST_ADD_JSON_LINE_BREAKS		1
 
-#define SEPARATOR		'0'
-#define SEPARATOR_ALT	'O'
+#ifdef TEST_ADD_JSON_LINE_BREAKS
+#define JSON_ENDL	<< "\n";
+#else
+#define JSON_ENDL	;
+#endif
 
-extern const unsigned char base58[58];
-extern const unsigned char base58int[76];
-extern const unsigned char base64[64];
-extern const unsigned char base64int[80];
+#define CC_ENCODE_SEPARATOR		'0'
+#define CC_ENCODE_SEPARATOR_ALT	'O'
 
-CCRESULT copy_error_to_output(const string& error, char *output, const uint32_t bufsize, CCRESULT rc = -1);
-CCRESULT copy_result_to_output(const string& fn, const string& result, char *output, const uint32_t bufsize);
-CCRESULT error_unexpected_key(const string& fn, const string& key, char *output, const uint32_t bufsize);
-CCRESULT error_missing_key(const string& fn, const string& key, char *output, const uint32_t bufsize);
-CCRESULT error_value_overflow(const string& fn, const string& key, unsigned nbits, const bigint_t& maxval, char *output, const uint32_t bufsize);
-CCRESULT error_not_numeric(const string& fn, const string& key, char *output, const uint32_t bufsize);
-CCRESULT error_not_hex(const string& fn, const string& key, char *output, const uint32_t bufsize);
-CCRESULT error_invalid_value(const string& fn, const string& key, char *output, const uint32_t bufsize);
-CCRESULT error_input_end(const string& fn, char *output, const uint32_t bufsize);
-CCRESULT error_invalid_char(const string& fn, char *output, const uint32_t bufsize);
-CCRESULT error_unexpected_char(const string& fn, char *output, const uint32_t bufsize);
-CCRESULT error_checksum_mismatch(const string& fn, char *output, const uint32_t bufsize);
-CCRESULT error_not_array(const string& fn, const string& key, char *output, const uint32_t bufsize);
-CCRESULT error_not_array_objs(const string& fn, const string& key, char *output, const uint32_t bufsize);
-CCRESULT error_too_many_objs(const string& fn, const string& key, unsigned limit, char *output, const uint32_t bufsize);
-CCRESULT error_num_values(const string& fn, const string& key, unsigned limit, char *output, const uint32_t bufsize);
-CCRESULT error_invalid_tx(const string& fn, char *output, const uint32_t bufsize);
+CCRESULT copy_error_to_output(const string& fn, const string& error, char *output, const uint32_t outsize, CCRESULT rc = -1);
+CCRESULT copy_result_to_output(const string& fn, const string& result, char *output, const uint32_t outsize);
+CCRESULT error_buffer_overflow(const string& fn, char *output, const uint32_t outsize, const unsigned need = 0);
+CCRESULT error_requires_binary_buffer(const string& fn, char *output, const uint32_t outsize);
+CCRESULT error_unexpected(const string& fn, char *output, const uint32_t outsize);
+CCRESULT error_unexpected_key(const string& fn, const string& key, char *output, const uint32_t outsize);
+CCRESULT error_missing_key(const string& fn, const string& key, char *output, const uint32_t outsize);
+CCRESULT error_value_overflow(const string& fn, const string& key, unsigned nbits, const snarkfront::bigint_t& maxval, char *output, const uint32_t outsize);
+CCRESULT error_invalid_numeric_char(const string& fn, const string& key, char c, char *output, const uint32_t outsize);
+CCRESULT error_not_hex(const string& fn, const string& key, char *output, const uint32_t outsize);
+CCRESULT error_invalid_value(const string& fn, const string& key, char *output, const uint32_t outsize);
+CCRESULT error_input_end(const string& fn, char *output, const uint32_t outsize);
+CCRESULT error_invalid_char(const string& fn, char *output, const uint32_t outsize);
+CCRESULT error_unexpected_char(const string& fn, char *output, const uint32_t outsize);
+CCRESULT error_checksum_mismatch(const string& fn, char *output, const uint32_t outsize);
+CCRESULT error_not_array(const string& fn, const string& key, char *output, const uint32_t outsize);
+CCRESULT error_not_array_objs(const string& fn, const string& key, char *output, const uint32_t outsize);
+CCRESULT error_too_many_objs(const string& fn, const string& key, unsigned limit, char *output, const uint32_t outsize);
+CCRESULT error_num_values(const string& fn, const string& key, unsigned limit, char *output, const uint32_t outsize);
+CCRESULT error_invalid_tx_type(const string& fn, char *output, const uint32_t outsize);
+CCRESULT error_invalid_binary_tx(const string& fn, char *output, const uint32_t outsize);
+CCRESULT error_invalid_binary_tx_value(const string& fn, const string& msg, char *output, const uint32_t outsize);
 
 const Json::Value * json_find(const Json::Value& root, const char *key);
 
-CCRESULT parse_int_value(const string& fn, const string& key, const string& sval, unsigned nbits, bigint_t maxval, bigint_t& val, char *output, const uint32_t bufsize);
+CCRESULT parse_int_value(const string& fn, const string& key, const string& sval, unsigned nbits, snarkfront::bigint_t maxval, snarkfront::bigint_t& val, char *output, const uint32_t outsize, bool isexp = false);
 
-void encode(const unsigned char* table, const unsigned mod, const bigint_t& maxval, bool normalize, int nchars, const bigint_t& val, string &outs);
-
-unsigned decode_char(const unsigned char* table, const unsigned mod, unsigned char c);
-CCRESULT decode(const string& fn, const unsigned char* table, const unsigned mod, bool normalize, unsigned nchars, string& instring, bigint_t& val, char *output, const uint32_t bufsize);
-
-void encodestring(const string &sval, string &outs);
+void cc_encode(const unsigned char* table, const unsigned mod, const snarkfront::bigint_t& maxval, bool normalize, int nchars, const snarkfront::bigint_t& val, string& outs);
+CCRESULT cc_decode(const string& fn, const unsigned char* table, const unsigned mod, bool normalize, unsigned nchars, string& instring, snarkfront::bigint_t& val, char *output, const uint32_t outsize);

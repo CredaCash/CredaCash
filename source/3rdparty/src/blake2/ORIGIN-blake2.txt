@@ -1,8 +1,1 @@
 https://github.com/mjosaarinen/blake2_mjosref
-
-in blake2b.h and blake2s.h, add:
-
-#if defined(__cplusplus)
-extern "C" {
-#endif
-

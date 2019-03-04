@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * connection_registry.hpp
 */
@@ -26,17 +26,19 @@ class ConnectionRegistry
 public:
 	ConnectionRegistry()
 	{
+		last_unmapped_index = 0;
 		m_connections.push_back(NULL);	// leave entry zero NULL to guard against bugs
 	}
 
-	unsigned RegisterConn(Connection *conn);
+	int RegisterConn(Connection *conn, bool map);
 
-	Connection* GetConn(unsigned index);
+	Connection* GetConn(int index);
 
 protected:
 	vector<Connection *> m_connections;
+	int last_unmapped_index;
 
-	FastSpinLock m_lock;
+	FastSpinLock m_conn_registry_lock;
 };
 
 } // namespace CCServer

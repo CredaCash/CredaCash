@@ -1,31 +1,33 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * connection_registry.cpp
 */
 
 #include "CCdef.h"
+#include "CCboost.hpp"
 #include "connection_registry.hpp"
-
-#include <cstdint>
-
-using namespace std;
 
 CCServer::ConnectionRegistry g_connregistry;
 
 namespace CCServer {
 
-unsigned ConnectionRegistry::RegisterConn(Connection *conn)
+int ConnectionRegistry::RegisterConn(Connection *conn, bool map)
 {
-	unsigned index;
+	int index;
 
 	{
-		lock_guard<FastSpinLock> lock(m_lock);
+		lock_guard<FastSpinLock> lock(m_conn_registry_lock);
 
-		index = m_connections.size();
-		m_connections.push_back(conn);
+		if (map)
+		{
+			index = m_connections.size();
+			m_connections.push_back(conn);
+		}
+		else
+			index = --last_unmapped_index;
 	}
 
 	if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << "ConnectionRegistry::RegisterConn index " << index << " conn " << (uintptr_t)conn;
@@ -33,9 +35,11 @@ unsigned ConnectionRegistry::RegisterConn(Connection *conn)
 	return index;
 }
 
-Connection* ConnectionRegistry::GetConn(unsigned index)
+Connection* ConnectionRegistry::GetConn(int index)
 {
-	lock_guard<FastSpinLock> lock(m_lock);
+	CCASSERT(index > 0);
+
+	lock_guard<FastSpinLock> lock(m_conn_registry_lock);
 
 	auto conn = m_connections[index];
 

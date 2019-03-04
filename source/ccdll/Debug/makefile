@@ -45,7 +45,7 @@ all: cctx64.dll
 cctx64.dll: $(OBJS) $(USER_OBJS)
 	@echo 'Building target: $@'
 	@echo 'Invoking: Cross G++ Linker'
-	g++ -LC:/CredaCash/source/cccommon/Debug -LC:/CredaCash/depends/gmp/.libs -LC:/CredaCash/source/3rdparty/Debug -static -shared -Wl,--out-implib=libcctx.a -o "cctx64.dll" $(OBJS) $(USER_OBJS) $(LIBS)
+	g++ $(LDFLAGS) -L$(CREDACASH_BUILD)/source/cccommon/Debug -L$(CREDACASH_BUILD)/source/3rdparty/Debug -L$(CREDACASH_BUILD)/depends/gmp/.libs -shared -Wl,--out-implib=libcctx.a -o "cctx64.dll" $(OBJS) $(USER_OBJS) $(LIBS) $(LDLIBS)
 	@echo 'Finished building target: $@'
 	@echo ' '
 
@@ -55,6 +55,5 @@ clean:
 	-@echo ' '
 
 .PHONY: all clean dependents
-.SECONDARY:
 
 -include ../makefile.targets

@@ -1,12 +1,12 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * blockserve.cpp
 */
 
-#include "CCdef.h"
+#include "ccnode.h"
 #include "blockserve.hpp"
 #include "block.hpp"
 #include "blockchain.hpp"
@@ -14,7 +14,6 @@
 #include "transact.hpp"
 #include "hostdir.hpp"
 #include "dbconn.hpp"
-#include "util.h"
 
 #include <CCobjects.hpp>
 
@@ -22,13 +21,9 @@
 #include <ccserver/server.hpp>
 #include <ccserver/connection_manager.hpp>
 
-#include <boost/bind.hpp>
-
-#include <utility>
-
 #define TRACE_BLOCKSERVE		(g_params.trace_block_serve)
 
-#define BLOCKSERVE_DIR_REFRESH	(20*60)
+#define BLOCKSERVE_DIR_REFRESH	(30*60)
 //#define BLOCKSERVE_DIR_REFRESH	10		// for testing
 
 #define BLOCKSERVE_TIMEOUT			15
@@ -38,7 +33,7 @@
 
 #pragma pack(push, 1)
 
-static uint32_t No_Level_Reply[2] =				{CC_MSG_HEADER_SIZE, CC_RESULT_NO_LEVEL};
+static const uint32_t No_Level_Reply[2] =				{CC_MSG_HEADER_SIZE, CC_RESULT_NO_LEVEL};
 
 #pragma pack(pop)
 
@@ -46,23 +41,26 @@ thread_local DbConn *blockserve_dbconn;
 
 void BlockServeConnection::StartConnection()
 {
-	if (TRACE_BLOCKSERVE) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn-" << m_conn_index << " BlockServeConnection::StartConnection";
+	if (TRACE_BLOCKSERVE) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " BlockServeConnection::StartConnection";
+
+	m_conn_state = CONN_CONNECTED;
 
 	m_nreqlevels.store(0);
 
 	if (SetTimer(BLOCKSERVE_TIMEOUT))
 		return;
 
-	Connection::StartConnection();
+	StartRead();
 }
 
 void BlockServeConnection::HandleReadComplete()
 {
-	CancelTimer();
+	if (CancelTimer())
+		return;
 
 	if (m_nred != BLOCKSERVE_MSG_SIZE)
 	{
-		BOOST_LOG_TRIVIAL(info) << Name() << " Conn-" << m_conn_index << " BlockServeConnection::HandleReadComplete error wrong read size " << m_nred;
+		BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " BlockServeConnection::HandleReadComplete error wrong read size " << m_nred;
 
 		return Stop();
 	}
@@ -70,18 +68,18 @@ void BlockServeConnection::HandleReadComplete()
 	unsigned size = *(uint32_t*)m_pread;
 	unsigned tag = *(uint32_t*)(m_pread + 4);
 
-	if (TRACE_BLOCKSERVE) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn-" << m_conn_index << " BlockServeConnection::HandleReadComplete read " << m_nred << " bytes msg size " << size << " tag " << tag;
+	if (TRACE_BLOCKSERVE) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " BlockServeConnection::HandleReadComplete read " << m_nred << " bytes msg size " << size << " tag " << tag;
 
 	if (size != BLOCKSERVE_MSG_SIZE)
 	{
-		BOOST_LOG_TRIVIAL(info) << Name() << " Conn-" << m_conn_index << " BlockServeConnection::HandleReadComplete error wrong msg size " << size;
+		BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " BlockServeConnection::HandleReadComplete error wrong msg size " << size;
 
 		return Stop();
 	}
 
 	if (tag != CC_CMD_SEND_LEVELS)
 	{
-		BOOST_LOG_TRIVIAL(info) << Name() << " Conn-" << m_conn_index << " BlockServeConnection::HandleReadComplete error wrong tag " << tag;
+		BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " BlockServeConnection::HandleReadComplete error wrong tag " << tag;
 
 		return Stop();
 	}
@@ -89,25 +87,25 @@ void BlockServeConnection::HandleReadComplete()
 	uint64_t reqlevel = *(uint64_t*)(m_pread + 8);
 	uint16_t reqlevels = *(uint16_t*)(m_pread + 8 + 8);
 
-	if (TRACE_BLOCKSERVE) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn-" << m_conn_index << " BlockServeConnection::HandleReadComplete reqlevel " << reqlevel << " reqlevels " << reqlevels;
+	if (TRACE_BLOCKSERVE) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " BlockServeConnection::HandleReadComplete reqlevel " << reqlevel << " reqlevels " << reqlevels;
 
 	if (!reqlevel)
 	{
-		BOOST_LOG_TRIVIAL(info) << Name() << " Conn-" << m_conn_index << " BlockServeConnection::HandleReadComplete error reqlevel " << reqlevel;
+		BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " BlockServeConnection::HandleReadComplete error reqlevel " << reqlevel;
 
 		return Stop();
 	}
 
 	if (!reqlevels)
 	{
-		BOOST_LOG_TRIVIAL(info) << Name() << " Conn-" << m_conn_index << " BlockServeConnection::HandleReadComplete error reqlevels " << reqlevels;
+		BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " BlockServeConnection::HandleReadComplete error reqlevels " << reqlevels;
 
 		return Stop();
 	}
 
 	if (m_nreqlevels.load())
 	{
-		BOOST_LOG_TRIVIAL(info) << Name() << " Conn-" << m_conn_index << " BlockServeConnection::HandleReadComplete error busy m_nreqlevels " << m_nreqlevels.load();
+		BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " BlockServeConnection::HandleReadComplete error busy m_nreqlevels " << m_nreqlevels.load();
 
 		return Stop();
 	}
@@ -122,7 +120,7 @@ void BlockServeConnection::HandleReadComplete()
 
 void BlockServeConnection::DoSend()
 {
-	if (TRACE_BLOCKSERVE) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn-" << m_conn_index << " BlockServeConnection::DoSend m_reqlevel " << m_reqlevel.load() << " m_nreqlevels " << m_nreqlevels.load();
+	if (TRACE_BLOCKSERVE) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " BlockServeConnection::DoSend m_reqlevel " << m_reqlevel.load() << " m_nreqlevels " << m_nreqlevels.load();
 
 	if (!m_nreqlevels.fetch_sub(1))
 	{
@@ -132,7 +130,8 @@ void BlockServeConnection::DoSend()
 
 		StartRead();
 
-		SetTimer(BLOCKSERVE_TIMEOUT);
+		if (SetTimer(BLOCKSERVE_TIMEOUT))
+			return;
 
 		return;
 	}
@@ -143,14 +142,14 @@ void BlockServeConnection::DoSend()
 	auto rc = blockserve_dbconn->BlockchainSelectMax(last_indelible_level);
 	if (rc)
 	{
-		BOOST_LOG_TRIVIAL(error) << Name() << " Conn-" << m_conn_index << " BlockServeConnection::DoSend error BlockchainSelectMax failed";
+		BOOST_LOG_TRIVIAL(error) << Name() << " Conn " << m_conn_index << " BlockServeConnection::DoSend error BlockchainSelectMax failed";
 
 		return Stop();
 	}
 
 	if (level > last_indelible_level)
 	{
-		BOOST_LOG_TRIVIAL(info) << Name() << " Conn-" << m_conn_index << " BlockServeConnection::DoSend level " << level << " > last_indelible_level " << last_indelible_level;
+		BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " BlockServeConnection::DoSend level " << level << " > last_indelible_level " << last_indelible_level;
 
 		WriteAsync("BlockServeConnection::DoSend", boost::asio::buffer(No_Level_Reply, sizeof(No_Level_Reply)),
 				boost::bind(&Connection::HandleWrite, this, boost::asio::placeholders::error, AutoCount(this)));
@@ -163,7 +162,7 @@ void BlockServeConnection::DoSend()
 	blockserve_dbconn->BlockchainSelect(level, &smartobj);
 	if (!smartobj)
 	{
-		BOOST_LOG_TRIVIAL(error) << Name() << " Conn-" << m_conn_index << " BlockServeConnection::DoSend BlockchainSelect failed level " << level;
+		BOOST_LOG_TRIVIAL(error) << Name() << " Conn " << m_conn_index << " BlockServeConnection::DoSend BlockchainSelect failed level " << level;
 
 		return Stop();
 	}
@@ -177,17 +176,18 @@ void BlockServeConnection::DoSend()
 
 	if (size < CC_MSG_HEADER_SIZE || size > CC_BLOCK_MAX_SIZE)
 	{
-		BOOST_LOG_TRIVIAL(error) << Name() << " Conn-" << m_conn_index << " BlockServeConnection::DoSend object invalid size " << size;
+		BOOST_LOG_TRIVIAL(error) << Name() << " Conn " << m_conn_index << " BlockServeConnection::DoSend object invalid size " << size;
 
 		return Stop();
 	}
 
-	if (TRACE_BLOCKSERVE) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn-" << m_conn_index << " BlockServeConnection::DoSend level " << level << " size " << obj->ObjSize() << " tag " << obj->ObjTag();
+	if (TRACE_BLOCKSERVE) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " BlockServeConnection::DoSend level " << level << " size " << obj->ObjSize() << " tag " << obj->ObjTag();
 
 	WriteAsync("BlockServeConnection::DoSend", boost::asio::buffer(obj->ObjPtr(), size),
 			boost::bind(&BlockServeConnection::HandleBlockWrite, this, boost::asio::placeholders::error, smartobj, AutoCount(this)));
 
-	SetTimer(BLOCKSERVE_TIMEOUT + size / BLOCKSERVE_BYTES_PER_SEC);
+	if (SetTimer(BLOCKSERVE_TIMEOUT + size / BLOCKSERVE_BYTES_PER_SEC))
+		return;
 }
 
 void BlockServeConnection::HandleBlockWrite(const boost::system::error_code& e, SmartBuf smartobj, AutoCount pending_op_counter)
@@ -196,46 +196,25 @@ void BlockServeConnection::HandleBlockWrite(const boost::system::error_code& e, 
 
 	smartobj.ClearRef();	// we're done with this, so might as well free it now
 
-	CancelTimer();
+	if (CheckOpCount(pending_op_counter))
+		return;
+
+	if (CancelTimer())
+		return;
 
 	bool sim_err = ((TEST_RANDOM_WRITE_ERRORS & rand()) == 1);
-	if (sim_err) BOOST_LOG_TRIVIAL(info) << Name() << " Conn-" << m_conn_index << " BlockServeConnection::HandleBlockWrite simulating write error";
+	if (sim_err) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " BlockServeConnection::HandleBlockWrite simulating write error";
 
 	if (e || sim_err)
 	{
-		BOOST_LOG_TRIVIAL(info) << Name() << " Conn-" << m_conn_index << " BlockServeConnection::HandleBlockWrite after error " << e << " " << e.message();
+		BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " BlockServeConnection::HandleBlockWrite after error " << e << " " << e.message();
 
 		return Stop();
 	}
 
-	if (TRACE_BLOCKSERVE) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn-" << m_conn_index << " BlockServeConnection::HandleBlockWrite ok";
+	if (TRACE_BLOCKSERVE) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " BlockServeConnection::HandleBlockWrite ok";
 
 	DoSend();
-}
-
-bool BlockServeConnection::SetTimer(unsigned sec)
-{
-	//if (TRACE_BLOCKSERVE) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn-" << m_conn_index << " BlockServeConnection::SetTimer " << sec;
-
-	auto op_counter = AutoCount();
-	return AsyncTimerWait("BlockServeConnection::SetTimer", sec*1000, boost::bind(&BlockServeConnection::HandleTimeout, this, boost::asio::placeholders::error, op_counter), op_counter);
-}
-
-void BlockServeConnection::HandleTimeout(const boost::system::error_code& e, AutoCount pending_op_counter)
-{
-	if (e == boost::asio::error::operation_aborted)
-	{
-		//if (TRACE_BLOCKSERVE) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn-" << m_conn_index << " BlockServeConnection::HandleTimeout " << uintptr_t(this) << " e = " << e << " " << e.message();
-
-		return;
-	}
-
-	if (g_shutdown)
-		return;
-
-	if (TRACE_BLOCKSERVE) BOOST_LOG_TRIVIAL(info) << Name() << " Conn-" << m_conn_index << " BlockServeConnection::HandleTimeout " << uintptr_t(this) << " e = " << e << " " << e.message();
-
-	Stop();
 }
 
 void BlockService::Start()
@@ -248,7 +227,7 @@ void BlockService::Start()
 	if (TRACE_BLOCKSERVE) BOOST_LOG_TRIVIAL(trace) << Name() << " BlockService port " << port;
 
 	// unsigned conn_nreadbuf, unsigned conn_nwritebuf, unsigned sock_nreadbuf, unsigned sock_nwritebuf, unsigned headersize, bool noclose, bool bregister
-	CCServer::ConnectionFactoryInstantiation<BlockServeConnection> connfac(BLOCKSERVE_MSG_SIZE, 0, -1, -1, BLOCKSERVE_MSG_SIZE, 0, 0);
+	CCServer::ConnectionFactoryInstantiation<BlockServeConnection> connfac(BLOCKSERVE_MSG_SIZE + 2, 0, -1, -1, BLOCKSERVE_MSG_SIZE, 0, 0);
 	CCThreadFactoryInstantiation<BlockServeThread> threadfac;
 
 	unsigned maxconns = (unsigned)(max_inconns + max_outconns);
@@ -287,6 +266,11 @@ void BlockService::ConnMonitorProc()
 	}
 
 	BOOST_LOG_TRIVIAL(trace) << Name() << " BlockService::ConnMonitorProc(" << this << ") ended";
+}
+
+void BlockService::StartShutdown()
+{
+	m_service.StartShutdown();
 }
 
 void BlockService::WaitForShutdown()

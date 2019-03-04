@@ -1,3 +1,2 @@
 https://github.com/floodyberry/ed25519-donna
 
-delete (or rename to anything else) the files *-custom.h

@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * server.hpp
 */
@@ -36,6 +36,8 @@ public:
 	/// Construct the Server
 	explicit Server(const string& name)
 	 :	m_name(name),
+		m_startup_backlog(0),
+		m_stopping(0),
 		m_io_service(),
 		m_signals(m_io_service),
 		m_acceptor(m_io_service),
@@ -44,7 +46,7 @@ public:
 	{ }
 
 	// Setup server
-	void Init(const boost::asio::ip::tcp::endpoint& endpoint, unsigned maxconns, unsigned maxincoming, unsigned backlog, const class ConnectionFactory &connfac);
+	void Init(const boost::asio::ip::tcp::endpoint& endpoint, unsigned maxconns, unsigned maxincoming, unsigned backlog, const class ConnectionFactory& connfac);
 
 	ConnectionManager& GetConnectionManager()
 	{
@@ -54,22 +56,30 @@ public:
 	/// Run the server's io_service loop.
 	void Run();
 
+	atomic<int> m_startup_backlog;
+
 	/// Make outgoing connection
-	pconnection_t Connect(const string& host, unsigned port);
-	pconnection_t ConnectThruTor(const string& host, unsigned proxy_port);
+	pconnection_t Connect(const string& host, unsigned port, bool use_tor = false);
 
 	/// Respond when a Connection becomes free
 	void HandleFreeConnection();
 
+	void AsyncStop();
+
 private:
 	/// Initiate an asynchronous accept operation.
-	void StartAccept(bool m_new_connection_has_been_used = false);
+	void StartAccept(bool new_connection_used = false);
+	void StartAcceptWithLock(bool new_connection_used);
 
 	/// Handle completion of an asynchronous accept operation.
 	void HandleAccept(const boost::system::error_code& e);
 
+	/// Handle Signals
+	void HandleSignals();
+
 	/// Handle a request to stop the server.
 	void HandleStop();
+	atomic<int> m_stopping;				// prevent multiple stops
 
 	/// The io_service used to perform asynchronous operations.
 	boost::asio::io_service m_io_service;

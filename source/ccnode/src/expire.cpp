@@ -1,16 +1,15 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2016 Creda Software, Inc.
+ * Copyright (C) 2015-2019 Creda Software, Inc.
  *
  * expire.cpp
 */
 
-#include "CCdef.h"
+#include "ccnode.h"
 #include "expire.hpp"
 #include "block.hpp"
 #include "blockchain.hpp"
-#include "util.h"
 
 #define TRACE_EXPIRE	(g_params.trace_expire)
 
@@ -152,16 +151,16 @@ void ExpireObj::DoExpires()
 				return;
 		}
 
-		while (next_expires_smartobj && ((CCObject*)next_expires_smartobj.data())->ObjTag() == CC_TAG_BLOCK)
+		while (next_expires_smartobj && ((CCObject*)next_expires_smartobj.data())->ObjType() == CC_TYPE_BLOCK)
 		{
 			auto prune_level = g_blockchain.ComputePruneLevel(0, BLOCK_PRUNE_ROUNDS + 3);
 
 			auto block = (Block*)next_expires_smartobj.data();
 			auto wire = block->WireData();
 
-			if (TRACE_EXPIRE) BOOST_LOG_TRIVIAL(debug) << "ExpireObj::DoExpires " << m_name << " block level " << wire->level << " prune level " << prune_level;
+			if (TRACE_EXPIRE) BOOST_LOG_TRIVIAL(debug) << "ExpireObj::DoExpires " << m_name << " block level " << wire->level.GetValue() << " prune level " << prune_level;
 
-			if (wire->level < prune_level)
+			if (wire->level.GetValue() < prune_level)
 			{
 				block->SetPriorBlock(SmartBuf());	// break the link so prior block can be destroyed
 
