@@ -31,11 +31,11 @@ The wallet:
 
 ## Project Status
 
-This software is currently in beta. It runs reliably, has been extensively tested, and has no known issues although some may be uncovered during beta testing.  For a full list of the items left to be completed for the first release, see the [TODO](https://github.com/CredaCash/network-node/blob/master/TODO.md) file.
+This software is currently in beta.  It runs reliably, has been extensively tested, and has no known issues although some may be uncovered during beta testing.  For a full list of the items left to be completed for the first release, see the [TODO](https://github.com/CredaCash/network-node/blob/master/TODO.md) file.
 
 ## Quick Start
 
-A Windows executable with instructions is available at [CredaCash.com](https://credacash.com/software/)
+Windows executables with instructions are available at [CredaCash.com](https://CredaCash.com/software/)
 
 ## Building
 
@@ -43,6 +43,6 @@ The CredaCash network node software is cross-platform, and has been built and te
 
 ## License
 
-This software is licensed under the [Creda Software License Agreement](https://credacash.com/legal/software-license-agreement/). This license is designed to allow anyone to freely run, modify, and redistribute the CredaCash software as long as they support the CredaCash currency on a non-discriminatory basis.
+This software is licensed under the [Creda Software License Agreement](https://CredaCash.com/legal/software-license-agreement/).  This license is designed to allow anyone to freely run, modify, and redistribute the CredaCash software as long as they support the CredaCash currency on a non-discriminatory basis.
 
 CredaCash is a trademark of Creda Software, Inc.  US and worldwide patents pending.

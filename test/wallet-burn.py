@@ -41,7 +41,7 @@ import pprint
 logging.basicConfig(level=logging.WARNING, format='[%(levelname)s] (%(threadName)-10s) %(message)s')
 
 rpc_user = 'rpc'
-rcp_pass = 'pass'
+rcp_pass = 'pwd'
 
 min_exponent = -30
 
@@ -97,7 +97,7 @@ def main(argv):
 		print
 		print 'Usage: wallet-burn.py <rpc_port> <nthreads> <nmint> <prob_tx> <pay_destination_1> <pay_destination_2> ...'
 		print
-		print 'Note: This script will only work if ccwallet is stsrted with --wallet-rpc-password=pass'
+		print 'Note: This script will only work if ccwallet is stsrted with --wallet-rpc-password=pwd'
 		print
 		exit()
 

@@ -2,15 +2,15 @@
 
 <!--- NOTE: This file is in Markdown format, and is intended to be viewed in a Markdown viewer. -->
 
-Windows executables are available at [CredaCash.com](https://credacash.com/software/). The following steps are only needed to build the software for Linux, or to rebuild for Windows from the source code.
+Windows executables are available at [CredaCash.com](https://CredaCash.com/software/).  The following steps are only needed to build the software for Linux, or to rebuild for Windows from the source code.
 
 ## Supported Platforms
 
-The CredaCash software is intended to be cross-platform, and has been built and run under 64-bit versions of Windows and Linux (specifically, Windows 7 x64 and Debian Stretch v9.8). Compatibility with other platforms is unknown.
+The CredaCash software is intended to be cross-platform, and has been built and run under 64-bit versions of Windows and Linux (specifically, Windows 7 x64 and Debian Stretch v9.8).  Compatibility with other platforms is unknown.
 
 ## Dependencies
 
-The following dependencies are required. Specific instructions are provided below for Debian Linux and Windows x64.
+The following dependencies are required.  Specific instructions are provided below for Debian Linux and Windows x64.
 
 Required to fetch the source dependencies:
 
@@ -20,9 +20,9 @@ Required to fetch the source dependencies:
 
 Required to build:
 
-- GNU g++ v4.8 or higher. The software has been specifically tested with v4.9.4 and v6.4.0, and the earlier version works just as well as the more recent version. Under Linux, the default version provided with your distribution is recommended.
-- Boost library, roughly version v1.50 or higher. The software has been specifically tested with v1.62 and v1.69. Under Linux, the version provided with your distribution is recommended, if it is compatible.
-- GNU gmplib, any recent version. Under Linux, the version provided with your distribution is recommended, if it is compatible.
+- GNU g++ v4.8 or higher.  The software has been specifically tested with v4.9.4, v6.4.0 and v7.3.1.  The earlier version works just as well as the more recent versions.  Under Linux, the default version provided with your distribution is recommended.
+- Boost library, roughly version v1.50 or higher.  The software has been specifically tested with v1.62 and v1.69.  Under Linux, the version provided with your distribution is recommended, if it is compatible.
+- GNU gmplib, any recent version.  Under Linux, the version provided with your distribution is recommended, if it is compatible.
 
 Required to run:
 
@@ -39,12 +39,13 @@ The following instructions are specifically for Debian Stretch v9.8.  They may b
 1. Install the following packages:
 
 	- curl
+	- unzip
 	- make
 	- g++
 	- libboost-all-dev
 	- libgmp-dev
 
-	Note that in Redhat-based distribtions, the above packages are named curl, make, gcc-c++, boost-devel, and gmp-devel
+	Note that in Redhat-based distribtions, the above packages are named curl, unzip, make, gcc-c++, boost-devel, and gmp-devel
 
 2. Tor v0.3.2 or higher is required, which is available in Debian Stretch from the backports repository.  If the backports repository has not yet been enabled, it can be enabled with:
 
@@ -84,19 +85,23 @@ The following instructions are specifically for Debian Stretch v9.8.  They may b
 
 	``./get_depends.sh``
 
-5. Fetch the zero knowledge proof keys:
+5. Fetch the genesis files:
+
+	``./get_genesis.sh``
+
+6. Fetch the zero knowledge proof keys:
 
 	``./get_zkkeys.sh``
 
-6. Build the executables:
+7. Build the executables:
 
 	``./make_release.sh``
 
 	This should build the network node server (ccnode.exe), wallet server (ccwallet.exe) and transaction library cctx64.dll) and place them into the current directory.
 
-7. Fetch the genesis files:
+	If the compiler does not accept the "-m64" flag, it can be removed from the makefiles with the command:
 
-	``./get_genesis.sh``
+	``find source -name subdir.mk -exec sed -i 's/ -m64//g' {} +``
 
 ##### Boost
 
@@ -126,7 +131,7 @@ If the build is not successful due to incompatibilities with Boost, the Boost li
 
 ## Windows x64
 
-Windows executables are available at [CredaCash.com](https://credacash.com/software/).  The following steps are only needed to rebuild the executables from the source code.
+Windows executables are available at [CredaCash.com](https://CredaCash.com/software/).  The following steps are only needed to rebuild the executables from the source code.
 
 ### Set up the environment
 

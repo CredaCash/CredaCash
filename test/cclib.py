@@ -391,7 +391,7 @@ def flipbit(wire, nwire):
 	if byte >= 8:							# 8 = header size (size and tag words)
 		byte += 48							# don't flip bit in proof of work because it might not make the tx invalid (bytes at offset 8-55 inclusive)
 	bit = random.randrange(8)
-	print 'flipping byte', byte, 'bit', bit, 'original value', hex(wire2[byte])
+	print 'flipping byte %4d' % byte, 'bit', bit, 'original value', hex(wire2[byte])
 	if byte < 0 or byte >= nwire:
 		print 'flipbit error byte', byte, 'nwire', nwire, 'msg size', GetMsgSize(wire)
 		raise Exception

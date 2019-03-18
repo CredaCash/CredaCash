@@ -72,7 +72,7 @@ test_use_larger_zkkey = 0
 # These are for testing
 
 extra_on_wire = 0				# must match TEST_EXTRA_ON_WIRE in code
-double_spend_probability = 0.5	# probability of attempting to double-spend a bill, if test_double_spends is True
+double_spend_probability = 0.2	# probability of attempting to double-spend a bill, if test_double_spends is True
 double_spend_wait_time = 60		# seconds that must elapse before deciding a double-spend attempt did not succeed
 test_nfuzz = 20					# number of times to fuzz a transaction, if the test_bad_txs command line option is set
 
@@ -358,12 +358,14 @@ class Wallet:
 		unspent_keys.sort()
 		inputs = ''
 		for i in range(nin):
-			bill = self.bills_unspent[unspent_keys[i]]
-			del self.bills_unspent[unspent_keys[i]]
-			if test_double_spends and random.random() < double_spend_probability:
+			key = unspent_keys[0]
+			bill = self.bills_unspent[key]
+			del unspent_keys[0]
+			del self.bills_unspent[key]
+			if test_double_spends and random.random() < double_spend_probability and len(self.bills_unspent) < max(7, 2 * unspent_target):
 				# requeue the bill to be spent again at a random time, possibly even in this same transaction
 				print 'Requeuing bill for a double-spend attempt'
-				spend_order = random.getrandbits(32)
+				spend_order = random.getrandbits(64)
 				#spend_order = 1							# spend this bill next
 				self.bills_unspent[spend_order] = bill
 				unspent_keys = self.bills_unspent.keys()
@@ -462,11 +464,13 @@ class Wallet:
 				outvals = []
 
 				for i in range(nout):
-					if nout - i < 2:
+					if outsum >= insum:
+						r = 0
+					elif nout - i < 2:
 						r = insum - outsum
 					else:
-						r = random.randrange(insum - outsum) + 1
-						r = random.randrange(r) + 1
+						r = random.randrange(insum - outsum + 1)
+						r = random.randrange(r + 1)
 					val = Amounts.Truncate(r, 0, False)
 					#print 'round up', insum - outsum, r, val
 					if val > insum - outsum:
@@ -491,7 +495,7 @@ class Wallet:
 			for bill in inbills:
 				if bill.already_spent == 1:
 					bill.already_spent = False
-				spend_order = random.getrandbits(32)
+				spend_order = random.getrandbits(64)
 				self.bills_unspent[spend_order] = bill
 			return
 
@@ -717,7 +721,7 @@ class Wallet:
 			print 'ok'
 		# queue the outputs to be spent
 		for bill in txouts.Bills():
-			spend_order = random.getrandbits(32)
+			spend_order = random.getrandbits(64)
 			self.bills_unspent[spend_order] = bill
 		return True
 
