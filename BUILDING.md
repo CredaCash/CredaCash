@@ -2,11 +2,11 @@
 
 <!--- NOTE: This file is in Markdown format, and is intended to be viewed in a Markdown viewer. -->
 
-Windows executables are available at [CredaCash.com](https://CredaCash.com/software/).  The following steps are only needed to build the software for Linux, or to rebuild for Windows from the source code.
+Windows executables are available at [CredaCash.com](https://CredaCash.com/software/).  The following steps are only needed to build the software for Linux, or to rebuild for Windows from source.
 
 ## Supported Platforms
 
-The CredaCash software is intended to be cross-platform, and has been built and run under 64-bit versions of Windows and Linux (specifically, Windows 7 x64 and Debian Stretch v9.8).  Compatibility with other platforms is unknown.
+The CredaCash software is intended to be cross-platform, and has been built and run under 64-bit versions of Windows and Linux (specifically, Windows 7 x64, Debian Stretch v9.8, and the most recent Amazon Linux 2 AMI for Amazon EC2).  Compatibility with other platforms is unknown.
 
 ## Dependencies
 
@@ -47,21 +47,21 @@ The following instructions are specifically for Debian Stretch v9.8.  They may b
 
 	Note that in Redhat-based distribtions, the above packages are named curl, unzip, make, gcc-c++, boost-devel, and gmp-devel
 
-2. Tor v0.3.2 or higher is required, which is available in Debian Stretch from the backports repository.  If the backports repository has not yet been enabled, it can be enabled with:
+2. Tor v0.3.2 or higher is required to run CredaCash.  Tor binary packages for various Linux distributions, and source that is straightforward to build for any distribution, are available at the [Tor Project website](https://www.torproject.org/download/download-unix.html).  Older versions can be found at the [Tor Project archive](https://dist.torproject.org/).
+
+	For Debian Stretch, Tor v0.3.2+ is also available in the backports repository.  If the backports repository has not yet been enabled, it can be enabled with:
 
 	``sudo sh -c "echo 'deb http://deb.debian.org/debian stretch-backports main' >> /etc/apt/sources.list.d/stretch-backports.list"``
 
 	``sudo apt-get update``
 
-	Tor v3 can then be installed with:
+	Tor v0.3.2+ can then be installed with:
 
 	``sudo apt-get -t stretch-backports install tor``
 
 	``sudo systemctl stop tor``
 
 	``sudo systemctl disable tor``
-
-	Alternately, binary packages for various distributions, and source that is straigtforward to build for any distribution, are available at the [Tor Project website](https://www.torproject.org/download/download-unix.html).  Older versions can be found at [Tor Project archive](https://dist.torproject.org/).
 
 3. Open a new terminal window and fetch the CredaCash source code:
 
@@ -97,7 +97,7 @@ The following instructions are specifically for Debian Stretch v9.8.  They may b
 
 	``./make_release.sh``
 
-	This should build the network node server (ccnode.exe), wallet server (ccwallet.exe) and transaction library cctx64.dll) and place them into the current directory.
+	This should build the network node server (ccnode.exe), wallet server (ccwallet.exe) and transaction library (cctx64.dll) and place them into the current directory.
 
 	If the compiler does not accept the "-m64" flag, it can be removed from the makefiles with the command:
 
@@ -105,7 +105,7 @@ The following instructions are specifically for Debian Stretch v9.8.  They may b
 
 ##### Boost
 
-If the build is not successful due to incompatibilities with Boost, the Boost libraries can be built from source as a static library under Linux as follows:
+If the build is not successful due to incompatibilities with Boost, Boost can be built from source as static libraries under Linux as follows:
 
 1. Download the latest stable version of the Boost library source code from [Sourceforge](https://sourceforge.net/projects/boost/files/boost/)
 
@@ -123,15 +123,17 @@ If the build is not successful due to incompatibilities with Boost, the Boost li
 
 	The output should be "The Boost C++ Libraries were successfully built!"
 
-5. The CredaCash executables can then be built using "static-boost" as follows:
+5. The CredaCash executables can then be built using the static boost libraries as follows:
 
 	``cd CredaCash``
+
+	``./make_clean.sh``
 
 	``./make_release.sh static-boost``
 
 ## Windows x64
 
-Windows executables are available at [CredaCash.com](https://CredaCash.com/software/).  The following steps are only needed to rebuild the executables from the source code.
+Windows executables are available at [CredaCash.com](https://CredaCash.com/software/).  The following steps are only needed to rebuild the executables from source.
 
 ### Set up the environment
 
@@ -288,7 +290,7 @@ Windows executables are available at [CredaCash.com](https://CredaCash.com/softw
 
 	``b2 -j4 --layout=system toolset=gcc address-model=64 cxxflags="-std=c++11 -D_hypot=hypot" define=BOOST_USE_WINAPI_VERSION=0x0502 variant=release threading=multi link=static runtime-link=static``
 
-The output should be "The Boost C++ Libraries were successfully built!"
+	The output should be "The Boost C++ Libraries were successfully built!"
 
 ### Build CredaCash
 
@@ -306,4 +308,4 @@ The output should be "The Boost C++ Libraries were successfully built!"
 
 	``get_genesis.bat``
 
-3. Create or edit the configuration files cnode.conf and ccwallet.con and set the value of tor-exe to the full path of tor.exe in the directory created above.
+3. Create or edit the configuration files cnode.conf and ccwallet.conf and set the value of tor-exe to the full path of tor.exe in the directory created above.
