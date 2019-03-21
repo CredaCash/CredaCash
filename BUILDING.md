@@ -6,7 +6,7 @@ Windows executables are available at [CredaCash.com](https://CredaCash.com/softw
 
 ## Supported Platforms
 
-The CredaCash software is intended to be cross-platform, and has been built and run under 64-bit versions of Windows and Linux (specifically, Windows 7 x64, Debian Stretch v9.8, and the most recent Amazon Linux 2 AMI for Amazon EC2).  Compatibility with other platforms is unknown.
+The CredaCash software is intended to be cross-platform, and has been built and run under 64-bit versions of Windows and Linux (specifically, Windows 7 x64, Debian Stretch v9.8 amd64, the most recent Amazon Linux 2 AMI 64-bit x86 for Amazon EC2, and the official Ubuntu v18.04 aarch64 distribution for the ODROID-C2 single board ARM computer).  Compatibility with other platforms is unknown.
 
 ## Dependencies
 
