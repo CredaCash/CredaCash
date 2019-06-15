@@ -11,6 +11,8 @@
 #include "blockchain.hpp"
 #include "witness.hpp"
 
+#include <CCmint.h>
+
 #include <blake2/blake2.h>
 #include <ed25519/ed25519.h>
 
@@ -91,11 +93,20 @@ void Block::ChainToPriorBlock(SmartBuf priorobj)
 
 	SetPriorBlock(priorobj);
 
+	CCASSERT(wire->witness < MAX_NWITNESSES);
+	memcpy(&auxp->blockchain_params, &prior_auxp->blockchain_params, sizeof(auxp->blockchain_params));
+
 	auxp->blockchain_params.nwitnesses = prior_auxp->blockchain_params.next_nwitnesses;
 	auxp->blockchain_params.maxmal = prior_auxp->blockchain_params.next_maxmal;
 
-	CCASSERT(wire->witness < MAX_NWITNESSES);
-	memcpy(&auxp->blockchain_params, &prior_auxp->blockchain_params, sizeof(auxp->blockchain_params));
+	if (Implement_CCMint(g_params.blockchain) && wire->level.GetValue() == CC_MINT_COUNT + CC_MINT_ACCEPT_SPAN)
+	{
+		BOOST_LOG_TRIVIAL(debug) << "Block::ChainToPriorBlock block level " << wire->level.GetValue() << " setting next_nwitnesses " << genesis_nwitnesses << " next_maxmal " << genesis_maxmal;
+
+		auxp->blockchain_params.next_nwitnesses = genesis_nwitnesses;
+		auxp->blockchain_params.next_maxmal = genesis_maxmal;
+	}
+
 #if ROTATE_BLOCK_SIGNING_KEYS
 	memcpy(&auxp->blockchain_params.signing_keys[wire->witness], &wire->witness_next_signing_public_key, sizeof(wire->witness_next_signing_public_key));
 #endif
@@ -174,6 +185,12 @@ bool Block::CheckBadSigOrder(int top_witness) const
 
 	unsigned nwitnesses = auxp->blockchain_params.nwitnesses;
 	unsigned nconfsigs = auxp->blockchain_params.nconfsigs;
+
+	if (top_witness >= 0)
+	{
+		nwitnesses = auxp->blockchain_params.next_nwitnesses;
+		nconfsigs = (nwitnesses - auxp->blockchain_params.next_maxmal) / 2 + auxp->blockchain_params.next_maxmal + 1;
+	}
 
 	if (TRACE_CHECKORDER) BOOST_LOG_TRIVIAL(trace) << "Block::CheckBadSigOrder top_witness " << top_witness << " starting at level " << wire->level.GetValue() << " nwitnesses " << nwitnesses << " maxmal " << auxp->blockchain_params.maxmal << " nconfsigs " << nconfsigs << " witness " << (unsigned)wire->witness << " skip " << auxp->skip << " oid " << buf2hex(&auxp->oid, sizeof(ccoid_t));
 
@@ -283,7 +300,7 @@ uint64_t Block::CalcSkipScore(int top_witness, SmartBuf last_indelible_block, ui
 	{
 		if (TRACE_CALCSKIPSCORE) BOOST_LOG_TRIVIAL(trace) << "Block::CalcSkipScore before top witness score " << hex << score << dec << " scorebits " << scorebits;
 
-		unsigned nwitnesses = auxp->blockchain_params.nwitnesses;
+		unsigned nwitnesses = auxp->blockchain_params.next_nwitnesses;
 		auto skip = ComputeSkip(wire->witness, top_witness, nwitnesses);
 
 		score <<= skip + 1;
@@ -508,6 +525,7 @@ bool Block::SignOrVerify(bool verify)
 
 	BlockSignedData data;
 	//cerr << "sizeof(BlockSignedData) = " << sizeof(data) << endl;
+	//cerr << "prior block_hash " << buf2hex(&prior_auxp->block_hash, sizeof(prior_auxp->block_hash)) << endl;
 
 	memcpy(&data.prior_block_hash, &prior_auxp->block_hash, sizeof(data.prior_block_hash));
 	memcpy(&data.block_hash, &auxp->block_hash, sizeof(data.block_hash));
@@ -517,9 +535,9 @@ bool Block::SignOrVerify(bool verify)
 	data.block_size = BodySize();
 	data.witness = wire->witness;
 
-	if (wire->witness >= prior_auxp->blockchain_params.nwitnesses)
+	if (wire->witness >= prior_auxp->blockchain_params.next_nwitnesses)
 	{
-		if (TRACE_BLOCK) BOOST_LOG_TRIVIAL(info) << "Block::SignOrVerify error witness " << (unsigned)wire->witness << " out of range nwitnesses " << prior_auxp->blockchain_params.nwitnesses;
+		if (TRACE_BLOCK) BOOST_LOG_TRIVIAL(info) << "Block::SignOrVerify error witness " << (unsigned)wire->witness << " out of range next_nwitnesses " << prior_auxp->blockchain_params.next_nwitnesses;
 
 		return true;
 	}
@@ -558,8 +576,8 @@ bool Block::SignOrVerify(bool verify)
 			ed25519_publickey(&prior_auxp->witness_params.next_signing_private_key[keynum][0], &pubkey[0]);
 
 			BOOST_LOG_TRIVIAL(debug) << "Block::SignOrVerify sign level " << wire->level.GetValue() << " witness " << (unsigned)wire->witness;
-			//@@! don't log the private key in the final release
-			BOOST_LOG_TRIVIAL(debug) << "Block::SignOrVerify sign      privkey " << buf2hex(&prior_auxp->witness_params.next_signing_private_key[keynum], sizeof(prior_auxp->witness_params.next_signing_private_key[keynum]));
+			// don't log the private key in the final release
+			//BOOST_LOG_TRIVIAL(debug) << "Block::SignOrVerify sign      privkey " << buf2hex(&prior_auxp->witness_params.next_signing_private_key[keynum], sizeof(prior_auxp->witness_params.next_signing_private_key[keynum]));
 			BOOST_LOG_TRIVIAL(debug) << "Block::SignOrVerify sign       pubkey " << buf2hex(&prior_auxp->blockchain_params.signing_keys[wire->witness], sizeof(prior_auxp->blockchain_params.signing_keys[wire->witness]));
 			BOOST_LOG_TRIVIAL(debug) << "Block::SignOrVerify sign pubkey check " << buf2hex(&pubkey, sizeof(pubkey));
 			BOOST_LOG_TRIVIAL(debug) << "Block::SignOrVerify signing data " << buf2hex(&data, sizeof(data));

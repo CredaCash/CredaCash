@@ -92,6 +92,11 @@ using namespace std;
 
 #define LOCALHOST				"127.0.0.1"
 
+#define BASE_PORT				9200
+#define BASE_PORT_TOP			32749
+
+#define ZK_KEY_DIR				"zkkeys"
+
 #define TOR_EXE					"Tor" PATH_DELIMITER "tor.exe"
 #define TOR_CONFIG				"tor.conf"
 
@@ -106,6 +111,7 @@ using namespace std;
 
 #include <boost/version.hpp>
 
+#include "RandTest.h"
 #include "CCutil.h"
 #include "CCticks.hpp"
 #include "CCassert.h"

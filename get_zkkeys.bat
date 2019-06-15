@@ -1,3 +1,3 @@
-curl -O https://credacash.s3.amazonaws.com/zkkeys_beta2.zip
-unzip zkkeys_beta2.zip
-del zkkeys_beta2.zip
+curl -O https://credacash.s3.amazonaws.com/zkkeys_mint.zip
+unzip zkkeys_mint.zip
+del zkkeys_mint.zip

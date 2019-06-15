@@ -26,7 +26,7 @@ enum RPCErrorCode
     RPC_INTERNAL_ERROR   = -32603,			// Internal JSON-RPC error.
     RPC_PARSE_ERROR      = -32700,			// Invalid JSON was received by the server. An error occurred on the server while parsing the JSON text.
 
-	RPC_WALLET_SIMULATED_ERROR = 32099,		// simulated test error
+	RPC_WALLET_SIMULATED_ERROR = -32099,		// simulated test error
 
 	//! General application defined errors
     RPC_MISC_ERROR                  = -1,  //!< std::exception thrown in command handling

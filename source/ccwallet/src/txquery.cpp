@@ -339,6 +339,13 @@ int TxQuery::SubmitTx(const TxPay& tx, uint64_t& next_commitnum)
 				break;
 			}
 
+			if (!strncmp(m_pread, "INVALID:", 8))
+			{
+				result_code = 1;
+
+				break;
+			}
+
 			BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " TxQuery::SubmitTx unrecognized response " << m_pread;
 		}
 	}

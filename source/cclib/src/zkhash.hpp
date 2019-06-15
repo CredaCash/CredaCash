@@ -491,7 +491,7 @@ public:
 				if (sequential)
 					bases[i] = *(uint16_t*)prfkey + basisi;
 				else
-					bases[i] = siphash((uint8_t*)prfkey, (uint8_t*)&basisi, sizeof(basisi));
+					bases[i] = siphash_keyed((uint8_t*)prfkey, (uint8_t*)&basisi, sizeof(basisi));
 
 				bases[i] &= (HASHBASES_NRANDOM - 1);
 				bases[i] += HASHBASES_RANDOM_START;

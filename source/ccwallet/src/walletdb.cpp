@@ -37,10 +37,10 @@
 #define TEST_ENABLE_SQLITE_BUSY		0	// don't test
 #endif
 
-#define DB_SUBKEY_WALLET_ID	2
-
 #define DB_TAG			"CredaCash Wallet"
-#define DB_SCHEMA		2
+#define DB_SCHEMA		3
+
+#define WALLET_ID_BYTES	(128/8)
 
 //static boost::shared_mutex db_mutex; // v1.69 boost::shared_mutex is buggy--throwing exceptions that exclusive waiter count went negative
 static mutex db_mutex;
@@ -62,7 +62,7 @@ static void OpenDbFile(const char *name, bool createdb, sqlite3** db, bool inter
 	string path = boost::locale::conv::utf_to_utf<char>(g_params.app_data_dir);
 	path += PATH_DELIMITER;
 	path += name;
-	path += ".ccwb"; //@@! change for production release
+	path += ".ccw";
 
 	string file = "file:";
 	file += path;
@@ -108,7 +108,7 @@ static void OpenDbFile(const char *name, bool createdb, sqlite3** db, bool inter
 
 	CCASSERTZ(dbexec(*db, "PRAGMA foreign_keys = ON;"));
 	CCASSERTZ(dbexec(*db, "PRAGMA page_size = 4096;"));
-	CCASSERTZ(dbexec(*db, "PRAGMA synchronous = FULL;"));
+	CCASSERTZ(dbexec(*db, "PRAGMA synchronous = EXTRA;"));
 	CCASSERTZ(dbexec(*db, "PRAGMA journal_mode = TRUNCATE;"));
 
 	if (TEST_ENABLE_SQLITE_BUSY)
@@ -341,20 +341,25 @@ void DbConn::InitDb()
 {
 	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(debug) << "DbConn::InitDb dbconn " << uintptr_t(this);
 
-	unsigned nbytes = 128/8;
 	bigint_t wallet_id;
-	CCRandom(&wallet_id,nbytes);
+	CCRandom(&wallet_id, WALLET_ID_BYTES);
 
-	string sql("insert or ignore into Parameters values (" STRINGIFY(DB_KEY_SCHEMA));
+	string sql, insert("insert or ignore into Parameters values (");
 
-	CCASSERTZ(dbexec(Wallet_db, (sql + ", 0, \"" DB_TAG "\");").c_str()));
-	CCASSERTZ(dbexec(Wallet_db, (sql + ", 1, " STRINGIFY(DB_SCHEMA) ");").c_str()));
-
-	CCASSERT(DB_SUBKEY_WALLET_ID > 1);
-
-	sql += ", " STRINGIFY(DB_SUBKEY_WALLET_ID) ", X'" + buf2hex(&wallet_id, nbytes, 0) + "');";
+	sql = insert + STRINGIFY(DB_KEY_SCHEMA) ",0,\"" DB_TAG "\");";
 	//cerr << sql << endl;
+	CCASSERTZ(dbexec(Wallet_db, sql.c_str()));
 
+	sql = insert + STRINGIFY(DB_KEY_SCHEMA) ",1," STRINGIFY(DB_SCHEMA) ");";
+	//cerr << sql << endl;
+	CCASSERTZ(dbexec(Wallet_db, sql.c_str()));
+
+	sql = insert + STRINGIFY(DB_KEY_WALLET_ID) ",0,X'" + buf2hex(&wallet_id, WALLET_ID_BYTES, 0) + "');";
+	//cerr << sql << endl;
+	CCASSERTZ(dbexec(Wallet_db, sql.c_str()));
+
+	sql = insert + STRINGIFY(DB_KEY_BLOCKCHAIN) ",0,X'" + buf2hex(&g_params.blockchain, sizeof(g_params.blockchain), 0) + "');";
+	//cerr << sql << endl;
 	CCASSERTZ(dbexec(Wallet_db, sql.c_str()));
 }
 
@@ -380,6 +385,20 @@ void DbConn::CheckDb()
 
 	if (strcmp(tag, db_tag) || strcmp(schema, db_schema))
 		throw runtime_error("Not a valid wallet file");
+
+	auto blockchain = g_params.blockchain;
+	blockchain = -1;
+
+	rc = ParameterSelect(DB_KEY_BLOCKCHAIN, 0, &blockchain, sizeof(blockchain));
+	if (rc)
+		throw runtime_error("Unable to read wallet blockchain");
+
+	if (blockchain != g_params.blockchain)
+	{
+		cerr << "ERROR: Configuration blockchain = " << g_params.blockchain << "; wallet blockchain = " << blockchain << endl;
+
+		throw runtime_error("Chosen blockchain does not match blockchain of wallet file");
+	}
 }
 
 void DbConn::ResetDb()
@@ -403,8 +422,9 @@ void DbConn::ResetDb()
 
 void DbConn::ReadWalletId()
 {
-	unsigned nbytes;
-	auto rc = ParameterSelect(DB_KEY_SCHEMA, DB_SUBKEY_WALLET_ID, &g_params.wallet_id, sizeof(g_params.wallet_id), false, &nbytes);
+	g_params.wallet_id = 0UL;
+
+	auto rc = ParameterSelect(DB_KEY_WALLET_ID, 0, &g_params.wallet_id, WALLET_ID_BYTES);
 	if (rc)
 		throw runtime_error("Unable to read wallet id");
 
@@ -426,7 +446,7 @@ void DbConn::CloseDb(bool done)
 	//lock_guard<boost::shared_mutex> lock(db_mutex);
 	lock_guard<mutex> lock(db_mutex);
 
-	bool explain = done * 0; // for testing
+	bool explain = done && 0; // for testing
 
 	//if (explain)
 	//	CCASSERTZ(dbexec(Wallet_db, "analyze;"));
@@ -484,7 +504,7 @@ void DbConn::CloseDb(bool done)
 
 void DbConn::DoDbFinish()
 {
-	if ((TEST_DELAY_DB_RESET & rand()) == 1) sleep(1);
+	if (RandTest(TEST_DELAY_DB_RESET)) sleep(1);
 
 	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::DoDbFinish dbconn " << uintptr_t(this);
 
@@ -527,7 +547,7 @@ void DbConn::DoDbFinish()
 
 void DbConn::DoDbFinishTx(int rollback)
 {
-	if ((TEST_DELAY_DB_RESET & rand()) == 1) sleep(1);
+	if (RandTest(TEST_DELAY_DB_RESET)) sleep(1);
 
 	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::DoDbFinishTx dbconn " << uintptr_t(this) << " rollback " << rollback;
 
@@ -549,7 +569,7 @@ void DbConn::DoDbFinishTx(int rollback)
 
 int DbConn::BeginRead()
 {
-	if (0*TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::BeginRead starting db read transaction";
+	if (0 && TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::BeginRead starting db read transaction";
 
 	if (dblog(sqlite3_step(db_begin_read), DB_STMT_STEP))
 	{
@@ -565,7 +585,7 @@ int DbConn::BeginRead()
 
 int DbConn::BeginWrite()
 {
-	if (0*TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::BeginWrite starting db write transaction";
+	if (0 && TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::BeginWrite starting db write transaction";
 
 	if (dblog(sqlite3_step(db_begin_write), DB_STMT_STEP))
 	{

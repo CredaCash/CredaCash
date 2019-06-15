@@ -33,7 +33,7 @@ class ZKKeyStore
 	unsigned nverify;
 	vector<shared_ptr<VerifyKey>> verifykey;
 
-	string GetKeyFileName(const unsigned keyindex, bool verify);
+	std::wstring GetKeyFileName(const unsigned keyindex, bool verify);
 
 	bool TestKeyFit(const unsigned keyindex, const unsigned nout, const unsigned nin, const unsigned nin_with_path);
 
@@ -43,6 +43,8 @@ class ZKKeyStore
 
 public:
 	void Init(bool reset = false);
+
+	void SetKeyFilePath(const std::wstring& path);
 
 	unsigned GetNKeys()
 	{

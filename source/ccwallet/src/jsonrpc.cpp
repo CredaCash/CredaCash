@@ -795,12 +795,41 @@ static void try_one_rpc(const string& json, const string& method, Json::Value& p
 	}
 	else if (method == "cc.time")
 	{
+		if (params.size() != 0)
+			throw RPC_Exception(RPC_MISC_ERROR, method);
+
 		rstream << time(NULL);
 		add_quotes = false;
 	}
 	else if (method == "cc.mint")
 	{
-		cc_mint(dbconn, txquery, rstream);
+		if (params.size() == 0)
+			cc_mint(dbconn, txquery, rstream);
+		else if ((params[0].asString() == "start" || params[0].asString() == "threads") && params.size() <= 2)
+		{
+			int nthreads = thread::hardware_concurrency();
+			if (nthreads < 0)
+				nthreads = 4;
+			if (nthreads > CC_MINT_MAX_THREADS)
+				nthreads = CC_MINT_MAX_THREADS;
+
+			if (params.size() > 1)
+			{
+				if (!params[1].isConvertibleTo(Json::intValue))
+					throw RPC_Exception(RPC_MISC_ERROR, not_int_err);
+
+				nthreads = params[1].asInt();
+
+				if (nthreads < 0 || nthreads > CC_MINT_MAX_THREADS)
+					throw RPC_Exception(RPC_INVALID_PARAMETER, "nthreads should be from 0 to " STRINGIFY(CC_MINT_MAX_THREADS));
+			}
+
+			cc_mint_threads(nthreads, dbconn, txquery, rstream);
+		}
+		else if (params[0].asString() == "stop" && params.size() <= 1)
+			cc_mint_threads(0, dbconn, txquery, rstream);
+		else
+			throw RPC_Exception(RPC_MISC_ERROR, method);
 	}
 	else if (method == "cc.poll_destination")
 	{
@@ -823,7 +852,7 @@ static void try_one_rpc(const string& json, const string& method, Json::Value& p
 
 static bool do_one_rpc(const string& json, Json::Value& root, DbConn *dbconn, TxQuery& txquery, ostringstream& response)
 {
-	if (0*TRACE_JSONRPC) BOOST_LOG_TRIVIAL(info) << "do_one_rpc " << json;
+	if (0 && TRACE_JSONRPC) BOOST_LOG_TRIVIAL(info) << "do_one_rpc " << json;
 
 	Json::Value value, params;
 	string key, id_value;
@@ -891,9 +920,9 @@ static bool do_one_rpc(const string& json, Json::Value& root, DbConn *dbconn, Tx
 
 		rc = false;
 	}
-	catch (const RPC_Exception e)
+	catch (const RPC_Exception& e)
 	{
-		if (0*TRACE_JSONRPC) BOOST_LOG_TRIVIAL(info) << "do_one_rpc " << json << " RPC_Exception code " << e.code << " " << e.what();
+		if (0 && TRACE_JSONRPC) BOOST_LOG_TRIVIAL(info) << "do_one_rpc " << json << " RPC_Exception code " << e.code << " " << e.what();
 		//cerr << "caught RPC_Exception code " << e.code << " " << e.what() << endl;
 
 		copy_error_to_response(e.code, e.what(), version, id, null_result, notification, response);
@@ -965,7 +994,7 @@ int do_json_rpc(const string& json, DbConn *dbconn, TxQuery& txquery, ostringstr
 
 done:
 
-	if (0*TRACE_JSONRPC) BOOST_LOG_TRIVIAL(trace) << "do_json_rpc result " << result << " response: " << response.str();
+	if (0 && TRACE_JSONRPC) BOOST_LOG_TRIVIAL(trace) << "do_json_rpc result " << result << " response: " << response.str();
 
 	return result;
 }

@@ -28,8 +28,6 @@
 
 static const string cc_destination_prefix = "CredaCash_";
 
-static const uint8_t hashkey[16] = {};	// all zeros
-
 #define TRACE_SECRETS	(g_params.trace_secrets)
 #define TRACE_POLLING	(g_params.trace_polling)
 
@@ -581,7 +579,8 @@ string Secret::EncodeDestination(const bigint_t& destination, uint64_t dest_chai
 
 	// add checksum
 
-	uint64_t hash = siphash(hashkey, (const uint8_t *)outs.data(), outs.length());
+	uint64_t hash = siphash((const uint8_t *)outs.data(), outs.length());
+	//cerr << "hash bytes " << buf2hex(outs.data(), outs.length()) << endl;
 	//cerr << "hash " << hex << hash << dec << endl;
 	cc_encode(base26, 26, 0UL, false, 9, hash, outs);
 
@@ -641,10 +640,13 @@ int Secret::DecodeDestination(const string& encoded, uint64_t& dest_chain, bigin
 		return -1;
 	}
 
+	//cerr << "decoded dest_chain " << dest_chain << endl;
+	//cerr << "decoded destination " << destination << endl;
 	//cerr << "encoded checksum " << instring << endl;
+	//cerr << "hash bytes " << buf2hex(encoded.data(), inlen - instring.length()) << endl;
 
 	string outs;
-	uint64_t hash = siphash(hashkey, (const uint8_t *)encoded.data(), inlen - instring.length());
+	uint64_t hash = siphash((const uint8_t *)encoded.data(), inlen - instring.length());
 	cc_encode(base26, 26, 0UL, false, 9, hash, outs);
 	//cerr << "hash " << hex << hash << dec << " " << outs << " " << instring << endl;
 	if (outs != instring)
@@ -717,6 +719,53 @@ abort:
 	return string();
 }
 
+string Secret::GetPassphrase(const char *use)
+{
+	string passphrase;
+
+	cerr << "Enter the passphrase for " << use << ":" << endl;
+
+	getline(cin, passphrase);
+
+	if (!cin.good() || g_shutdown)
+		g_shutdown = true;
+
+	return passphrase;
+}
+
+void Secret::GenerateMasterSecret(string& encrypted_master_secret, string& passphrase)
+{
+	cerr << "The wallet will generate a master secret." << endl;
+
+	if (!passphrase.length())
+		passphrase = GetNewPassphrase("the new master secret");
+
+	if (g_shutdown) return;
+
+	string fn;
+	char output[256];
+	uint32_t outsize = sizeof(output);
+
+	bigint_t salt;
+	salt.randomize();
+
+	cerr << "\nGenerating master secret" << (passphrase.length() ? "" : " with no passphrase") << "..." << endl;
+
+	auto rc = generate_master_secret(fn, g_params.secret_gen_memory, g_params.secret_gen_time, salt, output, outsize);
+	if (rc) throw runtime_error(string("Error generating master secret: ") + output);
+
+	Json::Reader reader;
+	Json::Value root, value;
+
+	reader.parse(output, root);
+
+	string key = "encrypted-master-secret";
+	if (!root.removeMember(key, &value))
+		throw runtime_error(string("Error unexpected API result: ") + output);
+
+	encrypted_master_secret = value.asString();
+}
+
 void Secret::CreateBaseSecrets(DbConn *dbconn)
 {
 	// for now, the only case this needs to handle is creating the initial master secret and it's descendants for the default spend params
@@ -741,9 +790,17 @@ void Secret::CreateBaseSecrets(DbConn *dbconn)
 	if (rc < 0)
 		throw runtime_error("Error reading database");
 
-	if (!rc && secret.id == MAIN_SECRET_ID)
+	if (!rc)
 	{
-		cerr << "The wallet already contains a master secret." << endl;
+		if (secret.id != MAIN_SECRET_ID)
+			throw runtime_error("Secret id mismatch reading master secret");
+
+		const char *err =  "The wallet already contains a master secret";
+
+		if (g_params.initial_master_secret.length())
+			throw runtime_error(err);
+
+		cerr << err << "." << endl;
 
 		return;			// MAIN_SECRET_ID already exists
 	}
@@ -752,41 +809,44 @@ void Secret::CreateBaseSecrets(DbConn *dbconn)
 
 	secret.Clear();
 
-	cerr << "The wallet will generate a master secret." << endl;
-	string passphrase = GetNewPassphrase("the new master secret");
+	string encrypted_master_secret = g_params.initial_master_secret;
+	string passphrase = g_params.initial_master_secret_passphrase;
+
+	g_params.initial_master_secret_passphrase.replace(0, 99999, passphrase.length(), 0).clear();
+
+	if (!encrypted_master_secret.length())
+		GenerateMasterSecret(encrypted_master_secret, passphrase);
+	else if (!passphrase.length())
+		passphrase = GetPassphrase("the imported master secret");
 
 	if (g_shutdown) return;
+
+	if (encrypted_master_secret.length() >= sizeof(secret.packed_params))
+		throw runtime_error(string("Error encrypted master secret too long"));
 
 	string fn;
 	char output[256];
 	uint32_t outsize = sizeof(output);
 
-	bigint_t salt;
-	salt.randomize();
-
-	cerr << "\nGenerating master secret" << (passphrase.length() ? "" : " with no passphrase") << "..." << endl;
-
-	rc = generate_master_secret(fn, g_params.secret_gen_memory, g_params.secret_gen_time, salt, output, outsize);
-	if (rc) throw runtime_error(string("Error generating master secret: ") + output);
-
-	Json::Reader reader;
-	Json::Value root, value;
-
-	reader.parse(output, root);
-
-	string key = "encrypted-master-secret";
-	if (!root.removeMember(key, &value) || value.asString().length() >= sizeof(secret.packed_params))
-		throw runtime_error(string("Error unexpected API result: ") + output);
-
-	rc = compute_master_secret(fn, value.asString(), passphrase, secret.value, output, outsize);
+	rc = compute_master_secret(fn, encrypted_master_secret, passphrase, secret.value, output, outsize);
 	if (rc) throw runtime_error(string("Error generating master secret: ") + output);
 
 	secret.type = SECRET_TYPE_MASTER;
-	secret.packed_params_bytes = value.asString().length();
-	memcpy(secret.packed_params, value.asString().data(), secret.packed_params_bytes);
+	secret.packed_params_bytes = encrypted_master_secret.length();
+	memcpy(secret.packed_params, encrypted_master_secret.data(), secret.packed_params_bytes);
 	//cerr << "master secret " << hex << secret.value << dec << endl;
 	//cerr << "encrypted master-secret: " << (char*)secret.packed_params << endl;
 	CCASSERT(secret.value);
+
+	cerr << "The master secret has been stored in the wallet file.  This file should be kept safe and private." << endl;
+	cerr << "The encrypted master secret is: " << encrypted_master_secret << endl;
+	cerr <<
+
+R"(If the wallet file is lost, this encrypted master secret and the passphrase can regenerate the master secret and
+might be able recover some or all of the wallet contents. These values could also be used to steal the contents of the
+wallet, so if they are retained, they should be stored separately (not together), and both kept private and secure.)"
+
+	"\n" << endl;
 
 	rc = dbconn->SecretInsert(secret, 1);
 	if (rc || secret.id != MAIN_SECRET_ID)
@@ -811,16 +871,6 @@ void Secret::CreateBaseSecrets(DbConn *dbconn)
 		throw runtime_error("Error generating self destination");
 
 	//throw runtime_error("test");
-
-	cerr << "The master secret has been stored in the wallet file.  This file should be kept safe and private." << endl;
-	cerr << "The encrypted master secret is: " << value.asString() << endl;
-	cerr <<
-
-R"(If the wallet file is lost, this encrypted master secret and the passphrase can regenerate the master secret and
-might be able recover some or all of the wallet contents. These values could also be used to steal the contents of the
-wallet, so if they are retained, they should be stored separately (not together), and both kept private and secure.)"
-
-	"\n" << endl;
 }
 
 /*

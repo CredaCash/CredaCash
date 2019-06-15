@@ -43,7 +43,7 @@ ConnectionFactoryBase::ConnectionFactoryBase(unsigned conn_nreadbuf, unsigned co
 	if (m_sock_nwritebuf > 8*4096)
 		m_sock_nwritebuf = 8*4096;
 
-	if (0*TRACE_CCSERVER)	// disabled so it doesn't output during static initialization
+	if (0 && TRACE_CCSERVER)	// disabled so it doesn't output during static initialization
 		BOOST_LOG_TRIVIAL(trace) << "ConnectionFactoryBase"
 		<< " m_conn_nreadbuf " << m_conn_nreadbuf
 		<< " m_conn_nwritebuf " << m_conn_nwritebuf
@@ -210,7 +210,7 @@ void Connection::HandleTorProxyWrite(const string host, const boost::system::err
 	if (CheckOpCount(pending_op_counter))
 		return;
 
-	bool sim_err = ((TEST_RANDOM_WRITE_ERRORS & rand()) == 1);
+	bool sim_err = RandTest(TEST_RANDOM_WRITE_ERRORS);
 	if (sim_err) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " Connection::HandleTorProxyWrite simulating write error";
 
 	if (e || sim_err)
@@ -235,7 +235,7 @@ void Connection::HandleTorProxyRead(const string host, const boost::system::erro
 
 	CCASSERT(bytes_transferred <= SOCK_REPLY_SIZE);
 
-	bool sim_err = ((TEST_RANDOM_READ_ERRORS & rand()) == 1);
+	bool sim_err = RandTest(TEST_RANDOM_READ_ERRORS);
 	if (sim_err) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " Connection::HandleTorProxyRead simulating read error";
 
 	if (e || !bytes_transferred || sim_err)
@@ -301,7 +301,7 @@ bool Connection::SetTimer(unsigned sec)
 
 	bool rc = AsyncTimerWait("Connection::SetTimer", sec*1000, boost::bind(&Connection::HandleTimeout, this, boost::asio::placeholders::error, AutoCount(this)));
 
-	if ((TEST_RANDOM_STOPS & rand()) == 1)
+	if (RandTest(TEST_RANDOM_STOPS))
 	{
 		BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " Connection::SetTimer simulating random stop";
 
@@ -329,7 +329,7 @@ bool Connection::CheckOpCount(AutoCount& pending_op_counter)
 	*/
 
 
-	if ((TEST_RANDOM_STOPS & rand()) == 1)
+	if (RandTest(TEST_RANDOM_STOPS))
 	{
 		BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " Connection::CheckOpCount simulating random stop";
 
@@ -340,7 +340,7 @@ bool Connection::CheckOpCount(AutoCount& pending_op_counter)
 		return false;	// continue execution
 	}
 
-	if (!pending_op_counter && !(TEST_DELAY_CONN_RELEASE & 1 & rand()))
+	if (!pending_op_counter && RandTest(TEST_DELAY_CONN_RELEASE & 1))
 		return true;
 
 	return false;
@@ -352,7 +352,7 @@ bool Connection::CancelTimer()
 
 	if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " Connection::CancelTimer " << uintptr_t(this);
 
-	if ((TEST_RANDOM_STOPS & rand()) == 1)
+	if (RandTest(TEST_RANDOM_STOPS))
 	{
 		BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " Connection::CancelTimer simulating random stop";
 
@@ -363,11 +363,11 @@ bool Connection::CancelTimer()
 		return false;	// continue execution
 	}
 
-	if ((TEST_DELAY_CONN_RELEASE & rand()) == 1) sleep(1);
+	if (RandTest(TEST_DELAY_CONN_RELEASE)) sleep(1);
 
 	lock_guard<FastSpinLock> lock(m_conn_lock);
 
-	if ((g_shutdown || m_stopping.load()) && !(TEST_DELAY_CONN_RELEASE & 1 & rand()))
+	if ((g_shutdown || m_stopping.load()) && RandTest(TEST_DELAY_CONN_RELEASE & 1))
 		return true;
 
 	boost::system::error_code e;
@@ -449,7 +449,7 @@ void Connection::HandleReadCheck(const boost::system::error_code& e, size_t byte
 
 	CCASSERT(m_nred <= m_maxread);
 
-	bool sim_err = ((TEST_RANDOM_READ_ERRORS & rand()) == 1);
+	bool sim_err = RandTest(TEST_RANDOM_READ_ERRORS);
 	if (sim_err) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " Connection::HandleReadCheck simulating read error";
 
 	if (e || !bytes_transferred || sim_err)
@@ -535,7 +535,7 @@ void Connection::HandleWrite(const boost::system::error_code& e, AutoCount pendi
 	if (CheckOpCount(pending_op_counter))
 		return;
 
-	bool sim_err = ((TEST_RANDOM_WRITE_ERRORS & rand()) == 1);
+	bool sim_err = RandTest(TEST_RANDOM_WRITE_ERRORS);
 	if (sim_err) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " Connection::HandleWrite simulating write error";
 
 	if (e || sim_err)
@@ -556,7 +556,7 @@ void Connection::HandleWrite(const boost::system::error_code& e, AutoCount pendi
 		if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " Connection::HandleWrite closing connection";
 
 		{
-			if ((TEST_DELAY_CONN_RELEASE & rand()) == 1) sleep((rand() & 1) + 1);
+			if (RandTest(TEST_DELAY_CONN_RELEASE)) sleep((rand() & 1) + 1);
 
 			lock_guard<FastSpinLock> lock(m_conn_lock);
 
@@ -573,7 +573,7 @@ void Connection::HandleValidateDone(uint32_t callback_id, int64_t result)
 {
 	// calling this function is completely asynchronous and can occur long after a connection is closed and reopened, or while its closing or reopening
 
-	if ((TEST_DELAY_CONN_RELEASE & rand()) == 1) sleep(1);
+	if (RandTest(TEST_DELAY_CONN_RELEASE)) sleep(1);
 
 	lock_guard<FastSpinLock> lock(m_conn_lock);
 
@@ -594,7 +594,7 @@ void Connection::HandleValidateDone(uint32_t callback_id, int64_t result)
 	{
 		if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " Connection::HandleValidateDone result " << result;
 
-		if ((TEST_RANDOM_VALIDATION_FAILURES & rand()) == 1)
+		if (RandTest(TEST_RANDOM_VALIDATION_FAILURES))
 		{
 			BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " Connection::HandleValidateDone simulating validation failure";
 
@@ -607,7 +607,7 @@ bool Connection::IncRef()
 {
 	//if (TRACE_CCSERVER_OPSCOUNT) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " Connection::IncRef";
 
-	if ((TEST_DELAY_CONN_RELEASE & rand()) == 1) sleep(1);
+	if (RandTest(TEST_DELAY_CONN_RELEASE)) sleep(1);
 
 	// Stop() sets m_stopping, then checks m_ops_pending
 	// if m_stopping is set, then m_ops_pending should not be incremented
@@ -632,7 +632,7 @@ void Connection::DecRef()
 {
 	//if (TRACE_CCSERVER_OPSCOUNT) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " Connection::DecRef";
 
-	if ((TEST_DELAY_CONN_RELEASE & rand()) == 1) sleep(1);
+	if (RandTest(TEST_DELAY_CONN_RELEASE)) sleep(1);
 
 	lock_guard<FastSpinLock> lock(m_ref_lock);
 
@@ -652,7 +652,7 @@ void Connection::DecRef()
 		{
 			if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " Connection::DecRef posting stop";
 
-			m_socket.get_io_service().post(boost::bind(&Connection::HandleStop, this));
+			PostDirect(boost::bind(&Connection::HandleStop, this));
 
 			//if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " Connection::DecRef posting stop done";
 		}
@@ -663,7 +663,7 @@ void Connection::Stop()
 {
 	//if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " Connection::Stop";
 
-	if ((TEST_DELAY_CONN_RELEASE & rand()) == 1) sleep((rand() & 1) + 1);
+	if (RandTest(TEST_DELAY_CONN_RELEASE)) sleep((rand() & 1) + 1);
 
 	lock_guard<FastSpinLock> lock(m_conn_lock);
 
@@ -705,7 +705,7 @@ void Connection::StopWithConnLock()
 	{
 		if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " Connection::Stop posting stop";
 
-		m_socket.get_io_service().post(boost::bind(&Connection::HandleStop, this));
+		PostDirect(boost::bind(&Connection::HandleStop, this));
 	}
 }
 
@@ -713,14 +713,14 @@ void Connection::HandleStop()
 {
 	if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " Connection::HandleStop closing connection";
 
-	if (((TEST_DELAY_CONN_RELEASE & 1) & rand()) == 1) sleep((rand() % 3) + 1);
+	if (RandTest(TEST_DELAY_CONN_RELEASE & 1)) sleep((rand() % 3) + 1);
 
 	CCASSERT(m_stopping.load() > 0);
 
 	{
 		lock_guard<FastSpinLock> lock(m_conn_lock);
 
-		if (((TEST_DELAY_CONN_RELEASE & 1) & rand()) == 1) sleep(1);	// test delay both before and after acquiring m_conn_lock
+		if (RandTest(TEST_DELAY_CONN_RELEASE & 1)) sleep(1);	// test delay both before and after acquiring m_conn_lock
 
 		CCASSERTZ(m_ops_pending.load());
 

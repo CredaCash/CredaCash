@@ -808,7 +808,7 @@ def main(argv):
 		print
 		print ' Note: The standalone Tor proxy by default listens at port 9050'
 		print '       The Tor Browser bundle   by default listens at port 9150'
-		print '       Tx server on localhost   by default listens at port 9223'
+		print '       Tx server on localhost   by default listens at port 9210'
 		print
 		print ' test_bad_txs:'
 		print '       0 = test only valid txs'
@@ -819,7 +819,7 @@ def main(argv):
 		print '       1 = log messages to/from tx server/network'
 		print
 		print ' use_tor_proxy:'
-		print '       Defaults to 1 if port is 9050, 9150 or 9229; otherwise defaults to 0'
+		print '       Defaults to 1 if port is 9050, 9150 or 9216; otherwise defaults to 0'
 		exit()
 
 	cclib.net_port = int(argv[1])
@@ -836,7 +836,7 @@ def main(argv):
 		cclib.show_queries = int(argv[3])
 		cclib.show_activity = int(argv[3])
 
-	if cclib.net_port == 9050 or cclib.net_port == 9150 or cclib.net_port == 9229:
+	if cclib.net_port == 9050 or cclib.net_port == 9150 or cclib.net_port == 9216:
 		cclib.use_tor_proxy = True
 	else:
 		cclib.use_tor_proxy = False

@@ -9,6 +9,7 @@
 #include "cclib.h"
 #include "payspec.h"
 #include "jsonutil.h"
+#include "transaction.h"
 #include "transaction.hpp"
 #include "transaction-json.hpp"
 #include "CChash.hpp"
@@ -16,8 +17,6 @@
 
 #include <blake2/blake2.h>
 #include <siphash/siphash.h>
-
-static const uint8_t hashkey[16] = {};	// all zeros
 
 #define KDF_HASH_BITS	512
 #define KDF_HASH_BYTES	(KDF_HASH_BITS/8)
@@ -150,7 +149,7 @@ CCRESULT hash_passphrase(const string& passphrase, const bigint_t& salt, int mil
 
 	CCASSERTZ(rc);
 
-	memcpy(&result, &accum, sizeof(result));
+	result = *(bigint_t*)&accum;
 
 	memset(pmem, 0, memory);	// !!! secure erase would be better
 	free(pmem);
@@ -268,16 +267,16 @@ CCRESULT generate_master_secret(const string& fn, unsigned memory, unsigned mill
 
 	string outs = "CCMS";
 
-	cc_encode(base58, 58, 0UL, false, 0, salt, outs);
+	cc_encode(base57, 57, 0UL, false, 0, salt, outs);
 	//cerr << "salt: " << outs << endl;
-	cc_encode(base58, 58, 0UL, true, -1, memory, outs);
+	cc_encode(base57, 57, 0UL, true, -1, memory, outs);
 	outs.push_back(CC_ENCODE_SEPARATOR);
 	//cerr << "memory: " << outs << endl;
-	cc_encode(base58, 58, 0UL, false, -1, iterations, outs);
+	cc_encode(base57, 57, 0UL, false, -1, iterations, outs);
 	//cerr << "iterations: " << outs << endl;
-	uint64_t hash = siphash(hashkey, (const uint8_t *)outs.data(), outs.length());
+	uint64_t hash = siphash((const uint8_t *)outs.data(), outs.length());
 	//cerr << "hash " << hash << " " << outs << endl;
-	cc_encode(base58, 58, 0UL, false, 5, hash, outs);
+	cc_encode(base57, 57, 0UL, false, 5, hash, outs);
 
 	outs = "{\"encrypted-master-secret\":\"" + outs + "\"}";
 
@@ -380,12 +379,12 @@ CCRESULT compute_master_secret(const string& fn, const string& msspec, const str
 	auto inlen = msspec.length();
 	string instring = msspec.substr(4);
 
-	auto rc = cc_decode(fn, base58int, 58, false, 44, instring, salt, output, outsize);
+	auto rc = cc_decode(fn, base57int, 57, false, 44, instring, salt, output, outsize);
 	if (rc) return rc;
 
 	//cerr << "memory remaining string " << instring << endl;
 
-	rc = cc_decode(fn, base58int, 58, true, 0, instring, bigval, output, outsize);
+	rc = cc_decode(fn, base57int, 57, true, 0, instring, bigval, output, outsize);
 	if (rc) return rc;
 	auto memory = BIG64(bigval);
 
@@ -399,15 +398,15 @@ CCRESULT compute_master_secret(const string& fn, const string& msspec, const str
 	if (instring.length() < 6)
 		return error_unexpected_char(fn, output, outsize);
 
-	rc = cc_decode(fn, base58int, 58, false, instring.length() - 5, instring, bigval, output, outsize);
+	rc = cc_decode(fn, base57int, 57, false, instring.length() - 5, instring, bigval, output, outsize);
 	if (rc) return rc;
 	auto iterations = BIG64(bigval);
 
 	//cerr << "remaining string " << instring << endl;
 
 	string outs;
-	uint64_t hash = siphash(hashkey, (const uint8_t *)msspec.data(), inlen - 5);
-	cc_encode(base58, 58, 0UL, false, 5, hash, outs);
+	uint64_t hash = siphash((const uint8_t *)msspec.data(), inlen - 5);
+	cc_encode(base57, 57, 0UL, false, 5, hash, outs);
 	//cerr << "hash " << hash << " " << outs << " " << instring << endl;
 	if (outs != instring)
 		return error_checksum_mismatch(fn, output, outsize);
@@ -613,10 +612,10 @@ CCRESULT payspec_from_json(const string& fn, Json::Value& root, char *output, co
 	string outs = "CC";
 	outs += "0";		// type, always '0' for now
 
-	cc_encode(base58, 58, TX_FIELD_MAX, false, 0, dest, outs);
+	cc_encode(base57, 57, TX_FIELD_MAX, false, 0, dest, outs);
 
 	if (has_amount)
-		cc_encode(base58, 58, 0UL, true, -1, amount, outs);
+		cc_encode(base57, 57, 0UL, true, -1, amount, outs);
 
 	outs.push_back(CC_ENCODE_SEPARATOR);
 
@@ -624,8 +623,8 @@ CCRESULT payspec_from_json(const string& fn, Json::Value& root, char *output, co
 
 	outs.push_back(CC_ENCODE_SEPARATOR);
 
-	uint64_t hash = siphash(hashkey, (const uint8_t *)outs.data(), outs.length());
-	cc_encode(base58, 58, 0UL, false, 5, hash, outs);
+	uint64_t hash = siphash((const uint8_t *)outs.data(), outs.length());
+	cc_encode(base57, 57, 0UL, false, 5, hash, outs);
 
 #if 0	// skip extra for now
 	bool has_extra = false;
@@ -649,8 +648,8 @@ CCRESULT payspec_from_json(const string& fn, Json::Value& root, char *output, co
 	if (has_extra)
 	{
 		outs.push_back(CC_ENCODE_SEPARATOR);
-		uint64_t hash = siphash(hashkey, (const uint8_t *)outs.data(), outs.length());
-		cc_encode(base58, 58, 0UL, false, 5, hash, outs);
+		uint64_t hash = siphash((const uint8_t *)outs.data(), outs.length());
+		cc_encode(base57, 57, 0UL, false, 5, hash, outs);
 	}
 #endif
 
@@ -694,7 +693,7 @@ CCRESULT payspec_to_json(const string& fn, Json::Value& root, char *output, cons
 	auto inlen = payspec.length();
 	string instring = payspec.substr(3);
 
-	auto rc = cc_decode(fn, base58int, 58, false, 44, instring, dest, output, outsize);
+	auto rc = cc_decode(fn, base57int, 57, false, 44, instring, dest, output, outsize);
 	if (rc) return rc;
 
 	//cerr << "amount string " << instring << endl;
@@ -705,7 +704,7 @@ CCRESULT payspec_to_json(const string& fn, Json::Value& root, char *output, cons
 		// !!! this code path needs to be tested
 
 		has_amount = true;
-		auto rc = cc_decode(fn, base58int, 58, true, 0, instring, amount, output, outsize);
+		auto rc = cc_decode(fn, base57int, 57, true, 0, instring, amount, output, outsize);
 		if (rc) return rc;
 
 		auto test_val = amount;
@@ -727,8 +726,8 @@ CCRESULT payspec_to_json(const string& fn, Json::Value& root, char *output, cons
 		return error_unexpected_char(fn, output, outsize);
 
 	string outs;
-	uint64_t hash = siphash(hashkey, (const uint8_t *)payspec.data(), inlen - instring.length() + 1);
-	cc_encode(base58, 58, 0UL, false, 5, hash, outs);
+	uint64_t hash = siphash((const uint8_t *)payspec.data(), inlen - instring.length() + 1);
+	cc_encode(base57, 57, 0UL, false, 5, hash, outs);
 	//cerr << "hash " << outs << " " << instring << endl;
 	if (outs != instring.substr(1,5))
 		return error_checksum_mismatch(fn, output, outsize);
@@ -835,7 +834,7 @@ CCRESULT compute_amount_encyption_json(const string& fn, Json::Value& root, char
 
 	uint64_t asset_xor, amount_xor;
 
-	compute_amount_pad(commit_iv, dest, paynum, asset_xor, amount_xor);
+	compute_amount_pad(commit_iv, dest, BIG64(paynum), asset_xor, amount_xor);
 
 	ostringstream os;
 	os << hex;
@@ -875,43 +874,15 @@ static CCRESULT generate_test_input(const string& fn, Json::Value& root, test_in
 	rc = tx_input_common_from_json(fn, root, params.input, output, outsize);
 	if (rc) return rc;
 
-	vector<CCHashInput> hashin(6);
-
-	// RULE tx input: M_commitment = zkhash(M_commitment_iv, #dest, #paynum, M_pool, #asset, #amount)
-
-	hashin.clear();
-	hashin.resize(6);
-	hashin[0].SetValue(params.input.__M_commitment_iv, TX_COMMIT_IV_BITS);
-	//hashin[1].nSetValue(params.input.__M_commitment_index, TX_COMMIT_INDEX_BITS);
-	hashin[1].SetValue(params.__dest, TX_FIELD_BITS);
-	hashin[2].SetValue(params.input.params.addrparams.__paynum, TX_PAYNUM_BITS);
-	hashin[3].SetValue(params.input.M_pool, TX_POOL_BITS);
-	hashin[4].SetValue(params.input.__asset, TX_ASSET_BITS);
-	hashin[5].SetValue(params.input.__amount_fp, TX_AMOUNT_BITS);
-	params.input._M_commitment = CCHash::Hash(hashin, HASH_BASES_COMMITMENT, TX_FIELD_BITS);
-
-	#if 0
-	cerr << "generate_test_input _M_commitment" << endl;
-	for (unsigned j = 0; j < hashin.size(); ++j)
-	{
-		cerr << "hash input " << j << endl;
-		hashin[j].Dump();
-	}
-	cerr << "input._M_commitment " << hex << params.input._M_commitment << dec << endl;
-	#endif
+	compute_commitment(params.input.__M_commitment_iv, params.__dest, params.input.params.addrparams.__paynum,
+			params.input.M_pool, params.input.__asset, params.input.__amount_fp, params.input._M_commitment);
 
 	CCRandom(&params.input._M_commitnum, sizeof(uint64_t));
 	if (TX_COMMITNUM_BITS < 64)
 		params.input._M_commitnum &= ((uint64_t)1 << TX_COMMITNUM_BITS) - 1;
 	//cerr << hex << params.input._M_commitnum << dec << endl;
 
-	hashin.clear();
-	hashin.resize(2);
-	hashin[0].SetValue(params.input._M_commitment, TX_FIELD_BITS);
-	hashin[1].SetValue(params.input._M_commitnum, TX_COMMITNUM_BITS);
-	//hashin[0].Dump();
-	//hashin[1].Dump();
-	params.tree[0] = CCHash::Hash(hashin, HASH_BASES_MERKLE_LEAF, TX_MERKLE_BITS);
+	tx_commit_tree_hash_leaf(params.input._M_commitment, params.input._M_commitnum, params.tree[0]);
 
 	//cerr << "set params[i].tree[0] to " << hex << params.tree[0] << dec << endl;
 
@@ -955,13 +926,7 @@ static void generate_tree(test_input_params params[])
 
 		for (unsigned i = 0; i < width/2; ++i)
 		{
-			hashin[0].SetValue(params[2*i].tree[j], TX_MERKLE_BITS);
-			hashin[1].SetValue(params[2*i + 1].tree[j], TX_MERKLE_BITS);
-
-			//hashin[0].Dump();
-			//hashin[1].Dump();
-
-			params[i].tree[j+1] = CCHash::Hash(hashin, HASH_BASES_MERKLE_NODE, TX_MERKLE_BITS, j < TX_MERKLE_DEPTH - 1);
+			tx_commit_tree_hash_node(params[2*i].tree[j], params[2*i + 1].tree[j], params[i].tree[j+1], j < TX_MERKLE_DEPTH - 1);
 
 			//cerr << "set params[" << i << "].tree[" << j + 1 << "] to " << hex << params[i].tree[j+1] << dec << endl;
 		}

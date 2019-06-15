@@ -18,7 +18,7 @@
 
 #define MAX_NWITNESSES				21
 
-#define ROTATE_BLOCK_SIGNING_KEYS	0
+#define ROTATE_BLOCK_SIGNING_KEYS	0		// if true, witnesses generate a new signing key with each block signed; not currently supported because there is currently no way to reset a witness's signing key which might be required to restart the witness after a server outage
 
 //#define TEST_SIM_ALL_WITNESSES		1		// must rebuild all if changed
 

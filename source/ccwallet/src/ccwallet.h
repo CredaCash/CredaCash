@@ -9,19 +9,20 @@
 #pragma once
 
 #define CCAPPNAME	"CredaCash RPC Wallet"
-#define CCVERSION	 "0.92" //@@!
+#define CCVERSION	 "0.97" //@@!
 #define CCEXENAME	"ccwallet"
-#define CCAPPDIR	"CCWallet"
+#define CCAPPDIR	"CCWallet-%"
 
-#define DEFAULT_BASE_PORT	9423
+#define WALLET_RPC_PORT		7
+#define TOR_CONTROL_PORT	8
+#define TOR_PORT			9
 
-#define WALLET_RPC_PORT		"0"
-#define TOR_CONTROL_PORT	"1"
-#define TOR_PORT			"2"
+#define CC_MINT_MAX_THREADS	120 //@@! lower for final release
 
 #include <CCdef.h>
 #include <CCboost.hpp>
 #include <CCbigint.hpp>
+#include <apputil.h>
 #include <osutil.h>
 #include <ccserver/torservice.hpp>
 
@@ -39,10 +40,16 @@ DECLARE_EXTERN struct global_params_struct
 
 	wstring process_dir;
 	wstring app_data_dir;
-	string wallet_file;
+	wstring proof_key_dir;
+	string	wallet_file;
 
-	int secret_gen_time;
-	int secret_gen_memory;
+	string	initial_master_secret;
+	string	initial_master_secret_passphrase;
+	int		secret_gen_time;
+	int		secret_gen_memory;
+
+	uint64_t blockchain;
+	bool	foundation_wallet;
 
 	int		base_port;
 

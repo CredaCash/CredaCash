@@ -47,7 +47,7 @@ int DbConn::AccountInsert(Account& account, bool lock_optional)
 		if (dblog(sqlite3_bind_null(insert_update, 2))) return -1;
 	}
 
-	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
+	if (RandTest(TEST_RANDOM_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConn::AccountInsert simulating database error pre-insert";
 
@@ -88,7 +88,7 @@ int DbConn::AccountSelect(sqlite3_stmt *select, Account& account, bool expect_ro
 
 	if (dblog(rc = sqlite3_step(select), DB_STMT_SELECT)) return -1;
 
-	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
+	if (RandTest(TEST_RANDOM_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConn::AccountSelect simulating database error post-select";
 
@@ -140,7 +140,7 @@ int DbConn::AccountSelect(sqlite3_stmt *select, Account& account, bool expect_ro
 
 	if (dblog(sqlite3_extended_errcode(Wallet_db), DB_STMT_SELECT)) return -1;	// check if error retrieving results
 
-	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
+	if (RandTest(TEST_RANDOM_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConn::AccountSelect simulating database error post-error check";
 

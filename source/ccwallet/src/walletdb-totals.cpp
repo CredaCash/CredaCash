@@ -41,7 +41,7 @@ int DbConn::TotalInsert(const Total& total, bool lock_optional)
 	if (dblog(sqlite3_bind_int64(Totals_insert, 5, total.blockchain))) return -1;
 	if (dblog(sqlite3_bind_blob(Totals_insert, 6, &packed_total, bigint_bytes_in_use(packed_total), SQLITE_STATIC))) return -1;
 
-	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
+	if (RandTest(TEST_RANDOM_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConn::TotalInsert simulating database error pre-insert";
 
@@ -81,7 +81,7 @@ int DbConn::TotalSelect(sqlite3_stmt *select, Total& total)
 
 	if (dblog(rc = sqlite3_step(select), DB_STMT_SELECT)) return -1;
 
-	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
+	if (RandTest(TEST_RANDOM_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConn::TotalSelect simulating database error post-select";
 
@@ -90,7 +90,7 @@ int DbConn::TotalSelect(sqlite3_stmt *select, Total& total)
 
 	if (dbresult(rc) == SQLITE_DONE)
 	{
-		BOOST_LOG_TRIVIAL(trace) << "DbConn::TotalSelect select returned SQLITE_DONE";
+		//BOOST_LOG_TRIVIAL(trace) << "DbConn::TotalSelect select returned SQLITE_DONE";
 
 		return 1;
 	}
@@ -134,7 +134,7 @@ int DbConn::TotalSelect(sqlite3_stmt *select, Total& total)
 
 	if (dblog(sqlite3_extended_errcode(Wallet_db), DB_STMT_SELECT)) return -1;	// check if error retrieving results
 
-	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
+	if (RandTest(TEST_RANDOM_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConn::TotalSelect simulating database error post-error check";
 
@@ -146,7 +146,7 @@ int DbConn::TotalSelect(sqlite3_stmt *select, Total& total)
 	total.asset = asset;
 	total.delaytime = delaytime;
 	total.blockchain = blockchain;
-	memset(&packed_total, 0, sizeof(packed_total));
+	packed_total = 0UL;
 	if (total_blob)
 		memcpy(&packed_total, total_blob, total_size);
 	amount_from_bigint(packed_total, total.total);

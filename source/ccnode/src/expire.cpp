@@ -10,6 +10,10 @@
 #include "expire.hpp"
 #include "block.hpp"
 #include "blockchain.hpp"
+#include "witness.hpp"
+
+#include <CCmint.h>
+#include <transaction.h>
 
 #define TRACE_EXPIRE	(g_params.trace_expire)
 
@@ -129,7 +133,12 @@ void ExpireObj::DoExpires()
 			return;
 		}
 
-		while (true)
+		auto obj = (CCObject*)next_expires_smartobj.data();
+		unsigned objtype = (obj ? obj->ObjType() : 0);
+
+		bool is_ccmint = Implement_CCMint(g_params.blockchain) && objtype == CC_TYPE_MINT;
+
+		while (!is_ccmint)
 		{
 			age = ccticks_elapsed(next_expires_t0, ccticks());
 
@@ -151,11 +160,37 @@ void ExpireObj::DoExpires()
 				return;
 		}
 
-		while (next_expires_smartobj && ((CCObject*)next_expires_smartobj.data())->ObjType() == CC_TYPE_BLOCK)
+		while (is_ccmint)
+		{
+			auto param_level = txpay_param_level_from_wire(obj);
+
+			auto block_level = g_blockchain.GetLastIndelibleLevel();
+
+			if (TRACE_EXPIRE) BOOST_LOG_TRIVIAL(debug) << "ExpireObj::DoExpires " << m_name << " is_ccmint " << is_ccmint << " block level " << block_level << " param_level " << param_level;
+
+			if (block_level >= CC_MINT_COUNT + CC_MINT_ACCEPT_SPAN)
+				break;	// expire all mints
+
+			if (!param_level && block_level)
+				break;	// expire now
+
+			if (param_level == 1 && block_level && block_level > 2 * CC_MINT_ACCEPT_SPAN)
+				break;	// expire now
+
+			if (param_level > 1 && param_level + CC_MINT_ACCEPT_SPAN < block_level)
+				break;	// expire now
+
+			ccsleep(2);	// wait for new indelible level
+
+			if (g_shutdown)
+				return;
+		}
+
+		while (objtype == CC_TYPE_BLOCK)
 		{
 			auto prune_level = g_blockchain.ComputePruneLevel(0, BLOCK_PRUNE_ROUNDS + 3);
 
-			auto block = (Block*)next_expires_smartobj.data();
+			auto block = (Block*)obj;
 			auto wire = block->WireData();
 
 			if (TRACE_EXPIRE) BOOST_LOG_TRIVIAL(debug) << "ExpireObj::DoExpires " << m_name << " block level " << wire->level.GetValue() << " prune level " << prune_level;
@@ -173,7 +208,7 @@ void ExpireObj::DoExpires()
 				return;
 		}
 
-		if (TRACE_EXPIRE) BOOST_LOG_TRIVIAL(trace) << "ExpireObj::DoExpires " << m_name << " expiring seqnum " << next_expires_seqnum << " bufp " << (uintptr_t)next_expires_smartobj.BasePtr() << " age " << age << " expire_age " << m_expire_age;
+		if (TRACE_EXPIRE) BOOST_LOG_TRIVIAL(trace) << "ExpireObj::DoExpires " << m_name << " expiring seqnum " << next_expires_seqnum << " bufp " << (uintptr_t)next_expires_smartobj.BasePtr() << " type " << objtype << " age " << age << " expire_age " << m_expire_age;
 
 		if (DeleteExpires(next_expires_seqnum, next_expires_smartobj))
 			return;	// retry later

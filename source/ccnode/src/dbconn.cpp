@@ -20,14 +20,14 @@
 //#define TEST_ENABLE_SQLITE_BUSY			1	// when enabled, mutex problems will result in SQLITE_BUSY errors
 
 #define DB_TAG			"CredaCash Node Database"
-#define DB_SCHEMA		2
+#define DB_SCHEMA		3
 
 #define DB_OPEN_WAL_PARAMS	".db?cache=private"
 
 #define DB_OPEN_TEMP_PARAMS	".db?cache=shared&mode=memory"
 //#define DB_OPEN_TEMP_PARAMS	".db?cache=shared"	// for testing
 
-static const char* Persistent_Data = "CCdata_beta"; //@@! change for production release
+static const char* Persistent_Data = "CCdata";
 static const char* Temp_Serials = "Temp_Serials";
 static const char* Relay_Objs = "Relay_Objs";
 static const char* Process_Q[PROCESS_Q_N] = {"Process_Q_Tx", "Process_Q_Blocks"};

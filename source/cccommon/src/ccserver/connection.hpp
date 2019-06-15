@@ -182,7 +182,7 @@ public:
 	template <typename Handler>
 	bool Post(const char *function, Handler handler)
 	{
-		if ((TEST_DELAY_CONN_RELEASE & rand()) == 1) sleep(1);
+		if (RandTest(TEST_DELAY_CONN_RELEASE)) sleep(1);
 
 		lock_guard<FastSpinLock> lock(m_conn_lock);
 
@@ -193,15 +193,25 @@ public:
 			return true;
 		}
 
-		m_socket.get_io_service().post(handler);	// post is async, and may need a refcount to prevent Stop from running while the post is pending
+		PostDirect(handler);	// post is async, and may need a refcount to prevent Stop from running while the post is pending
 
 		return false;
 	};
 
+	template <typename Handler>
+	void PostDirect(Handler handler)
+	{
+		#if BOOST_VERSION < 107000
+		m_socket.get_io_service().post(handler);
+		#else
+		post(m_socket.get_executor(), handler);
+		#endif
+	}
+
 	template <typename Buffer, typename CompletionCondition, typename Handler>
 	bool ReadAsync(const char *function, Buffer buffer, CompletionCondition completion_condition, Handler handler)
 	{
-		if ((TEST_DELAY_CONN_RELEASE & rand()) == 1) sleep(1);
+		if (RandTest(TEST_DELAY_CONN_RELEASE)) sleep(1);
 
 		lock_guard<FastSpinLock> lock(m_conn_lock);
 
@@ -222,6 +232,8 @@ public:
 
 		return false;
 	};
+
+	//@@! add a function parameter that determines if timer is cancelled?
 
 	template <typename Buffer, typename Handler>
 	bool WriteAsync(const char *function, Buffer buffer, Handler handler, bool already_own_mutex = false)
@@ -251,7 +263,7 @@ public:
 			usleep(20*1000);
 		}
 
-		if ((TEST_RANDOM_WRITE_ERRORS & rand()) == 1)
+		if (RandTest(TEST_RANDOM_WRITE_ERRORS))
 		{
 			BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " " << function << " simulating write error";
 
@@ -260,7 +272,7 @@ public:
 			return true;
 		}
 
-		if ((TEST_DELAY_CONN_RELEASE & rand()) == 1) sleep(1);
+		if (RandTest(TEST_DELAY_CONN_RELEASE)) sleep(1);
 
 		lock_guard<FastSpinLock> lock(m_conn_lock);
 
@@ -287,7 +299,7 @@ public:
 		// note there is only one timer object m_timer associated with the connection, and all AsyncTimerWait calls wait on this same timer
 		// according to boost asio documentation, starting a wait on a timer cancels an already pending wait on the same timer
 
-		if ((TEST_RANDOM_TIMER_ERRORS & rand()) == 1)
+		if (RandTest(TEST_RANDOM_TIMER_ERRORS))
 		{
 			BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " " << function << " simulating timer error";
 
@@ -296,7 +308,7 @@ public:
 			return true;
 		}
 
-		if (ms > 0 && (TEST_CUZZ_TIMER & rand()) == 1)
+		if (ms > 0 && RandTest(TEST_CUZZ_TIMER))
 		{
 			auto newms = rand() % ms;
 			newms = rand() % (newms + 1);	// generate random distribution skewed toward smaller values
@@ -306,7 +318,7 @@ public:
 			ms = newms;
 		}
 
-		if ((TEST_DELAY_CONN_RELEASE & rand()) == 1) sleep(1);
+		if (RandTest(TEST_DELAY_CONN_RELEASE)) sleep(1);
 
 		lock_guard<FastSpinLock> lock(m_conn_lock);
 
@@ -328,7 +340,7 @@ public:
 			return true;
 		}
 
-		if ((TEST_TIMER_TIMEOUT & rand()) == 1)
+		if (RandTest(TEST_TIMER_TIMEOUT))
 		{
 			BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " " << function << " AsyncTimerWait test sleeping until timer has expired";
 

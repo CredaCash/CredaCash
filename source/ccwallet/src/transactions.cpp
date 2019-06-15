@@ -50,6 +50,7 @@ When another wallet spends a bill in this wallet:
 #include "walletdb.hpp"
 
 #include <CCobjdefs.h>
+#include <CCmint.h>
 #include <transaction.h>
 #include <transaction.hpp>
 #include <jsonutil.h>
@@ -85,8 +86,6 @@ When another wallet spends a bill in this wallet:
 
 static const string cc_txid_prefix = "CCTX_";
 static const string cc_tx_internal_prefix = "CCTX_Internal_";
-
-static const uint8_t hashkey[16] = {};	// all zeros
 
 #define TRACE_TRANSACTIONS	(g_params.trace_transactions)
 
@@ -199,21 +198,21 @@ string Transaction::EncodeInternalTxid()
 	bigint_mask(wallet_id, 48);
 	bigint_mask(maxval, 48);
 
-	cc_encode(base58, 58, maxval, false, 0, wallet_id, outs);
+	cc_encode(base57, 57, maxval, false, 0, wallet_id, outs);
 
 	//cerr << "g_params.wallet_id " << hex << g_params.wallet_id << " wallet_id " << wallet_id << " maxval " << maxval << " outs " << outs << dec << endl;
 
 	// encode internal id
 
-	cc_encode(base58, 58, 0UL, false, -1, id, outs);
+	cc_encode(base57, 57, 0UL, false, -1, id, outs);
 
 	//cerr << "id " << id << " outs " << outs << endl;
 
 	// add checksum
 
-	uint64_t hash = siphash(hashkey, (const uint8_t *)outs.data(), outs.length());
+	uint64_t hash = siphash((const uint8_t *)outs.data(), outs.length());
 	//cerr << "hash " << hex << hash << dec << endl;
-	cc_encode(base58, 58, 0UL, false, 2, hash, outs);
+	cc_encode(base57, 57, 0UL, false, 2, hash, outs);
 
 	//DecodeBtcTxid(outs, dest_chain, m1, maxval);
 
@@ -229,14 +228,14 @@ string Transaction::EncodeBtcTxid(uint64_t dest_chain, const bigint_t& address, 
 
 	// encode dest_chain
 
-	cc_encode(base58, 58, 0UL, false, -1, dest_chain, outs);
+	cc_encode(base57, 57, 0UL, false, -1, dest_chain, outs);
 
 	// encode address
 
 	bigint_t maxval = m1;
 	bigint_mask(maxval, TX_ADDRESS_BITS);
 
-	cc_encode(base58, 58, maxval, false, 0, address, outs);
+	cc_encode(base57, 57, maxval, false, 0, address, outs);
 
 	// encode commitment
 
@@ -246,13 +245,13 @@ string Transaction::EncodeBtcTxid(uint64_t dest_chain, const bigint_t& address, 
 	bigint_mask(masked, TXID_COMMITMENT_BYTES * 8);
 	bigint_mask(maxval, TXID_COMMITMENT_BYTES * 8);
 
-	cc_encode(base58, 58, maxval, false, 0, masked, outs);
+	cc_encode(base57, 57, maxval, false, 0, masked, outs);
 
 	// add checksum
 
-	uint64_t hash = siphash(hashkey, (const uint8_t *)outs.data(), outs.length());
+	uint64_t hash = siphash((const uint8_t *)outs.data(), outs.length());
 	//cerr << "hash " << hex << hash << dec << endl;
-	cc_encode(base58, 58, 0UL, false, 4, hash, outs);
+	cc_encode(base57, 57, 0UL, false, 4, hash, outs);
 
 	//cerr << hex << " dest_chain " << dest_chain << " address " << address << " commitment " << commitment << dec << endl;
 	//DecodeBtcTxid(outs, dest_chain, m1, maxval);
@@ -291,7 +290,7 @@ int Transaction::DecodeBtcTxid(const string& txid, uint64_t& dest_chain, bigint_
 	//cerr << "encoded address " << instring << endl;
 
 	bigint_t bigval;
-	auto rc = cc_decode(fn, base58int, 58, false, chainlen, instring, bigval, output, outsize);
+	auto rc = cc_decode(fn, base57int, 57, false, chainlen, instring, bigval, output, outsize);
 	if (rc || bigval > bigint_t((uint64_t)(-1)))
 	{
 		BOOST_LOG_TRIVIAL(info) << "Transaction::DecodeBtcTxid blockchain decode failed: " << output;
@@ -301,7 +300,7 @@ int Transaction::DecodeBtcTxid(const string& txid, uint64_t& dest_chain, bigint_
 
 	dest_chain = BIG64(bigval);
 
-	rc = cc_decode(fn, base58int, 58, false, 22, instring, address, output, outsize);
+	rc = cc_decode(fn, base57int, 57, false, 22, instring, address, output, outsize);
 	if (rc)
 	{
 		BOOST_LOG_TRIVIAL(info) << "Transaction::DecodeBtcTxid address decode failed: " << output;
@@ -320,7 +319,7 @@ int Transaction::DecodeBtcTxid(const string& txid, uint64_t& dest_chain, bigint_
 
 	//cerr << "encoded commitment " << instring << endl;
 
-	rc = cc_decode(fn, base58int, 58, false, 22, instring, commitment, output, outsize);
+	rc = cc_decode(fn, base57int, 57, false, 22, instring, commitment, output, outsize);
 	if (rc)
 	{
 		BOOST_LOG_TRIVIAL(info) << "Transaction::DecodeBtcTxid commitment decode failed: " << output;
@@ -340,8 +339,8 @@ int Transaction::DecodeBtcTxid(const string& txid, uint64_t& dest_chain, bigint_
 	//cerr << "encoded checksum " << instring << endl;
 
 	string outs;
-	uint64_t hash = siphash(hashkey, (const uint8_t *)txid.data(), inlen - instring.length());
-	cc_encode(base58, 58, 0UL, false, 4, hash, outs);
+	uint64_t hash = siphash((const uint8_t *)txid.data(), inlen - instring.length());
+	cc_encode(base57, 57, 0UL, false, 4, hash, outs);
 	//cerr << "hash " << hex << hash << dec << " " << outs << " " << instring << endl;
 	if (outs != instring)
 	{
@@ -926,28 +925,25 @@ void Transaction::SetAdjustedAmounts(bool incwatch)
 	}
 }
 
-void Transaction::CreateTxMint(DbConn *dbconn, TxQuery& txquery) // throws RPC_Exception
+int Transaction::CreateTxMint(DbConn *dbconn, TxQuery& txquery) // throws RPC_Exception
 {
 	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(debug) << "Transaction::CreateTxMint";
 
-	/*
-		create a new address for the mint tx
-		create a tx & billet for the mint and add to db
-			do not assume confidence in tx or add to balance
-		setup polling on address
-		submit tx and check return code
-			if error, cancel polling
-		return txid
-		when polling detects tx cleared:
-			update tx & billet
-			update balance
-	*/
+	// returns -1 if mint tx's are not allowed
 
 	TxParams txparams;
 	QueryInputResults inputs;
 
 	auto rc = txquery.QueryInputs(NULL, 0, txparams, inputs);
 	if (rc) throw txrpc_server_error;
+
+	if (Implement_CCMint(txparams.blockchain))
+	{
+		if (inputs.param_level >= CC_MINT_COUNT)
+			return -1;
+	}
+	else if (!IsTestnet(txparams.blockchain))
+		return -1;
 
 	Secret address;
 	SpendSecretParams params;
@@ -962,6 +958,8 @@ void Transaction::CreateTxMint(DbConn *dbconn, TxQuery& txquery) // throws RPC_E
 
 	tx_init(ts);
 	ts.tag_type = CC_TYPE_MINT;
+
+	//ts.no_proof = rand() & 3;	// for testing, randomly create a bad mint
 
 	ts.source_chain = txparams.blockchain;
 	ts.param_level = inputs.param_level;
@@ -1015,7 +1013,7 @@ void Transaction::CreateTxMint(DbConn *dbconn, TxQuery& txquery) // throws RPC_E
 	SetOutputsFromTx(ts);
 
 	// Save ts in db before submitting
-	// (If ts submitted first, Poll thread could detect and save billets before this thread, and that would have to be sorted out...)
+	// (If tx submitted first, Poll thread could detect and save billets before this thread, and that would have to be sorted out...)
 
 	rc = SaveOutgoingTx(dbconn);
 	if (rc) throw txrpc_wallet_error;
@@ -1023,7 +1021,7 @@ void Transaction::CreateTxMint(DbConn *dbconn, TxQuery& txquery) // throws RPC_E
 	//BeginAndReadTx(dbconn, id);	// testing
 	//BeginAndReadTx(dbconn, id);	// testing
 
-	if ((TEST_RANDOM_TX_ERRORS & rand()) == 1)
+	if (RandTest(TEST_RANDOM_TX_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "Transaction::CreateTxMint simulating error after save, before submit";
 
@@ -1037,7 +1035,17 @@ void Transaction::CreateTxMint(DbConn *dbconn, TxQuery& txquery) // throws RPC_E
 	//rc = txquery.SubmitTx(ts, next_commitnum);	// testing
 
 	rc = txquery.SubmitTx(ts, next_commitnum);
-	if (rc) throw txrpc_server_error;
+	if (rc)
+	{
+		SetMintStatus(dbconn, TX_STATUS_ERROR);
+
+		if (rc < 0)
+			throw txrpc_server_error;
+		else if (Implement_CCMint(txparams.blockchain) && !ts.param_level)
+			throw RPC_Exception(RPC_VERIFY_REJECTED, "Mint not yet started");
+		else
+			throw txrpc_tx_rejected;
+	}
 
 	rc = UpdatePolling(dbconn, next_commitnum);
 	(void)rc;
@@ -1062,6 +1070,48 @@ void Transaction::CreateTxMint(DbConn *dbconn, TxQuery& txquery) // throws RPC_E
 		cerr << "Donation amount " << amts << endl;
 		cerr << endl;
 	}
+
+	return 0;
+}
+
+void Transaction::SetMintStatus(DbConn *dbconn, unsigned _status)
+{
+	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "Transaction::SetMintStatus status " << _status;
+
+	auto rc = dbconn->BeginWrite();
+	if (rc)
+	{
+		dbconn->DoDbFinishTx(-1);
+
+		throw txrpc_wallet_db_error;
+	}
+
+	Finally finally(boost::bind(&DbConn::DoDbFinishTx, dbconn, 1));		// 1 = rollback
+
+	rc = dbconn->TransactionSelectId(id, *this);
+	if (rc)
+	{
+		BOOST_LOG_TRIVIAL(warning) << "Transaction::SetMintStatus error reading tx id " << id;
+
+		throw txrpc_wallet_db_error;
+	}
+
+	status = _status;
+
+	rc = dbconn->TransactionInsert(*this);
+	if (rc)
+	{
+		BOOST_LOG_TRIVIAL(warning) << "Transaction::SetMintStatus error saving tx id " << id;
+
+		throw txrpc_wallet_db_error;
+	}
+
+	rc = dbconn->Commit();
+	if (rc) throw txrpc_wallet_db_error;
+
+	dbconn->DoDbFinishTx();
+
+	finally.Clear();
 }
 
 void Transaction::SetPendingBalances(DbConn *dbconn, uint64_t blockchain, const bigint_t& balance_allocated, const bigint_t& balance_pending)
@@ -1233,7 +1283,7 @@ int Transaction::WaitNewBillet(const bigint_t& total_required, const uint64_t bi
 
 	if (lock) lock.unlock();
 
-	if ((TEST_RANDOM_TX_ERRORS & rand()) == 1)
+	if (RandTest(TEST_RANDOM_TX_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "Transaction::WaitNewBillet simulating error";
 
@@ -1357,6 +1407,12 @@ int Transaction::FillOutTx(DbConn *dbconn, TxQuery& txquery, TxParams& txparams,
 	auto rc = txquery.QueryInputs(commitnums, nin, txparams, inputs);
 	if (rc) throw txrpc_server_error;
 
+	if (Implement_CCMint(txparams.blockchain) && inputs.param_level < CC_MINT_COUNT + CC_MINT_ACCEPT_SPAN)
+		throw txrpc_tx_rejected;
+
+	if (Implement_CCMint(txparams.blockchain)) //@@! remove for production release
+		throw RPC_Exception(RPC_VERIFY_REJECTED, "Please await the final software release before sending transactions on the live network");
+
 	// compute and recheck encoded amounts using txparams returned by QueryInputs
 
 	tx_init(tx);
@@ -1432,11 +1488,11 @@ int Transaction::FillOutTx(DbConn *dbconn, TxQuery& txquery, TxParams& txparams,
 			throw txrpc_wallet_error;
 		}
 
-		if (bill.pool != txparams.default_output_pool)
+		if (bill.pool != txparams.default_output_pool && !g_params.foundation_wallet)	//@@! need new tx type
 		{
 			BOOST_LOG_TRIVIAL(error) << "Transaction::FillOutTx input " << i << " pool mismatch " << bill.pool << " != " << txparams.default_output_pool;
 
-			throw txrpc_wallet_error;
+			throw RPC_Exception(RPCErrorCode(-32001), "Input bill pool does not match transaction server's default output pool");
 		}
 
 		if (bill.asset != 0)
@@ -1582,10 +1638,10 @@ void Transaction::CreateTxPay(DbConn *dbconn, TxQuery& txquery, const string& en
 
 	// check dest_chain
 	// dest_chain comes from the encoded destination string and can be zero, which means use any blockchain
-	// but if not zero, it must match the blockchain the wallet to which the wallet is connected
+	// but if not zero, it must match the blockchain of the server to which the wallet is connected
 
 	if (dest_chain && dest_chain != txparams.blockchain)
-		throw txrpc_invalid_address;
+		throw RPC_Exception(RPC_INVALID_ADDRESS_OR_KEY, "Destination blockchain not supported by transaction server");
 
 	// add destination to db, and if that fails retrieve existing destination
 
@@ -1598,7 +1654,7 @@ void Transaction::CreateTxPay(DbConn *dbconn, TxQuery& txquery, const string& en
 	if (rc) throw txrpc_wallet_error;
 
 	if (!dest_chain)
-		dest_chain = txparams.blockchain;	// if the destination string didn't specify a blockchain, use the current wallet blockchain
+		dest_chain = txparams.blockchain;	// if the destination string didn't specify a blockchain, use the transaction server blockchain
 
 	rc = secret.CheckForConflict(dbconn, txquery, dest_chain);
 	if (rc < 0)
@@ -1639,7 +1695,7 @@ void Transaction::CreateTxPay(DbConn *dbconn, TxQuery& txquery, const string& en
 	{
 		if (retry > 2000 || g_shutdown) throw txrpc_wallet_error;
 
-		if ((TEST_RANDOM_TX_ERRORS & rand()) == 1)
+		if (RandTest(TEST_RANDOM_TX_ERRORS))
 		{
 			BOOST_LOG_TRIVIAL(info) << "Transaction::CreateTxPay simulating pre tx, at shutdown check for retry " << retry;
 
@@ -1955,7 +2011,7 @@ int Transaction::TryCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& txpa
 			if (g_shutdown)
 				throw txrpc_wallet_error;
 
-			if ((TEST_RANDOM_TX_ERRORS & rand()) == 1)
+			if (RandTest(TEST_RANDOM_TX_ERRORS))
 			{
 				BOOST_LOG_TRIVIAL(info) << "Transaction::TryCreateTxPay simulating error mid tx, at shutdown check for subtx " << ntx << " nin " << tx->nin;
 
@@ -2019,7 +2075,7 @@ int Transaction::TryCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& txpa
 			new_amount = tx->input_bills[tx->nin].amount;
 			++tx->nin;
 
-			if ((TEST_RANDOM_TX_ERRORS & rand()) == 1)
+			if (RandTest(TEST_RANDOM_TX_ERRORS))
 			{
 				BOOST_LOG_TRIVIAL(info) << "Transaction::TryCreateTxPay simulating error mid tx, after LocateBillet succeeded for nin " << tx->nin;
 
@@ -2186,14 +2242,14 @@ int Transaction::TryCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& txpa
 		}
 	}
 
-	if ((TEST_RANDOM_TX_ERRORS & rand()) == 1)
+	if (RandTest(TEST_RANDOM_TX_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "Transaction::TryCreateTxPay simulating billet spent / amount mismatch retry";
 
 		return 1;
 	}
 
-	if ((TEST_RANDOM_TX_ERRORS & rand()) == 1 || 0*TEST_FAIL_ALL_TXS)
+	if (RandTest(TEST_RANDOM_TX_ERRORS) || (TEST_FAIL_ALL_TXS && 0))
 	{
 		BOOST_LOG_TRIVIAL(info) << "Transaction::TryCreateTxPay simulating error pre address computation, at shutdown check";
 
@@ -2255,7 +2311,7 @@ int Transaction::TryCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& txpa
 			if (si < 2 && g_shutdown)
 				throw txrpc_wallet_error;
 
-			if ((TEST_RANDOM_TX_ERRORS & rand()) == 1 || 0*TEST_FAIL_ALL_TXS)
+			if (RandTest(TEST_RANDOM_TX_ERRORS) || (TEST_FAIL_ALL_TXS && 0))
 			{
 				BOOST_LOG_TRIVIAL(info) << "Transaction::TryCreateTxPay simulating error after create, before save and submit for subtx " << si << " of " << active_subtx_count << " need_intermediate_txs " << need_intermediate_txs;
 
@@ -2278,7 +2334,7 @@ int Transaction::TryCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& txpa
 			if (si < 2)
 				parent_id = tx->id;
 
-			if ((TEST_RANDOM_TX_ERRORS & rand()) == 1 || 0*TEST_FAIL_ALL_TXS)
+			if (RandTest(TEST_RANDOM_TX_ERRORS) || (TEST_FAIL_ALL_TXS && 0))
 			{
 				BOOST_LOG_TRIVIAL(info) << "Transaction::TryCreateTxPay simulating error after save, before submit for subtx " << si << " of " << active_subtx_count << " need_intermediate_txs " << need_intermediate_txs;
 
@@ -2290,7 +2346,7 @@ int Transaction::TryCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& txpa
 
 			uint64_t next_commitnum;
 
-			if ((TEST_RANDOM_TX_ERRORS & rand()) == 1 || TEST_FAIL_ALL_TXS)
+			if (RandTest(TEST_RANDOM_TX_ERRORS) || TEST_FAIL_ALL_TXS)
 			{
 				BOOST_LOG_TRIVIAL(info) << "Transaction::TryCreateTxPay simulating SubmitTx that actually failed for subtx " << si << " of " << active_subtx_count << " need_intermediate_txs " << need_intermediate_txs;
 
@@ -2303,7 +2359,7 @@ int Transaction::TryCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& txpa
 			{
 				BOOST_LOG_TRIVIAL(warning) << "Transaction::TryCreateTxPay SubmitTx did not successfully complete. The network may or may not have received the transaction. If the network did receive the transaction, the wallet will detect it in the blockchain and will then mark the transaction input billets as spent and deduct them from the wallet balance.  In the meantime, before the transaction has cleared, the wallet might attempt to respend the same inputs which would result in a conflicting transaction.  Because this is not currently detected and handled by the wallet, this may result in one or more input billets from the second transaction being deducted from the wallet even though they are not actually spent. This is most likely to occur during high-speed load testing, and can throw off the wallet balance tracking.";
 			}
-			else if ((TEST_RANDOM_TX_ERRORS & rand()) == 99999)	// will throw off balance if enabled
+			else if (RandTest(TEST_RANDOM_TX_ERRORS) && 0) // will throw off balance if enabled
 			{
 				// note: this test causes input billets to be deallocated then used in another tx
 				// resulting in conflicting tx's, only one of which will clear, which throws off the balance tracking
@@ -2319,7 +2375,12 @@ int Transaction::TryCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& txpa
 			// !!! TODO: If error is "INVALID:already spent" then requery for hashkey to see if this tx succeeded
 			// !!! TODO: on soft error, leave input billets allocated for some period, then check if they are spent before deallocating them
 
-			if (rc)
+			if (rc > 0)
+			{
+				tx->build_state = TX_BUILD_SUBMIT_INVALID;
+				throw txrpc_tx_rejected;
+			}
+			if (rc < 0)
 			{
 				tx->build_state = TX_BUILD_SUBMIT_ERR;
 				throw txrpc_server_error;
@@ -2378,6 +2439,20 @@ int Transaction::CreateTxFromAddressQueryResult(DbConn *dbconn, TxQuery& txquery
 	// must be called from inside a BeginWrite
 
 	CCASSERT(destination.id == address.dest_id);
+
+	if (g_params.foundation_wallet && result.pool != CC_MINT_FOUNDATION_POOL)
+	{
+		BOOST_LOG_TRIVIAL(info) << "Transaction::CreateTxFromAddressQueryResult Foundation wallet ignoring output to pool " << result.pool;
+
+		return 0;
+	}
+
+	if (Implement_CCMint(result.blockchain) && result.pool == CC_MINT_FOUNDATION_POOL && !g_params.foundation_wallet)
+	{
+		BOOST_LOG_TRIVIAL(info) << "Transaction::CreateTxFromAddressQueryResult non-Foundation wallet ignoring output to Foundation pool";
+
+		return 0;
+	}
 
 	if (result.encrypted)
 	{

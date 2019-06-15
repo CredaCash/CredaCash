@@ -6,7 +6,7 @@ curl -L https://github.com/CredaCash-depends/blake2_mjosref/archive/master.zip -
 curl -L https://github.com/CredaCash-depends/ed25519-donna/archive/master.zip -o depends/ed25519.zip
 curl -L https://github.com/CredaCash-depends/jsoncpp/archive/master.zip -o depends/jsoncpp.zip
 curl -L https://github.com/CredaCash-depends/siphash-c/archive/master.zip -o depends/siphash.zip
-curl -L https://sqlite.org/2018/sqlite-amalgamation-3260000.zip -o depends/sqlite.zip
+curl -L https://sqlite.org/2019/sqlite-amalgamation-3280000.zip -o depends/sqlite.zip
 cd source
 unzip snarklib.zip
 unzip snarkfront.zip
@@ -24,7 +24,7 @@ del *.zip
 ren blake2_mjosref-master blake2
 ren ed25519-donna-master ed25519
 ren siphash-c-master siphash
-ren sqlite-amalgamation-3260000 sqlite
+ren sqlite-amalgamation-3280000 sqlite
 cd jsoncpp-master
 python amalgamate.py
 move dist ..

@@ -26,6 +26,8 @@ class SmartBuf
 
 public:
 
+	static int64_t ByteTotal();
+
 #if TRACE_SMARTBUF
 	SmartBuf();
 #else

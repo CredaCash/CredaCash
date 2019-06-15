@@ -12,11 +12,18 @@
 #include "CCbigint.hpp"
 #include "CCparams.h"
 
-//#define TEST_SUPPORT_ZK_KEYGEN	1	// for setup
+#define TEST_SUPPORT_ZK_KEYGEN	1	// for setup; note: 68 minutes on ODROID-C2 to generate 31 key pairs
 
 #ifndef TEST_SUPPORT_ZK_KEYGEN
-#define TEST_SUPPORT_ZK_KEYGEN	0
+#define TEST_SUPPORT_ZK_KEYGEN		0
 #endif
+
+#define KEY_PATH_ENV_VAR			"CC_PROOF_KEY_DIR"
+
+#define CCPROOF_ERR_NO_KEY				-2
+#define CCPROOF_ERR_INSUFFICIENT_KEY	-3
+#define CCPROOF_ERR_LOADING_KEY			-4
+#define CCPROOF_ERR_NO_PROOF			-5
 
 #ifndef CCPROOF_API
 #define CCPROOF_API CCRESULT
@@ -44,7 +51,7 @@ struct TxPay;
 CCPROOF_API CCProof_GenKeys();
 #endif
 
-CCPROOF_API CCProof_Init();
+CCPROOF_API CCProof_Init(const std::wstring& proof_key_dir = std::wstring());
 
 CCPROOF_API CCProof_GenProof(TxPay& tx);
 

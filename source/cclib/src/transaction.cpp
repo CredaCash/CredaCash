@@ -1383,7 +1383,7 @@ void compute_address(const bigint_t& destination, uint64_t destination_chain, ui
 	#endif
 }
 
-void compute_amount_pad(const bigint_t& commit_iv, const bigint_t& dest, const bigint_t& paynum, uint64_t& asset_pad, uint64_t& amount_pad)
+void compute_amount_pad(const bigint_t& commit_iv, const bigint_t& dest, const uint32_t paynum, uint64_t& asset_pad, uint64_t& amount_pad)
 {
 	// set RULE tx output:	where #asset_xor = asset_mask & (zkhash(M_encrypt_iv, #dest, #paynum))
 	// set RULE tx output:	where #amount_xor = amount_mask & (zkhash(M_encrypt_iv, #dest, #paynum) >> TX_ASSET_BITS)
@@ -1411,6 +1411,31 @@ void compute_amount_pad(const bigint_t& commit_iv, const bigint_t& dest, const b
 	cerr << "compute_amount_pad full pad " << hex << one_time_pad << dec << endl;
 	cerr << "compute_amount_pad asset_pad " << hex << asset_pad << dec << endl;
 	cerr << "compute_amount_pad amount_pad " << hex << amount_pad << dec << endl;
+	#endif
+}
+
+void compute_commitment(const bigint_t& commit_iv, const bigint_t& dest, const uint32_t paynum, const uint32_t pool, const uint64_t asset, const uint64_t amount_fp, bigint_t& commitment)
+{
+	// set RULE tx output: M_commitment = zkhash(M_commitment_iv, #dest, #paynum, M_pool, #asset, #amount)
+
+	vector<CCHashInput> hashin(6);
+	hashin[0].SetValue(commit_iv, TX_COMMIT_IV_BITS);
+	//hashin[1].SetValue(i, TX_COMMIT_INDEX_BITS);
+	hashin[1].SetValue(dest, TX_FIELD_BITS);
+	hashin[2].SetValue(paynum, TX_PAYNUM_BITS);
+	hashin[3].SetValue(pool, TX_POOL_BITS);
+	hashin[4].SetValue(asset, TX_ASSET_BITS);
+	hashin[5].SetValue(amount_fp, TX_AMOUNT_BITS);
+	commitment = CCHash::Hash(hashin, HASH_BASES_COMMITMENT, TX_FIELD_BITS);
+
+	#if TRACE_COMMITMENTS
+	cerr << "set_output_iv_dependents M_commitment" << endl;
+	for (unsigned j = 0; j < hashin.size(); ++j)
+	{
+		cerr << "hash input " << j << endl;
+		hashin[j].Dump();
+	}
+	cerr << "commitment " << hex << commitment << dec << endl;
 	#endif
 }
 
@@ -1459,27 +1484,8 @@ static void set_output_iv_dependents(const TxPay& tx, TxOut& txout)
 	cerr << "set_output_iv_dependents amount_enc " << hex << txout.M_amount_enc << dec << endl;
 	#endif
 
-	// set RULE tx output: M_commitment = zkhash(M_commitment_iv, #dest, #paynum, M_pool, #asset, #amount)
-
-	vector<CCHashInput> hashin(6);
-	hashin[0].SetValue(tx.M_commitment_iv, TX_COMMIT_IV_BITS);
-	//hashin[1].SetValue(i, TX_COMMIT_INDEX_BITS);
-	hashin[1].SetValue(txout.addrparams.__dest, TX_FIELD_BITS);
-	hashin[2].SetValue(txout.addrparams.__paynum, TX_PAYNUM_BITS);
-	hashin[3].SetValue(txout.M_pool, TX_POOL_BITS);
-	hashin[4].SetValue(txout.__asset, TX_ASSET_BITS);
-	hashin[5].SetValue(txout.__amount_fp, TX_AMOUNT_BITS);
-	txout.M_commitment = CCHash::Hash(hashin, HASH_BASES_COMMITMENT, TX_FIELD_BITS);
-
-	#if TRACE_COMMITMENTS
-	cerr << "set_output_iv_dependents M_commitment" << endl;
-	for (unsigned j = 0; j < hashin.size(); ++j)
-	{
-		cerr << "hash input " << j << endl;
-		hashin[j].Dump();
-	}
-	cerr << "txout.M_commitment " << hex << txout.M_commitment << dec << endl;
-	#endif
+	compute_commitment(tx.M_commitment_iv, txout.addrparams.__dest, txout.addrparams.__paynum,
+			txout.M_pool, txout.__asset, txout.__amount_fp, txout.M_commitment);
 }
 
 static CCRESULT txpay_precheck_output(const string& fn, const TxPay& tx, unsigned index, const TxOut& txout, char *output, const uint32_t outsize)
@@ -1719,29 +1725,11 @@ static CCRESULT txpay_precheck_input(const string& fn, const TxPay& tx, unsigned
 	// check RULE tx input:	where #dest = zkhash(@receive_secret, @monitor_secret[1..R], @use_spend_secret[0..Q], @use_trust_secret[0..Q], @required_spend_secrets, @required_trust_secrets, @destnum)
 	// not checked RULE tx input:	where @receive_secret = zkhash(@monitor_secret[0], @enforce_spendspec_with_spend_secret, @enforce_spendspec_with_trust_secret, @required_spendspec_hash, @allow_master_secret, @allow_freeze, @allow_trust_unfreeze, @require_public_hashkey, @restrict_addresses, @spend_locktime, @trust_locktime, @spend_delaytime, @trust_delaytime)
 
-	bigint_t destination;
+	bigint_t destination, commitment;
 	compute_destination(txin.params, txin.secrets, destination);
 
-	vector<CCHashInput> hashin(6);
-	hashin[0].SetValue(txin.__M_commitment_iv, TX_COMMIT_IV_BITS);
-	//hashin[1].SetValue(i, TX_COMMIT_INDEX_BITS);
-	hashin[1].SetValue(destination, TX_FIELD_BITS);
-	hashin[2].SetValue(txin.params.addrparams.__paynum, TX_PAYNUM_BITS);
-	hashin[3].SetValue(txin.M_pool, TX_POOL_BITS);
-	hashin[4].SetValue(txin.__asset, TX_ASSET_BITS);
-	hashin[5].SetValue(txin.__amount_fp, TX_AMOUNT_BITS);
-	auto commitment = CCHash::Hash(hashin, HASH_BASES_COMMITMENT, TX_FIELD_BITS);
-
-	#if TRACE_COMMITMENTS
-	cerr << "txpay_precheck_input M_commitment" << endl;
-	for (unsigned j = 0; j < hashin.size(); ++j)
-	{
-		cerr << "hash input " << j << endl;
-		hashin[j].Dump();
-	}
-	cerr << "commitment " << hex << commitment << dec << endl;
-	cerr << "txin._M_commitment " << hex << txin._M_commitment << dec << endl;
-	#endif
+	compute_commitment(txin.__M_commitment_iv, destination, txin.params.addrparams.__paynum,
+			txin.M_pool, txin.__asset, txin.__amount_fp, commitment);
 
 	if (commitment != txin._M_commitment)
 		return copy_error_to_output(fn, string("error: inputs do not hash to the commitment for input ") + to_string(index), output, outsize);
@@ -1947,16 +1935,18 @@ static CCRESULT txpay_precheck(const string& fn, const TxPay& tx, char *output, 
 
 static CCRESULT proof_error(const string& fn, int rc, char *output, const uint32_t outsize)
 {
-	if (rc == -2)
-		return copy_error_to_output(fn, "error: no suitable zero knowledge proof key found", output, outsize);
-	else if (rc == -3)
-		return copy_error_to_output(fn, "error: zero knowledge proof key has insufficient capacity", output, outsize);
-	else if (rc == -4)
-		return copy_error_to_output(fn, "error loading zero knowledge proof key", output, outsize);
+	if (rc == CCPROOF_ERR_NO_KEY)
+		copy_error_to_output(fn, "error: no suitable zero knowledge proof key found", output, outsize);
+	else if (rc == CCPROOF_ERR_INSUFFICIENT_KEY)
+		copy_error_to_output(fn, "error: zero knowledge proof key has insufficient capacity", output, outsize);
+	else if (rc == CCPROOF_ERR_LOADING_KEY)
+		copy_error_to_output(fn, "error loading zero knowledge proof key", output, outsize);
+	else if (rc == CCPROOF_ERR_NO_PROOF)
+		copy_error_to_output(fn, "error zero knowledge proof omitted", output, outsize);
 	else if (rc < 0)
-		return copy_error_to_output(fn, "error: transaction proof generation error", output, outsize);
+		copy_error_to_output(fn, "error: transaction proof generation error", output, outsize);
 
-	return 0;
+	return rc;
 }
 
 static CCRESULT set_proof(const string& fn, TxPay& tx, char *output, const uint32_t outsize)
@@ -1997,7 +1987,7 @@ static CCRESULT set_mint_inputs(TxPay& tx)
 	bigval = TX_CC_MINT_AMOUNT;
 	txin.invalmax = TX_CC_MINT_EXPONENT;
 	txin.__amount_fp = tx_amount_encode(bigval, false, TX_AMOUNT_BITS, TX_AMOUNT_EXPONENT_BITS, TX_CC_MINT_EXPONENT, TX_CC_MINT_EXPONENT);
-	txin._M_commitment = "20400612991736103544199257534373025895763144558907978716830251803961540725986";
+	txin._M_commitment = "17001882429967903773100989557462178497740410097909483058299851875380585795018";
 
 	txin.merkle_root = tx.tx_merkle_root;
 	txin.enforce_trust_secrets = 1;
@@ -3117,14 +3107,13 @@ CCRESULT txpay_create_finish(const string& fn, TxPay& tx, char *output, const ui
 		if (rc) return rc;
 	}
 
-	if (!tx.no_proof)
-	{
-		auto rc = set_proof(fn, tx, output, outsize);
-		if (rc) return rc;
+	auto rc = set_proof(fn, tx, output, outsize);
+	if (tx.no_proof && rc == CCPROOF_ERR_NO_PROOF)
+		return 0;
+	if (rc) return rc;
 
-		if (!tx.no_verify)
-			return check_proof(fn, tx, output, outsize);
-	}
+	if (!tx.no_verify)
+		return check_proof(fn, tx, output, outsize);
 
 	return 0;
 }
@@ -3533,6 +3522,23 @@ static CCRESULT txpay_input_from_wire(const TxPay& tx, TxIn& txin, uint32_t& buf
 	return 0;
 }
 
+uint64_t txpay_param_level_from_wire(const CCObject *obj)
+{
+	if (!obj->IsValid())
+		return -1;
+
+	unsigned param_level_offset = sizeof(((TxPay*)0)->zkproof) - 1;
+
+	if (obj->BodySize() < param_level_offset + sizeof(uint64_t))
+		return -1;
+
+	uint64_t param_level = *(const uint64_t*)(obj->BodyPtr() + param_level_offset);
+	if (TX_BLOCKLEVEL_BYTES < sizeof(uint64_t))
+		param_level &= ((uint64_t)1 << (TX_BLOCKLEVEL_BYTES * CHAR_BIT)) - 1;
+
+	return param_level;
+}
+
 CCRESULT txpay_to_wire(const string& fn, const TxPay& tx, unsigned err_check, char *output, const uint32_t outsize, char *binbuf, const uint32_t binsize)
 {
 	uint32_t bufpos = 0;
@@ -3559,7 +3565,7 @@ CCRESULT txpay_to_wire(const string& fn, const TxPay& tx, unsigned err_check, ch
 
 	copy_to_buf(tx.zkproof, sizeof(tx.zkproof) - 1, bufpos, binbuf, binsize, bhex);
 
-	// param_level must immediately follow zkproof because ValidObjsFindNew looks for it there
+	// param_level must immediately follow zkproof because txpay_param_level_from_wire() looks for it there
 	copy_to_buf(tx.param_level, TX_BLOCKLEVEL_BYTES, bufpos, binbuf, binsize, bhex);
 
 	if (tx.tag_type == CC_TYPE_TXPAY)
@@ -4079,9 +4085,13 @@ CCRESULT tx_set_work_internal(char *binbuf, const void *txhash, unsigned proof_s
 	return 0;
 #endif
 
+	//auto t0 = ccticks();
 	//cerr << "tx_set_work " << buf2hex(txhash, sizeof(ccoid_t)) << endl;
 
 	CCRESULT result = 0;
+
+	if (!proof_difficulty)
+		return result;
 
 	for (unsigned proof_index = proof_start; proof_index < proof_start + proof_count; ++proof_index)
 	{
@@ -4105,14 +4115,14 @@ CCRESULT tx_set_work_internal(char *binbuf, const void *txhash, unsigned proof_s
 		{
 			hashkey[1] = ((uint64_t)proof_index << TX_POW_NONCE_BITS) | nonce;
 
-			uint64_t hash = siphash((uint8_t*)&hashkey, (uint8_t*)txhash, sizeof(ccoid_t));
+			uint64_t hash = siphash_keyed((uint8_t*)&hashkey, (uint8_t*)txhash, sizeof(ccoid_t));
 
-			if (nonce == iter_end || hash >= proof_difficulty)
+			if (nonce == iter_end || hash <= proof_difficulty)
 			{
 				//cerr << hex << "tx_set_work nonce " << nonce << " hash " << hash << " proof_difficulty " << proof_difficulty << dec << endl;
 			}
 
-			if (hash >= proof_difficulty)
+			if (hash <= proof_difficulty)
 				break;
 		}
 
@@ -4127,12 +4137,13 @@ CCRESULT tx_set_work_internal(char *binbuf, const void *txhash, unsigned proof_s
 			result = 1;
 	}
 
-	//cerr << "tx_set_work result " << result << endl;
+	//lock_guard<FastSpinLock> lock(g_cout_lock);
+	//cerr << "tx_set_work result " << result << " difficulty " << proof_difficulty << " elapsed time " << ccticks_elapsed(t0, ccticks()) << endl;
 
 	return result;
 }
 
-void tx_commit_tree_hash_leaf(const bigint_t& commitment, const uint64_t& commitnum, bigint_t& hash)
+void tx_commit_tree_hash_leaf(const bigint_t& commitment, const uint64_t commitnum, bigint_t& hash)
 {
 	vector<CCHashInput> hashin(2);
 

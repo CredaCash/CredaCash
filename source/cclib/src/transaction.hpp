@@ -260,6 +260,6 @@ void get_restricted_address(const SpendSecrets& secrets, unsigned slot, bigint_t
 
 void compute_destination(const SpendSecretParams& params, const SpendSecrets& secrets, bigint_t& destination);
 void compute_address(const bigint_t& destination, uint64_t destination_chain, uint64_t paynum, bigint_t& address);
-void compute_amount_pad(const bigint_t& commit_iv, const bigint_t& dest, const bigint_t& paynum, uint64_t& asset_xor, uint64_t& amount_xor);
-
+void compute_amount_pad(const bigint_t& commit_iv, const bigint_t& dest, const uint32_t paynum, uint64_t& asset_xor, uint64_t& amount_xor);
+void compute_commitment(const bigint_t& commit_iv, const bigint_t& dest, const uint32_t paynum, const uint32_t pool, const uint64_t asset, const uint64_t amount_fp, bigint_t& commitment);
 void compute_serialnum(const bigint_t& monitor_secret, const bigint_t& commitment, uint64_t commitnum, bigint_t& serialnum);

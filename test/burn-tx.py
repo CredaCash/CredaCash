@@ -70,7 +70,7 @@ txmaxout = 10
 txmaxinw = 8
 txmaxin  = 8
 
-if 1: # !!! normally 0; for testing; values below must match zkproof key capacity limits
+if 0: # !!! normally 0; for testing; values below must match zkproof key capacity limits
 	print '*** WARNING: OVERRIDING TX MAX IN/OUT ***'
 	txmaxout = 5
 	txmaxinw = 4
@@ -78,7 +78,7 @@ if 1: # !!! normally 0; for testing; values below must match zkproof key capacit
 
 txmaxinc = txmaxinw + 4
 
-TX_CC_MINT_AMOUNT			= 200000*10**27
+TX_CC_MINT_AMOUNT			= 50000*10**27
 TX_CC_MINT_EXPONENT			= 22
 
 TX_ACCEPT_REQ_DEST_MASK		= 0x01F

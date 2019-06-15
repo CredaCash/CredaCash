@@ -15,10 +15,10 @@
 #include "dbparamkeys.h"
 #include "witness.hpp"
 
+#include <CCobjects.hpp>
+#include <CCmint.h>
 #include <transaction.hpp>
 #include <transaction.h>
-
-#include <CCobjects.hpp>
 #include <ccserver/connection_registry.hpp>
 
 #define TRACE_PROCESS	(g_params.trace_tx_validation)
@@ -129,6 +129,9 @@ int ProcessTx::TxEnqueueValidate(DbConn *dbconn, int64_t priority, SmartBuf smar
 
 int ProcessTx::TxValidate(DbConn *dbconn, TxPay& tx, SmartBuf smartobj)
 {
+	//if (!IsWitness())
+	//	return 0;			// for testing, allow bad transactions in
+
 	auto obj = (CCObject*)smartobj.data();
 
 	if (tx_from_wire(tx, (char*)obj->ObjPtr(), obj->ObjSize()))
@@ -402,31 +405,46 @@ int ProcessTx::TxValidate(DbConn *dbconn, TxPay& tx, SmartBuf smartobj)
 	bigint_t donation;
 	tx_amount_decode(tx.donation_fp, donation, true, TX_DONATION_BITS, TX_AMOUNT_EXPONENT_BITS);
 
-	unsigned tx_size = sizeof(CCObject::Header) + obj->BodySize();
-
-	bigint_t min_donation =
-											g_blockchain.proof_params.donation_per_tx
-			+ (bigint_t)(tx_size) *			g_blockchain.proof_params.donation_per_byte
-			+ (bigint_t)(total_nout) *		g_blockchain.proof_params.donation_per_output
-			+ (bigint_t)(tx.nin) *			g_blockchain.proof_params.donation_per_input;
-
-	if (min_donation < g_blockchain.proof_params.minimum_donation)
-		min_donation = g_blockchain.proof_params.minimum_donation;
-
 	if (tx.tag_type == CC_TYPE_MINT)
-		min_donation = TX_CC_MINT_DONATION;
-
-	BOOST_LOG_TRIVIAL(trace) << "DbConnProcessQ::TxValidate donation " << hex << tx.donation_fp << dec << " decoded " << donation << " min_donation " << min_donation << " tx bytes " << tx_size << " nout " << total_nout << " nin " << tx.nin;
-
-	if (donation < min_donation && tx.donation_fp < TX_DONATION_MASK)
 	{
-		BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::TxValidate INVALID donation " << donation << " < minimum donation " << min_donation;
+		bigint_t mint_donation;
+		mint_donation = TX_CC_MINT_DONATION;
 
-		return TX_RESULT_INSUFFICIENT_DONATION;
+		if (Implement_CCMint(g_params.blockchain) && !tx.param_level)
+			mint_donation = TX_CC_MINT_AMOUNT;
+
+		if (donation != mint_donation)
+		{
+			BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::TxValidate INVALID donation " << donation << " != mint donation " << mint_donation;
+
+			return TX_RESULT_INSUFFICIENT_DONATION;
+		}
 	}
+	else
+	{
+		unsigned tx_size = sizeof(CCObject::Header) + obj->BodySize();
 
-	if (donation > min_donation * bigint_t(4UL))
-		tx.allow_restricted_addresses = false;
+		bigint_t min_donation =
+												g_blockchain.proof_params.donation_per_tx
+				+ (bigint_t)(tx_size) *			g_blockchain.proof_params.donation_per_byte
+				+ (bigint_t)(total_nout) *		g_blockchain.proof_params.donation_per_output
+				+ (bigint_t)(tx.nin) *			g_blockchain.proof_params.donation_per_input;
+
+		if (min_donation < g_blockchain.proof_params.minimum_donation)
+			min_donation = g_blockchain.proof_params.minimum_donation;
+
+		BOOST_LOG_TRIVIAL(trace) << "DbConnProcessQ::TxValidate donation " << hex << tx.donation_fp << dec << " decoded " << donation << " min_donation " << min_donation << " tx bytes " << tx_size << " nout " << total_nout << " nin " << tx.nin;
+
+		if (donation < min_donation && tx.donation_fp < TX_DONATION_MASK)
+		{
+			BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::TxValidate INVALID donation " << donation << " < minimum donation " << min_donation;
+
+			return TX_RESULT_INSUFFICIENT_DONATION;
+		}
+
+		if (donation > min_donation * bigint_t(4UL))
+			tx.allow_restricted_addresses = false;
+	}
 
 	auto last_indelible_block = g_blockchain.GetLastIndelibleBlock();
 	auto block = (Block*)last_indelible_block.data();
@@ -509,11 +527,14 @@ int ProcessTx::TxValidate(DbConn *dbconn, TxPay& tx, SmartBuf smartobj)
 		return TX_RESULT_PROOF_VERIFICATION_FAILED;
 	}
 
-	bool found_one_spent = false;
-	bool found_one_not_spent = false;
+	if (tx.tag_type == CC_TYPE_MINT)
+		return 0;
 
 	if (tx.nin == 0)
 		return 2;	// could check pseudo-serial num, but it's easier to just return next_commitnum = 0
+
+	bool found_one_spent = false;
+	bool found_one_not_spent = false;
 
 	for (unsigned i = 0; i < tx.nin; ++i)
 	{
@@ -684,6 +705,8 @@ void ProcessTx::ThreadProc()
 
 		if (conn_index)
 		{
+			if (TRACE_PROCESS) BOOST_LOG_TRIVIAL(debug) << "ProcessTx calling HandleValidateDone Conn " << conn_index << " callback_id " << callback_id << " result " << result;
+
 			auto conn = g_connregistry.GetConn(conn_index);
 
 			conn->HandleValidateDone(callback_id, result);

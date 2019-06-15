@@ -44,3 +44,4 @@ extern const RPC_Exception txrpc_invalid_address;
 extern const RPC_Exception txrpc_tx_not_in_block;
 extern const RPC_Exception txrpc_block_height_range_err;
 extern const RPC_Exception txrpc_insufficient_funds;
+extern const RPC_Exception txrpc_tx_rejected;

@@ -7,7 +7,6 @@
 */
 
 #include "CCdef.h"
-#include "CCboost.hpp"
 #include "osutil.h"
 
 volatile bool g_shutdown;
@@ -15,11 +14,6 @@ volatile bool g_shutdown;
 static mutex shutdown_mutex;
 static condition_variable shutdown_condition_variable;
 static volatile bool shutdown_done;
-
-void set_trace_level(int level)
-{
-    boost::log::core::get()->set_filter(boost::log::trivial::severity > (((int)(fatal)) - level));
-}
 
 #ifdef _WIN32
 
@@ -150,192 +144,47 @@ void ccsleep(int sec)
 		wait_for_shutdown(sec*1000);
 }
 
-static wstring get_process_dir_static()
+void set_nice(int nice)
 {
-#ifdef _WIN32
-	wstring path(MAX_PATH, 0);
-	while (true)
-	{
-		unsigned int len = GetModuleFileNameW(NULL, &path[0], static_cast< unsigned int >(path.size()));
-		if (len < path.size())
-		{
-			path.resize(len);
-			break;
-		}
-
-		if (path.size() > 65536)
-			return wstring();
-
-		path.resize(path.size() * 2);
-	}
-
-	return boost::filesystem::path(path).parent_path().wstring();
-
-#else
-
-	if (boost::filesystem::exists("/proc/self/exe"))
-		return boost::filesystem::read_symlink("/proc/self/exe").parent_path().wstring();
-
-	if (boost::filesystem::exists("/proc/curproc/file"))
-		return boost::filesystem::read_symlink("/proc/curproc/file").parent_path().wstring();
-
-	if (boost::filesystem::exists("/proc/curproc/exe"))
-		return boost::filesystem::read_symlink("/proc/curproc/exe").parent_path().wstring();
-
-	return wstring();
-#endif
-}
-
-wstring get_process_dir()
-{
-	auto dir = get_process_dir_static();
-
-	if (dir.empty())
-	{
-		BOOST_LOG_TRIVIAL(fatal) << "FATAL ERROR: Unable to get process directory";
-		exit(-1);
-		throw exception();
-		return wstring();
-	}
-
-	BOOST_LOG_TRIVIAL(debug) << "process directory = " << w2s(dir);
-
-	return dir;
-}
-
-static wstring get_app_data_dir_static(const boost::program_options::variables_map& config_options, const wstring& appname)
-{
-	wstring path;
-
-	if (config_options.count("datadir"))
-	{
-		path = config_options.at("datadir").as<wstring>();
-		//cerr << "datadir " << w2s(path) << endl;
-	}
-
-	if (path.empty())
-	{
+	if (!nice)
+		return;
 
 #ifdef _WIN32
+	auto hthread = GetCurrentThread();
+	int priority = GetThreadPriority(hthread);
 
-		path.resize(MAX_PATH);
-		if (S_OK != SHGetFolderPathW(NULL, CSIDL_LOCAL_APPDATA, NULL, SHGFP_TYPE_CURRENT, &path[0]))
-			return wstring();
+	priority -= nice;
 
-		path.resize(wcslen(path.c_str()));
+	if (priority > THREAD_PRIORITY_TIME_CRITICAL)
+		priority = THREAD_PRIORITY_TIME_CRITICAL;
+	else if (priority > THREAD_PRIORITY_HIGHEST)
+		priority = THREAD_PRIORITY_HIGHEST;
 
-		path += WIDE(PATH_DELIMITER);
+	if (priority < THREAD_PRIORITY_IDLE)
+		priority = THREAD_PRIORITY_IDLE;
+	else if (priority < THREAD_PRIORITY_LOWEST)
+		priority = THREAD_PRIORITY_LOWEST;
 
+	SetThreadPriority(hthread, priority);
 #else
+	sched_param sp;
+	sched_getparam(0, &sp);
 
-		const char *home = getenv("HOME");
-		if (!home)
-			return wstring();
-
-		path = s2w(home);
-		path += WIDE(PATH_DELIMITER);
-		path += L".";
-
-#endif
-
-		path += L"CredaCash";
-
-		if (create_directory(path))
-		{
-			BOOST_LOG_TRIVIAL(fatal) << "FATAL ERROR: Unable to create directory " << w2s(path);
-			exit(-1);
-			throw exception();
-			return wstring();
-		}
-
-		path += WIDE(PATH_DELIMITER);
-		path += appname;
-	}
-
-	if (create_directory(path))
+	if (nice < 0)
 	{
-		BOOST_LOG_TRIVIAL(fatal) << "FATAL ERROR: Unable to create directory " << w2s(path);
-		exit(-1);
-		throw exception();
-		return wstring();
+		if (sp.sched_priority > nice)
+			sp.sched_priority -= nice;
+		else if (sp.sched_priority > 1)
+			sp.sched_priority = 1;
 	}
-
-	wstring path2 = path + s2w(TOR_SUBDIR);
-	if (create_directory(path2))
+	else
 	{
-		BOOST_LOG_TRIVIAL(fatal) << "FATAL ERROR: Unable to create directory " << w2s(path2);
-		exit(-1);
-		throw exception();
-		return wstring();
+		sp.sched_priority -= nice;
+
+		if (sp.sched_priority > 99)
+			sp.sched_priority = 99;
 	}
 
-	path2 = path + s2w(TOR_HOSTNAMES_SUBDIR);
-	if (create_directory(path2))
-	{
-		BOOST_LOG_TRIVIAL(fatal) << "FATAL ERROR: Unable to create directory " << w2s(path2);
-		exit(-1);
-		throw exception();
-		return wstring();
-	}
-
-	return path;
-}
-
-wstring get_app_data_dir(const boost::program_options::variables_map& config_options, const wstring& appname)
-{
-	auto dir = get_app_data_dir_static(config_options, appname);
-
-	if (dir.empty())
-	{
-		BOOST_LOG_TRIVIAL(fatal) << "FATAL ERROR: Unable to get application data directory";
-		exit(-1);
-		throw exception();
-		return wstring();
-	}
-
-	BOOST_LOG_TRIVIAL(debug) << "application data directory = " << w2s(dir);
-
-	return dir;
-}
-
-int create_directory(const wstring& path)
-{
-
-#ifdef _WIN32
-
-	DWORD fa = GetFileAttributesW(path.c_str());
-	if ((fa == INVALID_FILE_ATTRIBUTES || !(fa & FILE_ATTRIBUTE_DIRECTORY))
-				&& !CreateDirectoryW(path.c_str(), NULL))
-		return -1;
-
-#else
-
-	if (mkdir(w2s(path).c_str(), S_IRUSR | S_IWUSR | S_IXUSR | S_IRGRP) && errno != EEXIST)
-		return -1;
-
-#endif
-
-	return 0;
-}
-
-int open_file(const wstring& path, int flags, int mode)
-{
-	//cout << "open_file " << w2s(path) << endl;
-
-#ifdef _WIN32
-	int fd = _wopen(path.c_str(), flags, mode);
-#else
-	int fd = open(w2s(path).c_str(), flags, mode);
-#endif
-
-	return fd;
-}
-
-int delete_file(const wstring& path)
-{
-#ifdef _WIN32
-	return _wunlink(path.c_str());
-#else
-	return unlink(w2s(path).c_str());
+	sched_setparam(0, &sp);
 #endif
 }

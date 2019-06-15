@@ -9,7 +9,9 @@
 #pragma once
 
 #define DB_KEY_SCHEMA			0
-#define DB_KEY_CHANGE_DEST		1
+#define DB_KEY_WALLET_ID		1
+#define DB_KEY_BLOCKCHAIN		2
+#define DB_KEY_CHANGE_DEST		3
 
 #include <CCbigint.hpp>
 

@@ -57,7 +57,7 @@ int DbConn::TransactionInsert(Transaction& tx, bool lock_optional)
 	if (dblog(sqlite3_bind_int(insert_update, 3, tx.type))) return -1;
 	if (dblog(sqlite3_bind_int(insert_update, 4, tx.status))) return -1;
 	if (dblog(sqlite3_bind_int64(insert_update, 5, tx.create_time))) return -1;
-	if (dblog(sqlite3_bind_int64(insert_update, 6, (tx.btc_block ? tx.btc_block : INT64_MAX)))) return -1;
+	if (dblog(sqlite3_bind_int64(insert_update, 6, tx.btc_block))) return -1;
 	if (dblog(sqlite3_bind_blob(insert_update, 7, &tx.donation, TX_AMOUNT_DECODED_BYTES, SQLITE_STATIC))) return -1;
 	if (tx.body.size())
 	{
@@ -68,7 +68,7 @@ int DbConn::TransactionInsert(Transaction& tx, bool lock_optional)
 		if (dblog(sqlite3_bind_null(insert_update, 8))) return -1;
 	}
 
-	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
+	if (RandTest(TEST_RANDOM_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConn::TransactionInsert simulating database error pre-insert";
 
@@ -109,7 +109,7 @@ int DbConn::TransactionSelect(sqlite3_stmt *select, Transaction& tx, bool expect
 
 	if (dblog(rc = sqlite3_step(select), DB_STMT_SELECT)) return -1;
 
-	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
+	if (RandTest(TEST_RANDOM_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConn::TransactionSelect simulating database error post-select";
 
@@ -189,7 +189,7 @@ int DbConn::TransactionSelect(sqlite3_stmt *select, Transaction& tx, bool expect
 
 	if (dblog(sqlite3_extended_errcode(Wallet_db), DB_STMT_SELECT)) return -1;	// check if error retrieving results
 
-	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
+	if (RandTest(TEST_RANDOM_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConn::TransactionSelect simulating database error post-error check";
 
@@ -201,7 +201,7 @@ int DbConn::TransactionSelect(sqlite3_stmt *select, Transaction& tx, bool expect
 	tx.type = type;
 	tx.status = status;
 	tx.create_time = create_time;
-	tx.btc_block = btc_block < INT64_MAX ? btc_block : 0;
+	tx.btc_block = btc_block;
 	memcpy(&tx.donation, donation_blob, TX_AMOUNT_DECODED_BYTES);
 	if (body)
 		tx.body = (char*)body;

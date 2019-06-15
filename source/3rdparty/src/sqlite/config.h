@@ -12,7 +12,7 @@
 
 #ifndef TEST_SQLITE_DEBUG_BUILD
 #ifdef _DEBUG
-#define TEST_SQLITE_DEBUG_BUILD			1	// for _DEBUG build
+#define TEST_SQLITE_DEBUG_BUILD			1	// for _DEBUG build (this line ok for production release)
 #else
 #define TEST_SQLITE_DEBUG_BUILD			0	// don't test
 #endif

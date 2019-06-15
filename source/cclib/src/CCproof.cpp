@@ -27,9 +27,9 @@
 //#define TEST_SKIP_ZKPROOFS			1	// for faster testing of tx handling ***NOTE: also set *_work_difficulty = 1
 
 #ifdef CC_DLL_EXPORTS
-#define TEST_SHOW_GEN_BENCHMARKS	1	// show benchmarks in DLL build; TODO: make this a json option
-#define TEST_SHOW_VERIFY_BENCHMARKS	1	// show benchmarks in DLL build
-#define TEST_DEBUG_CONSTRAINTS		1	// show constraints in DLL build
+#define TEST_SHOW_GEN_BENCHMARKS	1	// show benchmarks in DLL build; TODO: make this a json option (ok for production release)
+#define TEST_SHOW_VERIFY_BENCHMARKS	1	// show benchmarks in DLL build (ok for production release)
+#define TEST_DEBUG_CONSTRAINTS		1	// show constraints in DLL build (ok for production release)
 #endif
 
 #ifndef TEST_PUBLIC_INPUTS_UNBOUNDED
@@ -91,7 +91,7 @@ int g_multiExp_nice;		// global to set # of multiExp thread priority
 
 static ZKKeyStore keystore;
 
-CCPROOF_API CCProof_Init()
+CCPROOF_API CCProof_Init(const wstring& proof_key_dir)
 {
 	static FastSpinLock init_lock;
 
@@ -113,6 +113,8 @@ CCPROOF_API CCProof_Init()
 	//	cerr << hashbases.bigint(i) << " " << hashbases[i] << " " << BN128_FR(hashbases.bigint(i)) << endl;
 
 	keystore.Init();
+
+	keystore.SetKeyFilePath(proof_key_dir);
 
 	#if 0	// for benchmarking
 	CCProof_PreloadVerifyKeys();
@@ -2009,7 +2011,7 @@ unsigned CCProof_Compute(TxPay& tx, unsigned keyindex = -1, bool verify = false,
 		//@lock_guard<FastSpinLock> lock(g_cout_lock);
 		//@cout << "CCProof_Compute error: no key found" << endl;
 
-		return -2;
+		return CCPROOF_ERR_NO_KEY;
 	}
 
 	if (zk.nout < tx.nout || zk.nin < tx.nin || zk.nin_with_path < tx.nin_with_path)
@@ -2017,8 +2019,11 @@ unsigned CCProof_Compute(TxPay& tx, unsigned keyindex = -1, bool verify = false,
 		//@lock_guard<FastSpinLock> lock(g_cout_lock);
 		//@cout << "CCProof_Compute error: insufficient key capacity" << endl;
 
-		return -3;
+		return CCPROOF_ERR_INSUFFICIENT_KEY;
 	}
+
+	if (tx.no_proof)
+		return CCPROOF_ERR_NO_PROOF;
 
 	if (benchmark_text)
 	{
@@ -2135,13 +2140,19 @@ CCPROOF_API CCProof_GenKeys()
 
 		CCProof_Compute(tx, i, false, &benchmark_text);
 
-		auto key = keypair<ZKPAIRING>();
+		{
+			auto key = keypair<ZKPAIRING>();
 
-		auto t1 = ccticks();
-		auto elapsed = ccticks_elapsed(t0, t1);
-		cerr << "Zero knowledge proof key generated " << benchmark_text.str() << "; keyindex " << i << " elapsed time " << elapsed << " ms" << endl;
+			auto t1 = ccticks();
+			auto elapsed = ccticks_elapsed(t0, t1);
+			cerr << "Zero knowledge proof key generated " << benchmark_text.str() << "; keyindex " << i << " elapsed time " << elapsed << " ms" << endl;
 
-		keystore.SaveKeyPair(i, key);
+			keystore.SaveKeyPair(i, key);
+		}
+
+		#ifndef _WIN32
+		system("./copy_zkkeys.sh");
+		#endif
 	}
 
 	cerr << "CCProof_GenKeys done" << endl;
@@ -2236,7 +2247,7 @@ CCPROOF_API CCProof_GenProof(TxPay& tx)
 		#endif
 
 			if (!key)
-				keyindex = -4;
+				keyindex = CCPROOF_ERR_LOADING_KEY;
 			else
 			{
 				auto zkproof = proof<ZKPAIRING>(*key);
@@ -2313,7 +2324,7 @@ CCPROOF_API CCProof_VerifyProof(TxPay& tx)
 			#endif
 
 			if (!key)
-				keyindex = -4;
+				keyindex = CCPROOF_ERR_LOADING_KEY;
 			else
 				valid = snarklib::strongVerify(*key, *witness, zkproof);
 		}

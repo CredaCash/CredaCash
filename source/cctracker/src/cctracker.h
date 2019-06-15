@@ -9,13 +9,16 @@
 #pragma once
 
 #define CCAPPNAME	"CredaCash Directory Server"
-#define CCVERSION	 "0.92" //@@!
+#define CCVERSION	 "0.97" //@@!
 #define CCEXENAME	"cctracker"
 #define CCAPPDIR	"CCTracker"
 
 #include <CCdef.h>
 #include <CCboost.hpp>
+#include <apputil.h>
 #include <osutil.h>
+
+#include <boost/program_options/variables_map.hpp>
 
 extern boost::program_options::variables_map g_config_options;
 extern int g_trace_level;

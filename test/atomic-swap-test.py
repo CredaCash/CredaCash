@@ -469,7 +469,7 @@ def main(argv):
 		print ' port:'
 		print '       The standalone Tor proxy by default listens at port 9050'
 		print '       The Tor Browser bundle   by default listens at port 9150'
-		print '       Tx server on localhost   by default listens at port 9223'
+		print '       Tx server on localhost   by default listens at port 9210'
 		print
 		print ' locktime:'
 		print '       Time in seconds until sender can abort and reclaim hashlocked output'
@@ -484,7 +484,7 @@ def main(argv):
 		print '       1 = log messages to/from tx server/network'
 		print
 		print ' use_tor_proxy:'
-		print '       Defaults to 1 if port is 9050, 9150 or 9229; otherwise defaults to 0'
+		print '       Defaults to 1 if port is 9050, 9150 or 9216; otherwise defaults to 0'
 
 		exit()
 
@@ -500,7 +500,7 @@ def main(argv):
 
 	if len(argv) > 5:
 		cclib.use_tor_proxy = int(argv[5])
-	elif cclib.net_port == 9050 or cclib.net_port == 9150 or cclib.net_port == 9229:
+	elif cclib.net_port == 9050 or cclib.net_port == 9150 or cclib.net_port == 9216:
 		cclib.use_tor_proxy = True
 	else:
 		cclib.use_tor_proxy = False
@@ -518,6 +518,6 @@ def main(argv):
 		Test2WayReclaim()
 		Test2Way()
 		break
-	
+
 if __name__ == '__main__':
 	main(sys.argv)

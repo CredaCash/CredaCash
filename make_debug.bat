@@ -1,5 +1,5 @@
 set CREDACASH_BUILD=%cd:\=/%
-set CPPFLAGS=-mthreads
+set CPPFLAGS=-m64 -mthreads -fstack-protector-strong
 set LDFLAGS=-static
 set LDLIBS=-lWs2_32 -lMswsock
 cd source/3rdparty/Debug

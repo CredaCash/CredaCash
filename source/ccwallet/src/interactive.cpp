@@ -368,11 +368,16 @@ int interactive_do_json_command(const string& json, DbConn *dbconn, TxQuery& txq
 		{
 			has_result = true;
 
-			cerr << "Result:" << endl;
-			if (value.isString())
-				cerr << value.asString() << endl;
-			else
+			if (!value.isString())
+			{
+				cerr << "Result:" << endl;
 				writer.write(cerr, value);
+			}
+			else if (value.asString().length())
+			{
+				cerr << "Result:" << endl;
+				cerr << value.asString() << endl;
+			}
 		}
 
 		key = "error";

@@ -137,7 +137,7 @@ uint64_t Dir::HashIndex(const string& namestr, hostname_t& name) const
 
 uint64_t Dir::HashIndex2(const string& namestr, const hostname_t& name) const
 {
-	uint64_t hash_index = siphash(&m_hash_key[0], &name[0], sizeof(hostname_t)) % m_hash_size;
+	uint64_t hash_index = siphash_keyed(&m_hash_key[0], &name[0], sizeof(hostname_t)) % m_hash_size;
 
 	//BOOST_LOG_TRIVIAL(trace) << m_label << ": hostname " << namestr << " hashes to " << hash_index;
 

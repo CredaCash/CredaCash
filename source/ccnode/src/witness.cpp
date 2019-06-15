@@ -10,12 +10,15 @@
 #include "witness.hpp"
 #include "block.hpp"
 #include "blockchain.hpp"
+#include "processtx.hpp"
 #include "processblock.hpp"
 #include "dbconn.hpp"
 
 #include <CCobjects.hpp>
 #include <CCcrypto.hpp>
+#include <CCmint.h>
 #include <transaction.h>
+#include <blake2/blake2.h>
 #include <ed25519/ed25519.h>
 
 #define TRACE_WITNESS	(g_params.trace_witness)
@@ -85,8 +88,97 @@
 #define TEST_WITNESS_LOSS				0	// don't test
 #endif
 
-
 Witness g_witness;
+atomic<unsigned> max_mint_level(0);
+
+void IncrementOid(ccoid_t& oid)
+{
+	for (auto i = oid.rbegin(); i != oid.rend(); ++i)
+	{
+		if (++(*i))
+			return;
+	}
+}
+
+static unsigned FindBestMintTx(DbConn *dbconn, SmartBuf priorobj, uint64_t priorlevel, SmartBuf *retobj)
+{
+	auto targetlevel = priorlevel - CC_MINT_ACCEPT_SPAN;
+	if (targetlevel <= CC_MINT_ACCEPT_SPAN)
+		targetlevel = 1;
+	if (!priorlevel)
+		targetlevel = 0;
+
+	if (TRACE_WITNESS) BOOST_LOG_TRIVIAL(trace) << "Witness::FindBestMintTx priorlevel " << priorlevel << " targetlevel " << targetlevel;
+
+	if (priorlevel && priorlevel < CC_MINT_ACCEPT_SPAN)
+		return 0;
+
+	ccoid_t oid;
+	SmartBuf smartobj;
+	TxPay txbuf;
+	bool passed_zero = false;
+
+	auto block = (Block*)priorobj.data();
+	auto rc = blake2b(&oid, sizeof(oid), NULL, 0, block->TxData(), block->TxDataSize());
+	CCASSERTZ(rc);
+
+	while (true)
+	{
+		while (true)
+		{
+			while (true)
+			{
+				if (TRACE_WITNESS) BOOST_LOG_TRIVIAL(trace) << "Witness::FindBestMintTx select object oid " << buf2hex(&oid, sizeof(oid));
+
+				auto rc = dbconn->ValidObjsGetObj(oid, &smartobj, true);
+				if (!rc)
+					break;
+
+				if (passed_zero)
+					return 0;
+
+				memset(&oid, 0, sizeof(oid));
+				passed_zero = true;
+			}
+
+			// object must be a mint tx with the right param_level
+
+			auto obj = (CCObject*)smartobj.data();
+
+			memcpy(&oid, obj->OidPtr(), sizeof(oid));
+
+			if (obj->ObjType() != CC_TYPE_MINT)
+			{
+				if (TRACE_WITNESS) BOOST_LOG_TRIVIAL(trace) << "Witness::FindBestMintTx found non-mint object oid " << buf2hex(&oid, sizeof(oid));
+
+				break;
+			}
+
+			auto param_level = txpay_param_level_from_wire(obj);
+
+			if (TRACE_WITNESS) BOOST_LOG_TRIVIAL(trace) << "Witness::FindBestMintTx found mint param_level " << param_level << " oid " << buf2hex(&oid, sizeof(oid));
+
+			if (param_level != targetlevel)
+				break;
+
+			auto rc = ProcessTx::TxValidate(dbconn, txbuf, smartobj);
+			if (rc)
+			{
+				if (TRACE_WITNESS) BOOST_LOG_TRIVIAL(trace) << "Witness::FindBestMintTx TxValidate failed";
+
+				break;
+			}
+
+			*retobj = smartobj;
+
+			BOOST_LOG_TRIVIAL(info) << "Witness::FindBestMintTx returning mint param_level " << param_level << " oid " << buf2hex(&oid, sizeof(oid));
+
+			return 1;
+		}
+
+		IncrementOid(oid);
+	}
+}
 
 Witness::Witness()
  :	m_pthread(NULL),
@@ -426,6 +518,8 @@ SmartBuf Witness::FindBestBuildingBlock(SmartBuf last_indelible_block, uint64_t 
 bool Witness::AttemptNewBlock()
 {
 	SmartBuf priorobj, bestblock;
+	uint64_t priorlevel = 0;
+	bool is_ccmint = false;
 
 	uint32_t min_time = 0;
 	uint32_t max_time = 0;
@@ -497,9 +591,13 @@ bool Witness::AttemptNewBlock()
 			auto block = (Block*)priorobj.data();
 			auto wire = block->WireData();
 			auto auxp = block->AuxPtr();
-			auto skip = Block::ComputeSkip(wire->witness, witness_index, auxp->blockchain_params.nwitnesses);
+			auto skip = Block::ComputeSkip(wire->witness, witness_index, auxp->blockchain_params.next_nwitnesses);
 
-			if (TRACE_WITNESS) BOOST_LOG_TRIVIAL(trace) << "Witness::AttemptNewBlock best prior block witness " << witness_index << " maltest " << m_test_ignore_order << " best block witness " << (unsigned)wire->witness << " skip " << skip << " level " << wire->level.GetValue() << " oid " << buf2hex(&auxp->oid, sizeof(ccoid_t));
+			priorlevel = wire->level.GetValue();
+
+			is_ccmint = (Implement_CCMint(g_params.blockchain) && priorlevel < CC_MINT_COUNT + CC_MINT_ACCEPT_SPAN);
+
+			if (TRACE_WITNESS) BOOST_LOG_TRIVIAL(trace) << "Witness::AttemptNewBlock best prior block witness " << witness_index << " is_ccmint " << is_ccmint << " maltest " << m_test_ignore_order << " best block witness " << (unsigned)wire->witness << " skip " << skip << " level " << priorlevel << " oid " << buf2hex(&auxp->oid, sizeof(ccoid_t));
 
 			StartNewBlock();
 
@@ -509,24 +607,38 @@ bool Witness::AttemptNewBlock()
 			{
 				min_time = auxp->announce_time;
 
-				if (WITNESS_RANDOM_TEST_TIME < 0)
-					min_time += (skip + 1) * WITNESS_TIME_SPACING;
-				else if (WITNESS_RANDOM_TEST_TIME > 0)
-					min_time += rand() % (WITNESS_RANDOM_TEST_TIME * 2);	// double the input value so it is an average time
+				if (!is_ccmint)
+				{
+					if (WITNESS_RANDOM_TEST_TIME < 0)
+						min_time += (skip + 1) * WITNESS_TIME_SPACING;
+					else if (WITNESS_RANDOM_TEST_TIME > 0)
+						min_time += rand() % (WITNESS_RANDOM_TEST_TIME * 2);	// double the input value so it is an average time
 
-				if (ccticks_elapsed(now, min_time) > 60*60*CCTICKS_PER_SEC)
-					min_time = now;
+					if (ccticks_elapsed(now, min_time) > 60*60*CCTICKS_PER_SEC)
+						min_time = now;
+				}
 
 				//cerr << "announce " << auxp->announce_time << " skip " << skip << " min_time " << min_time << endl;
 			}
 
-			if (ccticks_elapsed(m_block_start_time, min_time) <= MIN_BLOCK_WORK_TIME && WITNESS_RANDOM_TEST_TIME < 0)
-				min_time = m_block_start_time + MIN_BLOCK_WORK_TIME;
+			if (is_ccmint)
+			{
+				min_time += (CC_MINT_BLOCK_SEC + CC_MINT_BLOCK_SEC/2) * CCTICKS_PER_SEC;
+				min_time /= CC_MINT_BLOCK_SEC * CCTICKS_PER_SEC;
+				min_time *= CC_MINT_BLOCK_SEC * CCTICKS_PER_SEC;
 
-			max_time = min_time;
-			auto delibletxs = g_blockchain.ChainHasDelibleTxs(priorobj, last_indelible_level);
-			if (!delibletxs && WITNESS_RANDOM_TEST_TIME < 0)
-				max_time += WITNESS_NO_WORK_TIME_SPACING - WITNESS_TIME_SPACING;
+				max_time = now - 1 + (1 << 31);
+			}
+			else
+			{
+				if (ccticks_elapsed(m_block_start_time, min_time) <= MIN_BLOCK_WORK_TIME && WITNESS_RANDOM_TEST_TIME < 0)
+					min_time = m_block_start_time + MIN_BLOCK_WORK_TIME;
+
+				max_time = min_time;
+				auto delibletxs = g_blockchain.ChainHasDelibleTxs(priorobj, last_indelible_level);
+				if (!delibletxs && WITNESS_RANDOM_TEST_TIME < 0)
+					max_time += WITNESS_NO_WORK_TIME_SPACING - WITNESS_TIME_SPACING;
+			}
 
 			if (!min_time)
 				min_time = 1;	// because zero means no wait
@@ -541,7 +653,17 @@ bool Witness::AttemptNewBlock()
 		CCASSERT(min_time);
 		CCASSERT(max_time);
 
-		auto rc = BuildNewBlock(min_time, max_time, priorobj);
+		while (is_ccmint && priorlevel && priorlevel < CC_MINT_COUNT && priorlevel >= max_mint_level.load())
+		{
+			if (TRACE_WITNESS) BOOST_LOG_TRIVIAL(debug) << "Witness::AttemptNewBlock BuildNewBlock witness " << WitnessIndex() << " waiting for max_mint_level; priorlevel " << priorlevel << " max_mint_level " << max_mint_level.load();
+
+			ccsleep(1);	// don't build a new block until there's a valid mint tx at the prior level
+
+			if (WitnessIndex() || g_shutdown)
+				return true;
+		}
+
+		auto rc = BuildNewBlock(min_time, max_time, priorobj, priorlevel);
 
 		if (rc == BUILD_NEWBLOCK_STATUS_ERROR)
 		{
@@ -553,6 +675,9 @@ bool Witness::AttemptNewBlock()
 		if (rc == BUILD_NEWBLOCK_STATUS_FULL)
 		{
 			if (TRACE_WITNESS) BOOST_LOG_TRIVIAL(debug) << "Witness::AttemptNewBlock BuildNewBlock is full";
+
+			while (is_ccmint && ccticks_elapsed(ccticks(), min_time) > CCTICKS_PER_SEC/2 && !g_shutdown)
+				ccsleep(1);
 
 			break;
 		}
@@ -569,6 +694,9 @@ bool Witness::AttemptNewBlock()
 
 	if (g_shutdown)
 		return true;
+
+	if (is_ccmint && (!priorlevel || priorlevel >= CC_MINT_ACCEPT_SPAN) && !m_newblock_bufpos)
+		return true;	// don't build a block without a mint tx
 
 	auto smartobj = FinishNewBlock(priorobj);
 
@@ -609,7 +737,7 @@ bool Witness::AttemptNewBlock()
 	if (TEST_PROCESS_Q)
 	{
 		// test blocks going through the Process_Q
-		m_dbconn->ProcessQEnqueueValidate(PROCESS_Q_TYPE_BLOCK, smartobj, &wire->prior_oid, wire->level.GetValue(), PROCESS_Q_STATUS_PENDING, 0, 0, 0);
+		m_dbconn->ProcessQEnqueueValidate(PROCESS_Q_TYPE_BLOCK, smartobj, &wire->prior_oid, wire->level.GetValue(), PROCESS_Q_STATUS_PENDING, -1, 0, 0);
 		// the new block needs to be placed into the blockchain before this witness attempts to create another block
 		// since we're not normally using this code path, we'll do this the easy way by just sleeping a little and hoping Process_Q is finished by then
 		usleep(200*1000);
@@ -664,9 +792,9 @@ void Witness::StartNewBlock()
 	m_dbconn->TempSerialnumClear((void*)TEMP_SERIALS_WITNESS_BLOCKP);
 }
 
-Witness::BuildNewBlockStatus Witness::BuildNewBlock(uint32_t& min_time, uint32_t max_time, SmartBuf priorobj)
+Witness::BuildNewBlockStatus Witness::BuildNewBlock(uint32_t& min_time, uint32_t max_time, SmartBuf priorobj, uint64_t priorlevel)
 {
-	if (TRACE_WITNESS) BOOST_LOG_TRIVIAL(trace) << "Witness::BuildNewBlock min_time " << min_time << " max_time " << max_time;
+	if (TRACE_WITNESS) BOOST_LOG_TRIVIAL(trace) << "Witness::BuildNewBlock min_time " << min_time << " max_time " << max_time << " priorlevel " << priorlevel;
 
 	BuildNewBlockStatus build_status = BUILD_NEWBLOCK_STATUS_OK;
 
@@ -681,11 +809,18 @@ Witness::BuildNewBlockStatus Witness::BuildNewBlock(uint32_t& min_time, uint32_t
 
 	bool test_no_delete_persistent_txs = IsMalTest();
 
+	bool is_ccmint = (Implement_CCMint(g_params.blockchain) && priorlevel < CC_MINT_COUNT + CC_MINT_ACCEPT_SPAN);
+
 	while (!g_shutdown)
 	{
 		SetNewTxWork(false);
 
-		auto ntx = m_dbconn->ValidObjsFindNew(m_newblock_next_tx_seqnum, TXARRAYSIZE, false, (uint8_t*)&txarray, TXARRAYSIZE);
+		unsigned ntx;
+
+		if (is_ccmint)
+			ntx = FindBestMintTx(m_dbconn, priorobj, priorlevel, &txarray[0]);
+		else
+			ntx = m_dbconn->ValidObjsFindNew(m_newblock_next_tx_seqnum, TXARRAYSIZE, false, (uint8_t*)&txarray, TXARRAYSIZE);
 
 		if (TRACE_WITNESS) BOOST_LOG_TRIVIAL(trace) << "Witness::BuildNewBlock witness " << witness_index << " fetched " << ntx << " potential tx's";
 
@@ -707,6 +842,9 @@ Witness::BuildNewBlockStatus Witness::BuildNewBlock(uint32_t& min_time, uint32_t
 
 				continue;
 			}
+
+			if (Implement_CCMint(g_params.blockchain) && tag == CC_TAG_MINT_WIRE && !is_ccmint)
+				continue;
 
 			auto txwire = obj->ObjPtr();
 			auto txsize = obj->ObjSize();
@@ -835,6 +973,15 @@ Witness::BuildNewBlockStatus Witness::BuildNewBlock(uint32_t& min_time, uint32_t
 			copy_to_bufp(txbody, bodysize, m_newblock_bufpos, output, bufsize);
 		}
 
+		if (is_ccmint && (m_newblock_bufpos || (priorlevel && priorlevel < CC_MINT_ACCEPT_SPAN)))
+		{
+			build_status = BUILD_NEWBLOCK_STATUS_FULL;
+			break;
+		}
+
+		if (is_ccmint && ntx)
+			continue;
+
 		if (HaveNewBlockWork())
 			break;
 
@@ -869,9 +1016,9 @@ SmartBuf Witness::FinishNewBlock(SmartBuf priorobj)
 
 	CCASSERT(witness_index >= 0);
 
-	if (witness_index >= priorauxp->blockchain_params.nwitnesses)
+	if (witness_index >= priorauxp->blockchain_params.next_nwitnesses)
 	{
-		BOOST_LOG_TRIVIAL(info) << "Witness::FinishNewBlock skipping witness " << witness_index << " because it exceeds block prior block nwitnesses " << priorauxp->blockchain_params.nwitnesses;
+		BOOST_LOG_TRIVIAL(info) << "Witness::FinishNewBlock skipping witness " << witness_index << " because it exceeds block prior block next_nwitnesses " << priorauxp->blockchain_params.next_nwitnesses;
 
 		return SmartBuf();
 	}
@@ -976,6 +1123,9 @@ SmartBuf Witness::FinishNewBlock(SmartBuf priorobj)
 
 void Witness::NotifyNewWork(bool is_block)
 {
+	if (!IsWitness())
+		return;
+
 	if (TRACE_WITNESS) BOOST_LOG_TRIVIAL(trace) << "Witness::NotifyNewWork is_block " << is_block << " waiting_on_block " << m_waiting_on_block << " waiting_on_tx " << m_waiting_on_tx;
 
 	lock_guard<mutex> lock(m_work_mutex);

@@ -10,6 +10,7 @@
 #include "CCboost.hpp"
 #include "ccserver/torservice.hpp"
 #include "tor.h"
+#include "apputil.h"
 #include "osutil.h"
 
 static const wchar_t space_char = 0xFFFF;
@@ -44,10 +45,14 @@ void tor_start(const wstring& process_dir, const wstring& tor_exe, const wstring
 {
 	CCASSERT(services.size());
 
+	bool external_tor = (tor_exe == L"external");
 	bool need_tor = need_outgoing;
 	wostringstream params;
 	wstring service_port_list;
-	params << "\"" << tor_exe << "\"";
+	if (external_tor)
+		params << "tor";
+	else
+		params << "\"" << tor_exe << "\"";
 	if (tor_config.length() && tor_config.compare(L"."))
 		params << space << "-f" << space << "\"" << tor_config << "\"";
 	params << space << "DataDirectory" << space << "\"" << app_data_dir << TOR_SUBDIR << "\"";
@@ -62,7 +67,7 @@ void tor_start(const wstring& process_dir, const wstring& tor_exe, const wstring
 
 	if (!need_tor)
 	{
-		BOOST_LOG_TRIVIAL(info) << "No tor services or outgoing proxy needed";
+		BOOST_LOG_TRIVIAL(info) << "No Tor services or outgoing proxy needed";
 		return;
 	}
 
@@ -82,6 +87,13 @@ void tor_start(const wstring& process_dir, const wstring& tor_exe, const wstring
 
 	BOOST_LOG_TRIVIAL(info) << "Tor command line: " << w2s(paramline_text);
 
+	if (external_tor)
+	{
+		BOOST_LOG_TRIVIAL(info) << "Skipping Tor launch; Tor must be launched and managed externally";
+
+		return;
+	}
+
 #ifdef _WIN32
 	PROCESS_INFORMATION pi;
 #else
@@ -100,7 +112,7 @@ void tor_start(const wstring& process_dir, const wstring& tor_exe, const wstring
 		if (! CreateProcessW(tor_exe.c_str(), &paramline_text[0], NULL, NULL, FALSE,
 				CREATE_NO_WINDOW | DEBUG_PROCESS, NULL, process_dir.c_str(), &si, &pi))
 		{
-			BOOST_LOG_TRIVIAL(error) << "Unable to start tor; error = " << GetLastError();
+			BOOST_LOG_TRIVIAL(error) << "Unable to start Tor; error = " << GetLastError();
 			ccsleep(20);
 			continue;
 		}
@@ -108,7 +120,7 @@ void tor_start(const wstring& process_dir, const wstring& tor_exe, const wstring
 		tor_running = true;
 		BOOST_LOG_TRIVIAL(info) << "Tor started";
 
-		// tor processes was created with DEBUG_PROCESS so that it will exit if this process exits
+		// Tor processes was created with DEBUG_PROCESS so that it will exit if this process exits
 		// this loop (run in a separate thread) handles and ignores all debug events coming from the subprocess
 
 		while (!g_shutdown)
@@ -174,7 +186,7 @@ void tor_start(const wstring& process_dir, const wstring& tor_exe, const wstring
 			if (*argv[i] == '"')
 				++argv[i];							// skip the leading double-quote character
 
-			//cout << "tor arg " << i << " = " << argv[i] << endl;
+			//cout << "Tor arg " << i << " = " << argv[i] << endl;
 		}
 
 		auto rc = posix_spawnp(&pid,
@@ -185,7 +197,7 @@ void tor_start(const wstring& process_dir, const wstring& tor_exe, const wstring
 				environ);						// char *const envp[restrict]
 		if (rc)
 		{
-			BOOST_LOG_TRIVIAL(error) << "Unable to start tor; error = " << rc;
+			BOOST_LOG_TRIVIAL(error) << "Unable to start Tor; error = " << rc;
 			ccsleep(20);
 			continue;
 		}

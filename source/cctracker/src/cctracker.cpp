@@ -71,7 +71,7 @@ static int process_options(int argc, char **argv)
 		("help", "Display this message.")
 		("trace", po::value<int>(&g_trace_level)->default_value(DEFAULT_TRACE_LEVEL), "Trace level (0=none; 6=all).")
 		("config", po::wvalue<wstring>(), "Path to file with additional configuration options.")
-		("port", po::value<int>(&g_port)->default_value(9221), "Port for server.")
+		("port", po::value<int>(&g_port)->default_value(9180), "Port for server.")
 		("threads", po::value<int>(&g_nthreads), "Number of threads;"
 				" default is the value returned by std::thread::hardware_concurrency,"
 				" or " DEFAULT_THREADS_PER_SERVICE " if that result is indeterminate.")

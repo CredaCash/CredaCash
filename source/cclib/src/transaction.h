@@ -18,10 +18,13 @@ struct TxInPath;
 struct SpendSecret;
 struct SpendSecretParams;
 struct AddressParams;
+class CCObject;
 
 void tx_init(TxPay& tx);
 CCRESULT txpay_create_finish(const string& fn, TxPay& tx, char *output, const uint32_t outsize);
 CCRESULT txpay_to_wire(const string& fn, const TxPay& tx, unsigned err_check, char *output, const uint32_t outsize, char *binbuf, const uint32_t binsize);
+
+uint64_t txpay_param_level_from_wire(const CCObject *obj);
 
 CCRESULT tx_from_wire(TxPay& tx, char *binbuf, const uint32_t binsize);
 
@@ -43,7 +46,7 @@ uint64_t tx_amount_encode(const snarkfront::bigint_t& amount, bool is_donation, 
 
 void tx_set_commit_iv(TxPay& tx);
 
-void tx_commit_tree_hash_leaf(const snarkfront::bigint_t& commitment, const uint64_t& leafindex, snarkfront::bigint_t& hash);
+void tx_commit_tree_hash_leaf(const snarkfront::bigint_t& commitment, const uint64_t leafindex, snarkfront::bigint_t& hash);
 void tx_commit_tree_hash_node(const snarkfront::bigint_t& val1, const snarkfront::bigint_t& val2, snarkfront::bigint_t& hash, bool skip_final_knapsack);
 
 CCRESULT tx_reset_work(const string& fn, uint64_t timestamp, char *binbuf, const uint32_t binsize);

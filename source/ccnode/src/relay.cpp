@@ -12,13 +12,16 @@
 #include "relay.hpp"
 #include "block.hpp"
 #include "blockchain.hpp"
+#include "witness.hpp"
+#include "processtx.hpp"
 #include "processblock.hpp"
 #include "transact.hpp"
 #include "hostdir.hpp"
 #include "dbconn.hpp"
+#include "dbparamkeys.h"
 
 #include <CCobjects.hpp>
-
+#include <CCmint.h>
 #include <transaction.h>
 #include <ccserver/server.hpp>
 #include <ccserver/connection_manager.hpp>
@@ -83,7 +86,7 @@ void RelayConnection::StartConnection()
 
 	db_next_new_block_seqnum = VALID_BLOCK_SEQNUM_START;			// announce existing blocks
 
-	if (g_transact_service.enabled)
+	if (g_transact_service.enabled || (Implement_CCMint(g_params.blockchain) && g_blockchain.GetLastIndelibleLevel() < CC_MINT_COUNT + CC_MINT_ACCEPT_SPAN))
 		db_next_new_tx_seqnum = 1;									// announce existing tx's (but don't announce genesis block with seqnum = 0)
 	else
 		db_next_new_tx_seqnum = DbConnValidObjs::GetNextTxSeqnum();	// don't announce existing tx's
@@ -172,7 +175,7 @@ void RelayConnection::HandleMsgReadComplete(const boost::system::error_code& e, 
 
 	m_nred += bytes_transferred;
 
-	bool sim_err = ((TEST_RANDOM_READ_ERRORS & rand()) == 1);
+	bool sim_err = RandTest(TEST_RANDOM_READ_ERRORS);
 	if (sim_err) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleMsgReadComplete simulating read error";
 
 	if (e || sim_err)
@@ -241,7 +244,7 @@ void RelayConnection::HandleMsgReadComplete(const boost::system::error_code& e, 
 
 				if (TRACE_RELAY) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleMsgReadComplete CC_MSG_HAVE_BLOCK at level " << req_params.level << " prune_level " << prune_level;
 			}
-			else
+			else if (tag == CC_MSG_HAVE_TX)
 			{
 				copy_from_buf(req_params.oid, sizeof(req_params.oid), bufpos, m_pread, msgsize);
 				copy_from_buf(req_params.level, sizeof(req_params.level), bufpos, m_pread, msgsize);
@@ -249,6 +252,8 @@ void RelayConnection::HandleMsgReadComplete(const boost::system::error_code& e, 
 
 				if (TRACE_RELAY) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleMsgReadComplete CC_MSG_HAVE_TX at param_level " << req_params.level << " size " << req_params.size << " oid " << buf2hex(&req_params.oid, sizeof(req_params.oid));
 			}
+			else
+				CCASSERT(0);
 
 			if (bufpos > msgsize)
 			{
@@ -268,6 +273,13 @@ void RelayConnection::HandleMsgReadComplete(const boost::system::error_code& e, 
 			if (tag == CC_MSG_HAVE_BLOCK && req_params.level < prune_level)
 			{
 				if (TRACE_RELAY) BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleMsgReadComplete CC_MSG_HAVE_BLOCK skipping download of block at level " << req_params.level << " prune_level " << prune_level;
+
+				continue;
+			}
+
+			if (tag == CC_MSG_HAVE_TX && SmartBuf::ByteTotal() > (g_params.max_obj_mem << 20))
+			{
+				BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleMsgReadComplete CC_MSG_HAVE_TX skipping download of tx because memory usage " << SmartBuf::ByteTotal() << " > " << (g_params.max_obj_mem << 20);
 
 				continue;
 			}
@@ -297,7 +309,7 @@ void RelayConnection::HandleMsgReadComplete(const boost::system::error_code& e, 
 
 		if (msgsize != CC_MSG_HEADER_SIZE + nobjs * sizeof(ccoid_t))
 		{
-			BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleMsgReadComplete CC_CMD_SEND_BLOCK/CC_CMD_SEND_TX tag " << tag << " error invalid msgsize " << msgsize << " (nobjs " << nobjs << " -> msgsize " << CC_MSG_HEADER_SIZE + nobjs * sizeof(ccoid_t) << ") sending CC_ERROR_BAD_CMD";
+			BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleMsgReadComplete CC_CMD_SEND_BLOCK/CC_CMD_SEND_TX tag " << tag << " error invalid msgsize " << msgsize << " (nobjs " << nobjs << " -> msgsize " << CC_MSG_HEADER_SIZE + nobjs * sizeof(ccoid_t) << ") sending CC_ERROR_BAD_CMD";
 
 			WriteAsync("RelayConnection::HandleMsgReadComplete", boost::asio::buffer(Bad_Cmd_Reply, sizeof(Bad_Cmd_Reply)),
 					boost::bind(&Connection::HandleWrite, this, boost::asio::placeholders::error, AutoCount(this)));
@@ -329,7 +341,7 @@ void RelayConnection::HandleMsgReadComplete(const boost::system::error_code& e, 
 		{
 			auto poid = m_pread + CC_MSG_HEADER_SIZE + i * sizeof(ccoid_t);
 
-			BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleMsgReadComplete CC_CMD_SEND_BLOCK/CC_CMD_SEND_TX tag " << tag << " oid " << buf2hex(poid, sizeof(ccoid_t));
+			BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleMsgReadComplete CC_CMD_SEND_BLOCK/CC_CMD_SEND_TX tag " << tag << " oid " << buf2hex(poid, sizeof(ccoid_t));
 
 			auto rc = send_queue.push(poid, sizeof(ccoid_t));
 			if (rc)
@@ -436,6 +448,7 @@ void RelayConnection::HandleMsgReadComplete(const boost::system::error_code& e, 
 		ccoid_t oid;
 		bool need_oid = true;
 
+		bool disregard_object = false;
 		int64_t priority = 0;
 		ccoid_t *prior_oid = NULL;
 		int64_t level = 0;
@@ -489,14 +502,14 @@ void RelayConnection::HandleMsgReadComplete(const boost::system::error_code& e, 
 				{
 					obj->SetObjId();
 
-					BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleMsgReadComplete received CC_TAG_TX_WIRE size " << obj->ObjSize() << " oid " << buf2hex(obj->OidPtr(), sizeof(ccoid_t));
+					BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleMsgReadComplete received CC_TAG_TX_WIRE size " << obj->ObjSize() << " oid " << buf2hex(obj->OidPtr(), sizeof(ccoid_t));
 				}
 
 				if (memcmp(&req_params.oid, obj->OidPtr(), sizeof(ccoid_t)))
 				{
-					BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleMsgReadComplete CC_TAG_TX_WIRE error next requested tx oid " << buf2hex(&req_params.oid, sizeof(ccoid_t)) << " != received oid " << buf2hex(obj->OidPtr(), sizeof(ccoid_t));
+					BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleMsgReadComplete CC_TAG_TX_WIRE error next requested tx oid " << buf2hex(&req_params.oid, sizeof(ccoid_t)) << " != received oid " << buf2hex(obj->OidPtr(), sizeof(ccoid_t));
 
-					continue;
+					continue;	// assume this requested object will not be sent, but check if the recieved object matches a later requested object
 				}
 
 				if (req_params.size != msgsize)
@@ -506,7 +519,59 @@ void RelayConnection::HandleMsgReadComplete(const boost::system::error_code& e, 
 					return Stop();
 				}
 
-				// note: we could/should check that the tx param_level matches the requested level, but we don't, so that will instead get caught if the param_level is too high and the tx fails validation
+				auto param_level = txpay_param_level_from_wire(obj);
+				if (param_level == (uint64_t)(-1))
+				{
+					BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleMsgReadComplete CC_TAG_TX_WIRE error invalid tx size " << obj->DataSize();
+
+					return Stop();
+				}
+
+				if (req_params.level != param_level)
+				{
+					BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleMsgReadComplete CC_TAG_TX_WIRE error expected param_level " << req_params.level << " != received param_level " << param_level;
+
+					return Stop();
+				}
+
+				if (Implement_CCMint(g_params.blockchain))
+				{
+					auto block_level = g_blockchain.GetLastIndelibleLevel();
+
+					if (tag == CC_TAG_MINT_WIRE)
+					{
+						if (!param_level
+							||	(param_level == 1 &&				block_level > CC_MINT_ACCEPT_SPAN + 1)
+							||	(param_level  > 1 &&				param_level + CC_MINT_ACCEPT_SPAN + 1 < block_level)
+							||										param_level	>= CC_MINT_COUNT
+							||										param_level	> block_level + 1
+							||	(g_witness.WitnessIndex() == 0 &&	param_level	> block_level))
+						{
+							BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleMsgReadComplete CC_TAG_MINT_WIRE INVALID param level " << param_level << " for mint tx at blockchain level " << block_level;
+
+							disregard_object = true;
+
+							break;
+						}
+					}
+					else
+					{
+						if (param_level < CC_MINT_COUNT + CC_MINT_ACCEPT_SPAN)
+						{
+							BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleMsgReadComplete CC_TAG_TX_WIRE INVALID param level " << param_level << " for non-mint tx at blockchain level " << block_level;
+
+							disregard_object = true;
+
+							break;
+						}
+					}
+				}
+				else if (tag == CC_TAG_MINT_WIRE && !IsTestnet(g_params.blockchain))
+				{
+					BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleMsgReadComplete CC_TAG_MINT_WIRE INVALID on non-testnet";
+
+					return Stop();
+				}
 
 				if (tx_set_work_internal((char*)(obj->ObjPtr()), obj->OidPtr(), 0, TX_POW_NPROOFS, 1, g_params.tx_work_difficulty))
 				{
@@ -518,8 +583,37 @@ void RelayConnection::HandleMsgReadComplete(const boost::system::error_code& e, 
 					return Stop();
 				}
 
-				static atomic<int64_t> lowpriority(int64_t(1) << 60);
-				priority = lowpriority.fetch_add(1);
+				auto mint_level = max_mint_level.load();
+
+				if (Implement_CCMint(g_params.blockchain) && tag == CC_TAG_MINT_WIRE)
+				{
+					if (g_witness.WitnessIndex() == 0 && (param_level == mint_level || (param_level == 1 && mint_level <= CC_MINT_ACCEPT_SPAN)))
+					{
+						// check if this is a valid mint tx at the next higher level
+
+						TxPay txbuf;
+
+						auto rc = ProcessTx::TxValidate(relay_dbconn, txbuf, smartobj);
+						if (rc)
+						{
+							BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleMsgReadComplete CC_TAG_MINT_WIRE INVALID mint tx at mint level " << mint_level;
+
+							disregard_object = true;
+
+							break;
+						}
+						else
+						{
+							if (max_mint_level.compare_exchange_strong(mint_level, mint_level + 1))
+								BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleMsgReadComplete CC_TAG_MINT_WIRE set max_mint_level = " << mint_level + 1;
+						}
+					}
+
+					relay_dbconn->ParameterIncrement(DB_KEY_CCMINT_COUNT, param_level);
+				}
+
+				static atomic<int64_t> low_tx_priority(int64_t(1) << 60);
+				priority = low_tx_priority.fetch_add(1);
 
 				break;
 			}
@@ -537,33 +631,33 @@ void RelayConnection::HandleMsgReadComplete(const boost::system::error_code& e, 
 						return Stop();
 					}
 
-					BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleMsgReadComplete received CC_TAG_BLOCK size " << obj->ObjSize() << " prior oid " << buf2hex(&wire->prior_oid, sizeof(ccoid_t));
+					BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleMsgReadComplete received CC_TAG_BLOCK size " << obj->ObjSize() << " prior oid " << buf2hex(&wire->prior_oid, sizeof(ccoid_t));
 				}
 
 				if (memcmp(&req_params.prior_oid, &wire->prior_oid, sizeof(ccoid_t)))
 				{
-					BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleMsgReadComplete CC_TAG_BLOCK error next requested block prior oid " << buf2hex(&req_params.prior_oid, sizeof(ccoid_t)) << " != received block prior oid " << buf2hex(&wire->prior_oid, sizeof(ccoid_t));
+					BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleMsgReadComplete CC_TAG_BLOCK error next requested block prior oid " << buf2hex(&req_params.prior_oid, sizeof(ccoid_t)) << " != received block prior oid " << buf2hex(&wire->prior_oid, sizeof(ccoid_t));
 
 					continue;
 				}
 
 				if (req_params.level != wire->level.GetValue())
 				{
-					BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleMsgReadComplete CC_TAG_BLOCK error requested block level " << req_params.level << " != received block level " << wire->level.GetValue();
+					BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleMsgReadComplete CC_TAG_BLOCK error requested block level " << req_params.level << " != received block level " << wire->level.GetValue();
 
 					continue;
 				}
 
 				if (req_params.witness != wire->witness)
 				{
-					BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleMsgReadComplete CC_TAG_BLOCK error requested block witness " << (unsigned)req_params.witness << " != received block witness " << (unsigned)wire->witness;
+					BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleMsgReadComplete CC_TAG_BLOCK error requested block witness " << (unsigned)req_params.witness << " != received block witness " << (unsigned)wire->witness;
 
 					continue;
 				}
 
 				if (req_params.size != msgsize)
 				{
-					BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleMsgReadComplete CC_TAG_BLOCK error expected size " << req_params.size << " != received size " << msgsize;
+					BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleMsgReadComplete CC_TAG_BLOCK error expected size " << req_params.size << " != received size " << msgsize;
 
 					continue;
 				}
@@ -582,7 +676,7 @@ void RelayConnection::HandleMsgReadComplete(const boost::system::error_code& e, 
 
 				if (memcmp(&req_params.oid, &oid, sizeof(ccoid_t)))
 				{
-					BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleMsgReadComplete CC_TAG_BLOCK error requested block size " << block->ObjSize() << " oid " << buf2hex(&req_params.oid, sizeof(ccoid_t)) << "!= computed oid " << buf2hex(&oid, sizeof(ccoid_t));
+					BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleMsgReadComplete CC_TAG_BLOCK error requested block size " << block->ObjSize() << " oid " << buf2hex(&req_params.oid, sizeof(ccoid_t)) << "!= computed oid " << buf2hex(&oid, sizeof(ccoid_t));
 					//BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleMsgReadComplete block dump " << buf2hex(block, block->ObjSize());
 
 					continue;
@@ -601,8 +695,8 @@ void RelayConnection::HandleMsgReadComplete(const boost::system::error_code& e, 
 
 				auxp->announce_time = req_params.announce_time;
 
-				static atomic<int64_t> hipriority(VALID_BLOCK_SEQNUM_START);
-				priority = hipriority.fetch_add(1);
+				static atomic<int64_t> low_block_priority(1);
+				priority = low_block_priority.fetch_add(1);
 
 				prior_oid = &wire->prior_oid;
 				level = wire->level.GetValue();
@@ -611,17 +705,33 @@ void RelayConnection::HandleMsgReadComplete(const boost::system::error_code& e, 
 			}
 		}
 
-		BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleMsgReadComplete CC_TAG_BLOCK/CC_TAG_TX_WIRE received obj bufp " << (uintptr_t)smartobj.BasePtr() << " tag " << obj->ObjTag() << " size " << obj->ObjSize() << " oid " << buf2hex(obj->OidPtr(), sizeof(ccoid_t));
+		if (disregard_object)
+		{
+			BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleMsgReadComplete CC_TAG_TX_WIRE disregarding received obj bufp " << (uintptr_t)smartobj.BasePtr() << " tag " << obj->ObjTag() << " size " << obj->ObjSize() << " oid " << buf2hex(obj->OidPtr(), sizeof(ccoid_t));
+
+			break;
+		}
+
+		BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleMsgReadComplete CC_TAG_BLOCK/CC_TAG_TX_WIRE received obj bufp " << (uintptr_t)smartobj.BasePtr() << " tag " << obj->ObjTag() << " size " << obj->ObjSize() << " oid " << buf2hex(obj->OidPtr(), sizeof(ccoid_t));
 
 		relay_dbconn->RelayObjsSetStatus(*obj->OidPtr(), RELAY_STATUS_DOWNLOADED, 0);
 
-		relay_dbconn->ProcessQEnqueueValidate((tag == CC_TAG_BLOCK ? PROCESS_Q_TYPE_BLOCK : PROCESS_Q_TYPE_TX), smartobj, prior_oid, level, PROCESS_Q_STATUS_PENDING, priority, m_conn_index, m_use_count.load());
+		if (Implement_CCMint(g_params.blockchain) && tag == CC_TAG_MINT_WIRE)
+		{
+			auto rc = relay_dbconn->ValidObjsInsert(smartobj);
+			if (rc < 0)
+				BOOST_LOG_TRIVIAL(error) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleMsgReadComplete ValidObjsInsert failed";
+			else
+				g_witness.NotifyNewWork(false);
+		}
+		else
+			relay_dbconn->ProcessQEnqueueValidate((tag == CC_TAG_BLOCK ? PROCESS_Q_TYPE_BLOCK : PROCESS_Q_TYPE_TX), smartobj, prior_oid, level, PROCESS_Q_STATUS_PENDING, priority, m_conn_index, m_use_count.load());
 
 		break;
 	}
 
 	default:
-		BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleMsgReadComplete error unrecognized message tag " << tag;
+		BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleMsgReadComplete error unrecognized message tag " << tag;
 		break;
 	}
 
@@ -640,7 +750,7 @@ void RelayConnection::CheckToSend()
 		return;
 	}
 
-	if (TRACE_RELAY) BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " RelayConnection::CheckToSend";
+	if (TRACE_RELAY) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " RelayConnection::CheckToSend";
 
 	while (true)
 	{
@@ -652,7 +762,7 @@ void RelayConnection::CheckToSend()
 			auto oidp = send_queue.pop(sizeof(ccoid_t));
 			if (!oidp)
 			{
-				if (TRACE_RELAY) BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " RelayConnection::CheckToSend nothing in queue";
+				if (TRACE_RELAY) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " RelayConnection::CheckToSend nothing in queue";
 
 				send_one.clear();
 
@@ -662,7 +772,7 @@ void RelayConnection::CheckToSend()
 			memcpy(&oid, oidp, sizeof(ccoid_t));
 		}
 
-		if ((TEST_RANDOM_NO_SEND & rand()) == 1)
+		if (RandTest(TEST_RANDOM_NO_SEND))
 		{
 			BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " RelayConnection::CheckToSend test skipping send of object oid " << buf2hex(&oid, sizeof(ccoid_t));
 
@@ -713,7 +823,7 @@ void RelayConnection::CheckToSend()
 			break;
 		}
 
-		if ((TEST_CUZZ & rand()) == 1) sleep(1);
+		if (RandTest(TEST_CUZZ)) sleep(1);
 
 		if (WriteAsync("RelayConnection::CheckToSend", boost::asio::buffer(obj->ObjPtr(), size),
 				boost::bind(&RelayConnection::HandleObjWrite, this, boost::asio::placeholders::error, smartobj, AutoCount(this))))
@@ -740,7 +850,7 @@ void RelayConnection::HandleObjWrite(const boost::system::error_code& e, SmartBu
 
 	if (TRACE_RELAY) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " RelayConnection::CheckToSend HandleObjWrite " << e << " " << e.message();
 
-	bool sim_err = ((TEST_RANDOM_WRITE_ERRORS & rand()) == 1);
+	bool sim_err = RandTest(TEST_RANDOM_WRITE_ERRORS);
 	if (sim_err) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleObjWrite simulating write error";
 
 	if (e || sim_err)
@@ -842,7 +952,7 @@ void RelayConnection::HandleSendMsgWrite(const boost::system::error_code& e, Aut
 	if (CheckOpCount(pending_op_counter))
 		return;
 
-	bool sim_err = ((TEST_RANDOM_WRITE_ERRORS & rand()) == 1);
+	bool sim_err = RandTest(TEST_RANDOM_WRITE_ERRORS);
 	if (sim_err) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleSendMsgWrite simulating write error";
 
 	if (e || sim_err)
@@ -905,7 +1015,7 @@ void RelayConnection::HandleAnnounceMsgWrite(const boost::system::error_code& e,
 	if (CheckOpCount(pending_op_counter))
 		return;
 
-	bool sim_err = ((TEST_RANDOM_WRITE_ERRORS & rand()) == 1);
+	bool sim_err = RandTest(TEST_RANDOM_WRITE_ERRORS);
 	if (sim_err) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleAnnounceMsgWrite simulating write error";
 
 	if (e || sim_err)
@@ -1210,7 +1320,7 @@ void RelayService::PrivateConnectOutgoing(int peer)
 			host.erase(colon);
 		}
 		if (!port)
-			port = DEFAULT_BASE_PORT + atoi(PRIVRELAY_PORT);
+			port = g_params.base_port + PRIVRELAY_PORT;
 
 		connection = m_service.GetServer(0).Connect(host, port, use_tor);
 	}

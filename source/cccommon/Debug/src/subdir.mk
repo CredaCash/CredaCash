@@ -10,6 +10,7 @@ CPP_SRCS += \
 ../src/CCticks.cpp \
 ../src/CCutil.cpp \
 ../src/SmartBuf.cpp \
+../src/apputil.cpp \
 ../src/dblog.cpp \
 ../src/osutil.cpp \
 ../src/socks.cpp \
@@ -22,6 +23,7 @@ OBJS += \
 ./src/CCticks.o \
 ./src/CCutil.o \
 ./src/SmartBuf.o \
+./src/apputil.o \
 ./src/dblog.o \
 ./src/osutil.o \
 ./src/socks.o \
@@ -34,6 +36,7 @@ CPP_DEPS += \
 ./src/CCticks.d \
 ./src/CCutil.d \
 ./src/SmartBuf.d \
+./src/apputil.d \
 ./src/dblog.d \
 ./src/osutil.d \
 ./src/socks.d \
@@ -44,7 +47,7 @@ CPP_DEPS += \
 src/%.o: ../src/%.cpp
 	@echo 'Building file: $<'
 	@echo 'Invoking: Cross G++ Compiler'
-	g++ -std=c++11 -D_DEBUG=1 -I$(CREDACASH_BUILD)/source/cccommon/src -I$(CREDACASH_BUILD)/source/3rdparty/src -I$(CREDACASH_BUILD)/depends -I$(CREDACASH_BUILD)/depends/boost -O0 -g3 -fno-omit-frame-pointer -fno-optimize-sibling-calls -Wall -Wextra $(CPPFLAGS) -c -m64 -fmessage-length=0 -Wno-unused-parameter -Werror=sign-compare -isystem $(CREDACASH_BUILD)/depends/boost -MMD -MP -MF"$(@:%.o=%.d)" -MT"$(@)" -o "$@" "$<"
+	g++ -std=c++11 -D_DEBUG=1 -I$(CREDACASH_BUILD)/source/cccommon/src -I$(CREDACASH_BUILD)/source/3rdparty/src -I$(CREDACASH_BUILD)/depends -I$(CREDACASH_BUILD)/depends/boost -O0 -g3 -fno-omit-frame-pointer -fno-optimize-sibling-calls -Wall -Wextra $(CPPFLAGS) -c -fmessage-length=0 -Wno-unused-parameter -Werror=sign-compare -isystem $(CREDACASH_BUILD)/depends/boost -MMD -MP -MF"$(@:%.o=%.d)" -MT"$(@)" -o "$@" "$<"
 	@echo 'Finished building: $<'
 	@echo ' '
 

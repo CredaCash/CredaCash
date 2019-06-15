@@ -50,6 +50,9 @@
 using namespace std;
 using namespace snarkfront;
 
+#define CONCAT_TOKENS(a,b)		a##b
+#define WIDE(x)					CONCAT_TOKENS(L,x)
+
 #define CCRESULT std::int32_t
 
 #ifdef CC_DLL_EXPORTS

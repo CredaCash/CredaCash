@@ -28,6 +28,7 @@ private:
 	void HandleReadComplete();
 	void HandleMsgReadComplete(const boost::system::error_code& e, size_t bytes_transferred, SmartBuf smartobj, AutoCount pending_op_counter);
 	void HandleTx(SmartBuf smartobj);
+	void SendValidateResult(int64_t result);
 	bool SetValidationTimer(uint32_t callback_id, unsigned sec);
 	void HandleValidationTimeout(uint32_t callback_id, const boost::system::error_code& e, AutoCount pending_op_counter);
 	void HandleTxQueryParams(const char *msg, unsigned size);
@@ -35,6 +36,7 @@ private:
 	void HandleTxQueryInputs(const char *msg, unsigned size);
 	void HandleTxQuerySerials(const char *msg, unsigned size);
 	void SendReply(ostringstream& os);
+	void SendObjectNotValid();
 	void SendBlockchainNumberError();
 	void SendTooManyObjectsError();
 	void SendServerError(unsigned line);

@@ -179,6 +179,9 @@ public:
 	static int DecodeDestination(const string& encoded, uint64_t& dest_chain, snarkfront::bigint_t& destination);
 
 	static string GetNewPassphrase(const char *use);
+	static string GetPassphrase(const char *use);
+
+	static void GenerateMasterSecret(string& encrypted_master_secret, string& passphrase);
 
 	static void CreateBaseSecrets(DbConn *dbconn);
 

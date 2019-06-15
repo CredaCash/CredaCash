@@ -8,6 +8,12 @@
 
 #pragma once
 
+#define MAINNET_BLOCKCHAIN		1
+#define TESTNET_BLOCKCHAIN_LO	1000
+#define TESTNET_BLOCKCHAIN_HI	1999
+
+#define IsTestnet(chain)		((chain) >= TESTNET_BLOCKCHAIN_LO && (chain) <= TESTNET_BLOCKCHAIN_HI)
+
 #define TX_TYPE_BITS		16		// for future use
 #define TX_CHAIN_BITS		32		// for future use
 #define TX_REVISION_BITS	32		// for future use
@@ -33,11 +39,11 @@
 #define TX_MAX_SECRET_SLOTS			(TX_MAX_SECRETS + 1)	// 8 slots, 1 for restricted addresses only, 5 for secrets only, 2 can be used for either
 #define TX_MAX_RESTRICTED_ADDRESSES	6		// must be <= 2*(TX_MAX_SECRET_SLOTS-1)
 
-#define TX_CC_MINT_AMOUNT	"200000000000000000000000000000000"
-#define TX_CC_MINT_DONATION	"199000000000000000000000000000000"
+#define TX_CC_MINT_AMOUNT	"50000000000000000000000000000000"
+#define TX_CC_MINT_DONATION	"49000000000000000000000000000000"
 #define TX_CC_MINT_EXPONENT	22
 #define TX_MINT_NOUT		1					// number of outputs in a TX_MINT
-#define TX_MINT_ZKKEY_ID	0
+#define TX_MINT_ZKKEY_ID	15					//@@! change to 0 for final release?
 
 #define TX_MERKLE_DEPTH				40
 

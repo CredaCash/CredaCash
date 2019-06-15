@@ -53,7 +53,7 @@ class Witness
 	};
 
 	void StartNewBlock();
-	BuildNewBlockStatus BuildNewBlock(uint32_t& min_time, uint32_t max_time, SmartBuf priorobj);
+	BuildNewBlockStatus BuildNewBlock(uint32_t& min_time, uint32_t max_time, SmartBuf priorobj, uint64_t priorlevel);
 	SmartBuf FinishNewBlock(SmartBuf priorobj);
 
 	mutex m_work_mutex;

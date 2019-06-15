@@ -9,6 +9,7 @@
 #include "ccnode.h"
 #include "blockchain.hpp"
 #include "block.hpp"
+#include "mints.hpp"
 #include "witness.hpp"
 #include "commitments.hpp"
 #include "processblock.hpp"
@@ -16,8 +17,9 @@
 
 #include <CCobjects.hpp>
 #include <CCcrypto.hpp>
+#include <CCmint.h>
 #include <transaction.h>
-#include <osutil.h>
+#include <apputil.h>
 
 #include <blake2/blake2.h>
 #include <ed25519/ed25519.h>
@@ -38,11 +40,16 @@
 #define O_BINARY 0
 #endif
 
+#define CC_MINT_POW_FACTOR	4		// additional POW difficulty during mint
+
 static const char private_key_file_prefix[] = "private_signing_key_witness_";
 
-static const uint32_t genesis_file_tag = 0x00474343;	// BBG\0 in little endian format
+static const uint32_t genesis_file_tag = 0x01474343;	// CCG\1 in little endian format
 
 BlockChain g_blockchain;
+
+uint16_t genesis_nwitnesses;
+uint16_t genesis_maxmal;
 
 static DbConn *Wal_dbconn = NULL;	// not thread safe
 
@@ -74,6 +81,17 @@ void BlockChain::Init()
 	proof_params.outvalmax = 23;
 	proof_params.invalmax = 23;
 
+	SmartBuf genesis_block;
+
+	SetupGenesisBlock(&genesis_block);
+
+	if (!genesis_block)
+	{
+		const char *msg = "FATAL ERROR BlockChain::Init error creating genesis block";
+
+		return g_blockchain.SetFatalError(msg);
+	}
+
 	uint64_t last_indelible_level;
 
 	auto rc = dbconn->BlockchainSelectMax(last_indelible_level);
@@ -86,30 +104,51 @@ void BlockChain::Init()
 
 	if (rc)
 	{
-		// create genesis block
-
-		auto genesis_block = m_last_indelible_block;
-
-		CCASSERT(!genesis_block);
-
-		SetupGenesisBlock(&genesis_block);
-
-		if (!genesis_block)
-		{
-			const char *msg = "FATAL ERROR BlockChain::Init error creating genesis block";
-
-			return g_blockchain.SetFatalError(msg);
-		}
+		auto rc = SaveGenesisHash(dbconn, genesis_block);
+		if (rc) return;
 
 		TxPay txbuf;
 
 		g_processblock.ValidObjsBlockInsert(dbconn, genesis_block, txbuf, true);
 
 		//return g_blockchain.SetFatalError("test abort after genesis block");
+
+		if (Implement_CCMint(g_params.blockchain) && g_witness.WitnessIndex() == 0)
+		{
+			SmartBuf smartobj(4096);
+			auto obj = (CCObject*)smartobj.data();
+
+			auto f = fopen("first_mint.dat", "rb");
+			CCASSERT(f);
+
+			auto n = fread(obj->ObjPtr(), 1, smartobj.size() - sizeof(CCObject::Preamble), f);
+			CCASSERT(n);
+
+			fclose(f);
+
+			CCASSERT(obj->IsValid());
+
+			obj->SetObjId();
+
+			auto rc = dbconn->ValidObjsInsert(smartobj);
+			CCASSERTZ(rc);
+		}
 	}
 	else
 	{
 		BOOST_LOG_TRIVIAL(info) << "BlockChain::Init last indelible level " << last_indelible_level;
+
+		rc = CheckGenesisHash(dbconn, genesis_block);
+		if (rc) return;
+
+		if (Implement_CCMint(g_params.blockchain) && last_indelible_level >= CC_MINT_COUNT + CC_MINT_ACCEPT_SPAN)
+		{
+			BOOST_LOG_TRIVIAL(info) << "BlockChain::Init resetting tx_work_difficulty";
+
+			g_params.tx_work_difficulty *= CC_MINT_POW_FACTOR;
+		}
+
+		max_mint_level = last_indelible_level;
 
 		m_startup_prune_level = last_indelible_level;
 
@@ -197,8 +236,20 @@ void BlockChain::SetupGenesisBlock(SmartBuf *retobj)
 		return g_blockchain.SetFatalError(msg);
 	}
 
+	genesis_nwitnesses = auxp->blockchain_params.nwitnesses;
+	genesis_maxmal = auxp->blockchain_params.maxmal;
+
+	if (Implement_CCMint(g_params.blockchain))
+	{
+		auxp->blockchain_params.nwitnesses = auxp->blockchain_params.next_nwitnesses = 1;
+		auxp->blockchain_params.maxmal = auxp->blockchain_params.next_maxmal = 0;
+
+		g_params.tx_work_difficulty /= CC_MINT_POW_FACTOR;	// make POW more difficult during mint
+	}
+
 	auxp->SetConfSigs();
 
+	BOOST_LOG_TRIVIAL(info) << "BlockChain::SetupGenesisBlock blockchain = " << g_params.blockchain;
 	BOOST_LOG_TRIVIAL(info) << "BlockChain::SetupGenesisBlock nwitnesses = " << auxp->blockchain_params.nwitnesses;
 	BOOST_LOG_TRIVIAL(info) << "BlockChain::SetupGenesisBlock maxmal = " << auxp->blockchain_params.maxmal;
 	BOOST_LOG_TRIVIAL(info) << "BlockChain::SetupGenesisBlock nseqconfsigs = " << auxp->blockchain_params.nseqconfsigs;
@@ -224,6 +275,10 @@ void BlockChain::CreateGenesisDataFiles()
 	auto rc = write(fd_pub, &genesis_file_tag, sizeof(genesis_file_tag));
 	if (errno) perror(NULL);
 	CCASSERT(rc == sizeof(genesis_file_tag));
+
+	rc = write(fd_pub, &g_params.blockchain, sizeof(g_params.blockchain));
+	if (errno) perror(NULL);
+	CCASSERT(rc == sizeof(g_params.blockchain));
 
 	datum = GENESIS_NWITNESSES;
 	rc = write(fd_pub, &datum, sizeof(datum));
@@ -259,8 +314,8 @@ void BlockChain::CreateGenesisDataFiles()
 		close(fd_priv);
 		if (errno) perror(NULL);
 
-		//@@! don't log the private key in the final release
-		if (TRACE_SIGNING) BOOST_LOG_TRIVIAL(debug) << "BlockChain::CreateGenesisDataFiles generated witness " << i << " signing public key " << buf2hex(&privkey, sizeof(privkey));
+		// don't log the private key in the final release
+		//if (TRACE_SIGNING) BOOST_LOG_TRIVIAL(debug) << "BlockChain::CreateGenesisDataFiles generated witness " << i << " signing private key " << buf2hex(&privkey, sizeof(privkey));
 		if (TRACE_SIGNING) BOOST_LOG_TRIVIAL(debug) << "BlockChain::CreateGenesisDataFiles generated witness " << i << " signing public key " << buf2hex(&pubkey, sizeof(pubkey));
 	}
 
@@ -272,8 +327,6 @@ void BlockChain::CreateGenesisDataFiles()
 
 bool BlockChain::LoadGenesisDataFiles(BlockAux* auxp)
 {
-	//@@! for now, all witness private signing keys are in the same file; this will change in the final release
-
 	auto fd = open_file(g_params.genesis_data_file, O_BINARY | O_RDONLY);
 	if (fd == -1)
 	{
@@ -282,9 +335,13 @@ bool BlockChain::LoadGenesisDataFiles(BlockAux* auxp)
 		return true;
 	}
 
+	blake2b_ctx ctx;
+	int rc = blake2b_init(&ctx, sizeof(auxp->block_hash), NULL, 0);
+	CCASSERTZ(rc);
+
 	uint32_t datum;
 
-	auto rc = read(fd, &datum, sizeof(datum));
+	rc = read(fd, &datum, sizeof(datum));
 	if (rc != sizeof(datum))
 		goto genesis_read_error;
 
@@ -295,7 +352,12 @@ bool BlockChain::LoadGenesisDataFiles(BlockAux* auxp)
 		return true;
 	}
 
+	rc = read(fd, &g_params.blockchain, sizeof(g_params.blockchain));
+	if (rc != sizeof(g_params.blockchain))
+		goto genesis_read_error;
+
 	rc = read(fd, &datum, sizeof(datum));
+	blake2b_update(&ctx, &datum, sizeof(datum));
 	if (rc != sizeof(datum))
 		goto genesis_read_error;
 
@@ -303,6 +365,7 @@ bool BlockChain::LoadGenesisDataFiles(BlockAux* auxp)
 	auxp->blockchain_params.next_nwitnesses	= datum;
 
 	rc = read(fd, &datum, sizeof(datum));
+	blake2b_update(&ctx, &datum, sizeof(datum));
 	if (rc != sizeof(datum))
 		goto genesis_read_error;
 
@@ -312,6 +375,7 @@ bool BlockChain::LoadGenesisDataFiles(BlockAux* auxp)
 	for (int i = 0; i < auxp->blockchain_params.nwitnesses; ++i)
 	{
 		rc = read(fd, &auxp->blockchain_params.signing_keys[i], sizeof(auxp->blockchain_params.signing_keys[i]));
+		blake2b_update(&ctx, &auxp->blockchain_params.signing_keys[i], sizeof(auxp->blockchain_params.signing_keys[i]));
 		//cerr << "read pubkey " << i << " rc " << rc << " errno " << errno << endl;
 		if (rc != sizeof(auxp->blockchain_params.signing_keys[i]))
 			goto genesis_read_error;
@@ -319,14 +383,25 @@ bool BlockChain::LoadGenesisDataFiles(BlockAux* auxp)
 		if (TRACE_SIGNING) BOOST_LOG_TRIVIAL(debug) << "BlockChain::LoadGenesisDataFiles witness " << i << " signing public key " << buf2hex(&auxp->blockchain_params.signing_keys[i], sizeof(auxp->blockchain_params.signing_keys[i]));
 	}
 
+	char byte;
+	rc = read(fd, &byte, sizeof(byte));
+	if (rc != 0)
+	{
+		BOOST_LOG_TRIVIAL(fatal) << "BlockChain::LoadGenesisDataFiles unexpected extra data in genesis file";
+
+		return true;
+	}
+
 	close(fd);
 
-	if (g_witness.witness_index < 0)
+	blake2b_final(&ctx, &auxp->block_hash);
+
+	if (!IsWitness())
 		return false;
 
 	for (int i = 0; i < auxp->blockchain_params.nwitnesses; ++i)
 	{
-		if (i == g_witness.witness_index || TEST_SIM_ALL_WITNESSES)
+		if (i == g_witness.WitnessIndex() || TEST_SIM_ALL_WITNESSES)
 		{
 			char pname[80];
 			sprintf(pname, "%s%i.dat", private_key_file_prefix, i);
@@ -356,7 +431,7 @@ bool BlockChain::LoadGenesisDataFiles(BlockAux* auxp)
 
 			close(fd);
 
-			//@@! don't log the private key in the final release
+			// don't log the private key in the final release
 			if (TRACE_SIGNING) BOOST_LOG_TRIVIAL(debug) << "BlockChain::LoadGenesisDataFiles witness " << i << " signing private key " << buf2hex(&auxp->witness_params.next_signing_private_key[keynum], sizeof(auxp->witness_params.next_signing_private_key[keynum]));
 		}
 	}
@@ -368,6 +443,65 @@ genesis_read_error:
 	BOOST_LOG_TRIVIAL(fatal) << "BlockChain::LoadGenesisDataFiles error reading file \"" << w2s(g_params.genesis_data_file) << "\"; " << strerror(errno);
 
 	return true;
+}
+
+int BlockChain::SaveGenesisHash(DbConn *dbconn, SmartBuf genesis_block)
+{
+	if (TRACE_BLOCKCHAIN) BOOST_LOG_TRIVIAL(trace) << "BlockChain::SaveGenesisHash";
+
+	auto block = (Block*)genesis_block.data();
+	auto auxp = block->AuxPtr();
+
+	auto rc = dbconn->BeginWrite();
+	if (rc) goto genesis_save_err;
+
+	rc = dbconn->ParameterInsert(DB_KEY_GENESIS_HASH, 0, &auxp->block_hash, sizeof(auxp->block_hash));
+	if (rc) goto genesis_save_err;
+
+	rc = dbconn->EndWrite(true);
+	if (rc) goto genesis_save_err;
+
+	dbconn->ReleaseMutex();
+
+	return CheckGenesisHash(dbconn, genesis_block);
+
+genesis_save_err:
+	const char *msg = "FATAL ERROR BlockChain::SaveGenesisHash error saving genesis block hash";
+
+	g_blockchain.SetFatalError(msg);
+
+	return -1;
+}
+
+int BlockChain::CheckGenesisHash(DbConn *dbconn, SmartBuf genesis_block)
+{
+	if (TRACE_BLOCKCHAIN) BOOST_LOG_TRIVIAL(trace) << "BlockChain::CheckGenesisHash";
+
+	block_hash_t check;
+
+	auto rc = dbconn->ParameterSelect(DB_KEY_GENESIS_HASH, 0, &check, sizeof(check));
+	if (rc)
+	{
+		const char *msg = "FATAL ERROR BlockChain::CheckGenesisHash error retrieving genesis block hash";
+
+		g_blockchain.SetFatalError(msg);
+
+		return -1;
+	}
+
+	auto block = (Block*)genesis_block.data();
+	auto auxp = block->AuxPtr();
+
+	if (memcmp(&check, &auxp->block_hash, sizeof(auxp->block_hash)))
+	{
+		const char *msg = "FATAL ERROR BlockChain::CheckGenesisHash genesis block hash mismatch";
+
+		g_blockchain.SetFatalError(msg);
+
+		return -1;
+	}
+
+	return 0;
 }
 
 void BlockChain::RestoreLastBlocks(DbConn *dbconn, uint64_t last_indelible_level)
@@ -504,13 +638,10 @@ bool BlockChain::DoConfirmationLoop(DbConn *dbconn, SmartBuf newobj, TxPay& txbu
 	auto block = (Block*)newobj.data();
 	auto wire = block->WireData();
 
-	bool fullcheckpoint = true;
+	bool fullcheckpoint = false;
 
-	if (IsWitness())
-	{
-		if (wire->witness != (unsigned)g_witness.witness_index)
-			fullcheckpoint = false;
-	}
+	if (IsWitness() && wire->witness == (unsigned)g_witness.WitnessIndex())
+		fullcheckpoint = true;
 
 	bool have_new = false;
 
@@ -637,6 +768,13 @@ bool BlockChain::DoConfirmOne(DbConn *dbconn, SmartBuf newobj, TxPay& txbuf)
 
 	if (TRACE_BLOCKCHAIN) BOOST_LOG_TRIVIAL(trace) << "BlockChain::DoConfirmOne new indelible block level " << wire->level.GetValue() << " witness " << (unsigned)wire->witness << " oid " << buf2hex(&auxp->oid, sizeof(ccoid_t)) << " prior oid " << buf2hex(&wire->prior_oid, sizeof(ccoid_t));
 
+	if (Implement_CCMint(g_params.blockchain) && wire->level.GetValue() == CC_MINT_COUNT + CC_MINT_ACCEPT_SPAN)
+	{
+		BOOST_LOG_TRIVIAL(info) << "BlockChain::DoConfirmOne new indelible block level " << wire->level.GetValue() << " resetting tx_work_difficulty";
+
+		g_params.tx_work_difficulty *= CC_MINT_POW_FACTOR;
+	}
+
 	return SetNewlyIndelibleBlock(dbconn, lastobj, txbuf);
 }
 
@@ -762,10 +900,11 @@ bool BlockChain::IndexTxs(DbConn *dbconn, SmartBuf smartobj, TxPay& txbuf)
 	auto bufp = smartobj.BasePtr();
 	auto block = (Block*)smartobj.data();
 	auto wire = block->WireData();
+	auto level = wire->level.GetValue();
 	auto pdata = block->TxData();
 	auto pend = block->ObjEndPtr();
 
-	if (TRACE_SERIALNUM_CHECK) BOOST_LOG_TRIVIAL(trace) << "BlockChain::IndexTxs block level " << wire->level.GetValue() << " bufp " << (uintptr_t)bufp << " objsize " << block->ObjSize() << " pdata " << (uintptr_t)pdata << " pend " << (uintptr_t)pend;
+	if (TRACE_SERIALNUM_CHECK) BOOST_LOG_TRIVIAL(trace) << "BlockChain::IndexTxs block level " << level << " bufp " << (uintptr_t)bufp << " objsize " << block->ObjSize() << " pdata " << (uintptr_t)pdata << " pend " << (uintptr_t)pend;
 
 	while (pdata < pend)
 	{
@@ -827,7 +966,7 @@ bool BlockChain::IndexTxs(DbConn *dbconn, SmartBuf smartobj, TxPay& txbuf)
 
 		for (unsigned i = 0; i < txbuf.nout; ++i)
 		{
-			auto rc = IndexTxOutputs(dbconn, txbuf, txbuf.outputs[i]);
+			auto rc = IndexTxOutputs(dbconn, level, txbuf, txbuf.outputs[i]);
 			if (rc)
 			{
 				const char *msg = "FATAL ERROR BlockChain::IndexTxs error in TxOutputsInsert";
@@ -863,15 +1002,18 @@ void BlockChain::CheckCreatePseudoSerialnum(TxPay& txbuf, const void *wire, cons
 	if (TRACE_SERIALNUM_CHECK) BOOST_LOG_TRIVIAL(trace) << "BlockChain::CheckCreatePseudoSerialnum created serialnum " << buf2hex(&txbuf.inputs[0].S_serialnum, sizeof(txbuf.inputs[0].S_serialnum)) << " from tx size " << obj->BodySize() << " param_level " << txbuf.param_level << " address[0] " << buf2hex(&txbuf.outputs[0].M_address, sizeof(txbuf.outputs[0].M_address)) << " commitment[0] " << buf2hex(&txbuf.outputs[0].M_commitment, sizeof(txbuf.outputs[0].M_commitment));
 }
 
-bool BlockChain::IndexTxOutputs(DbConn *dbconn, const TxPay& tx, const TxOut& txout)
+bool BlockChain::IndexTxOutputs(DbConn *dbconn, const uint64_t level, const TxPay& tx, const TxOut& txout)
 {
-	if (TRACE_BLOCKCHAIN) BOOST_LOG_TRIVIAL(trace) << "BlockChain::IndexTxOutputs";
-
 	auto commitnum = g_commitments.GetNextCommitnum(true);
+
+	if (TRACE_BLOCKCHAIN) BOOST_LOG_TRIVIAL(trace) << "BlockChain::IndexTxOutputs level " << level << " commitnum " << commitnum;
 
 	auto rc = g_commitments.AddCommitment(dbconn, commitnum, txout.M_commitment);
 	if (rc)
 		return true;
+
+	if (Implement_CCMint(g_params.blockchain) && level <= 1)
+		return false;
 
 	uint32_t pool;
 	if (TEST_EXTRA_ON_WIRE)
@@ -884,6 +1026,45 @@ bool BlockChain::IndexTxOutputs(DbConn *dbconn, const TxPay& tx, const TxOut& tx
 
 	if (!txout.no_address)
 		dbconn->TxOutputsInsert(&txout.M_address, TX_ADDRESS_BYTES, pool, txout.M_asset_enc, txout.M_amount_enc, tx.param_level, commitnum);	// if this fails, we can still continue
+
+	if (!Implement_CCMint(g_params.blockchain) || tx.tag_type != CC_TYPE_MINT)
+		return false;
+
+	for (unsigned i = 0; i < 2; ++i)
+	{
+		unsigned index = (level % (MINT_OUTPUTS/2)) + i * (MINT_OUTPUTS/2);
+
+		const bigint_t& dest = mint_outputs[index];
+		const bigint_t amount = (i ? bigint_t("9000000000000000000000000000000") : bigint_t("40000000000000000000000000000000"));
+		const uint32_t pool = (i ? g_params.default_pool : CC_MINT_FOUNDATION_POOL);
+		const uint64_t asset = 0;
+		const uint32_t paynum = 0;
+
+		bigint_t addr, commitment;
+
+		auto amount_fp = tx_amount_encode(amount, false, TX_AMOUNT_BITS, TX_AMOUNT_EXPONENT_BITS, TX_CC_MINT_EXPONENT, TX_CC_MINT_EXPONENT);
+
+		compute_address(dest, g_params.blockchain, paynum, addr);
+
+		compute_commitment(tx.M_commitment_iv, dest, paynum, pool, asset, amount_fp, commitment);
+
+		auto commitnum = g_commitments.GetNextCommitnum(true);
+
+		//cerr << "mint level " << level << " index " << index << " amount_fp " << amount_fp << hex
+		//		<< "\n\t\t\t dest " << dest << " addr " << addr
+		//		<< "\n\t\t\t commitment " << commitment << " commitnum " << dec << commitnum << endl;
+
+		auto rc = g_commitments.AddCommitment(dbconn, commitnum, commitment);
+		if (rc)
+			return true;
+
+		if (g_params.index_mint_donations || level <= (MINT_OUTPUTS/2) + CC_MINT_ACCEPT_SPAN)	// index at least one tx to each mint address
+		{
+			const bool enc_flag = 1;	// 1 if values are not encrypted
+
+			dbconn->TxOutputsInsert(&addr, TX_ADDRESS_BYTES, (pool << 1) | enc_flag, asset, amount_fp, tx.param_level, commitnum);	// if this fails, we can still continue
+		}
+	}
 
 	return false;
 }

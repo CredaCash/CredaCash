@@ -7,13 +7,8 @@
 */
 
 #include "cclib.h"
+#include "CCboost.hpp"
 #include "zkkeys.hpp"
-
-//#define TEST_PREFIX_ZKKEY_PATHS	1	// for development
-
-#ifndef TEST_PREFIX_ZKKEY_PATHS
-#define TEST_PREFIX_ZKKEY_PATHS	0	// don't test
-#endif
 
 static mutex keylock;
 
@@ -40,12 +35,13 @@ void ZKKeyStore::Init(bool reset)
 	if (nproof)
 		return;
 
-	nproof = (4 * 2 + 8) + (5 * 2 + 5);	// all keys, for testing
-	nproof = 4 * 2;		// @@! for beta release
-	//nproof = 2;			// for testing
+	nproof = (4 * 2 + 8) + (5 * 2 + 5);	// all keys, for testing and keygen
+	//nproof = (4 * 2 + 8);				// all keys with full merkle paths // !!!!! comment out for keygen
+	//nproof = 4 * 2;					// for beta release
 
-	nproofsave = 4 * 2 + 8;
-	nproofsave = nproof;	// for releases with smaller keysets, and for benchmarking
+	nproofsave = 4;						// keep memory requirement low //@@! make this a config option?
+	nproofsave = nproof;				// for releases with smaller keysets, and for benchmarking
+	nproofsave = 0;						// !!!!! for keygen
 
 	keytable.resize(nproof);
 	workorder.resize(nproof);
@@ -121,35 +117,51 @@ void ZKKeyStore::Init(bool reset)
 	//	cerr << "workorder[" << i << "] = keytable index " << workorder[i] << " work " << keytable[workorder[i]].work << endl;
 }
 
-string ZKKeyStore::GetKeyFileName(const unsigned keyindex, bool verify)
+static wstring key_path;
+
+void ZKKeyStore::SetKeyFilePath(const wstring& path)
 {
-	string name;
-
-	if (TEST_PREFIX_ZKKEY_PATHS)
-	{
-		name += PATH_DELIMITER;
-		name += "CredaCash";
-		name += PATH_DELIMITER;
-	}
-
-	name += "zkkeys";			// !!! make this configuable?
-	name += PATH_DELIMITER;
-	name += "CC-ZK-";
-	if (verify)
-		name += "Verify";
+	if (path.length())
+		key_path = path;
 	else
-		name += "Prove";
+	{
+#ifdef _WIN32
+		auto env = _wgetenv(WIDE(KEY_PATH_ENV_VAR));
+		if (env)
+			key_path = env;
+#else
+		auto env = secure_getenv(KEY_PATH_ENV_VAR);
+		if (env)
+			key_path = s2w(env);
+#endif
+	}
+}
 
-	name += "-Key-";
-	name += to_string(keytable[keyindex].keyid);
-	name += "-";
-	name += to_string(keytable[keyindex].nout);
-	name += "-";
-	name += to_string(keytable[keyindex].nin_with_path);
-	name += "-";
-	name += to_string(keytable[keyindex].nin - keytable[keyindex].nin_with_path);
-	name += ".dat";
-	name += "b";	// @@! remove this for release keygen
+wstring ZKKeyStore::GetKeyFileName(const unsigned keyindex, bool verify)
+{
+	wstring name = key_path;
+
+	if (!name.length())
+		name = L"zkkeys";
+
+	name += WIDE(PATH_DELIMITER);
+	name += L"CC-ZK-";
+	if (verify)
+		name += L"Verify";
+	else
+		name += L"Prove";
+
+	name += L"-Key-";
+	name += to_wstring(keytable[keyindex].keyid);
+	name += L"-";
+	name += to_wstring(keytable[keyindex].nout);
+	name += L"-";
+	name += to_wstring(keytable[keyindex].nin_with_path);
+	name += L"-";
+	name += to_wstring(keytable[keyindex].nin - keytable[keyindex].nin_with_path);
+	name += L".dat";
+
+	//cerr << "key file " << w2s(name) << endl;
 
 	return name;
 }
@@ -160,10 +172,9 @@ void ZKKeyStore::SaveKeyPair(const unsigned keyindex, const Keypair<ZKPAIRING>& 
 {
 	CCASSERT(keyindex < nproof);
 
-	string name;
-	ofstream fs;
+	boost::filesystem::ofstream fs;
 
-	name = GetKeyFileName(keyindex, false);
+	auto name = GetKeyFileName(keyindex, false);
 	fs.open(name, fstream::binary | fstream::out);
 	CCASSERT(fs.is_open());
 	keypair.pk().marshal_out_rawspecial(fs);
@@ -200,12 +211,12 @@ shared_ptr<const ZKKeyStore::ProveKey> ZKKeyStore::LoadProofKey(const unsigned k
 		return NULL;
 	}
 
-	ifstream fs;
-	string name = GetKeyFileName(keyindex, false);
+	boost::filesystem::ifstream fs;
+	auto name = GetKeyFileName(keyindex, false);
 	fs.open(name, fstream::binary | fstream::in);
 	if (!fs.is_open())
 	{
-		//cerr << "LoadProofKey error opening file (file not found?) " << name << endl;
+		//cerr << "LoadProofKey error opening file (file not found?) " << w2s(name) << endl;
 
 		return NULL;
 	}
@@ -215,12 +226,12 @@ shared_ptr<const ZKKeyStore::ProveKey> ZKKeyStore::LoadProofKey(const unsigned k
 	fs.close();
 	if (!rc || fs.bad())
 	{
-		cerr << "*** error reading proof key file " << name << endl;
+		cerr << "*** error reading proof key file " << w2s(name) << endl;
 
 		return NULL;
 	}
 
-	//@cerr << "loaded proof key index " << keyindex << " file " << name << endl;
+	//@cerr << "loaded proof key index " << keyindex << " file " << w2s(name) << endl;
 
 	if (keyindex < nproofsave)
 		proofkey[keyindex] = key;
@@ -254,8 +265,8 @@ bool ZKKeyStore::LoadVerifyKey(const unsigned keyid)
 	if (verifykey[keyid])
 		return false;
 
-	ifstream fs;
-	string name = GetKeyFileName(keyid, true);
+	boost::filesystem::ifstream fs;
+	auto name = GetKeyFileName(keyid, true);
 	fs.open(name, fstream::binary | fstream::in);
 
 	snarklib::PPZK_VerificationKey<ZKPAIRING> vk;
@@ -265,11 +276,11 @@ bool ZKKeyStore::LoadVerifyKey(const unsigned keyid)
 	if (!rc || fs.bad())
 		return true;
 
-	//@cerr << "preprocessing verify keyid " << keyid << " file " << name << endl;
+	//@cerr << "preprocessing verify keyid " << keyid << " file " << w2s(name) << endl;
 
 	verifykey[keyid] = shared_ptr<VerifyKey>(new VerifyKey(vk));
 
-	//cerr << "done preprocessing verify keyid " << keyid << " file " << name << endl;
+	//cerr << "done preprocessing verify keyid " << keyid << " file " << w2s(name) << endl;
 
 	return false;
 }

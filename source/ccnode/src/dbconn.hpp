@@ -189,7 +189,6 @@ public:
 	void WalStopCheckpointing();
 
 	void WalStartCheckpoint(bool full);
-	void WalWaitForFullCheckpoint();
 };
 
 class DbConnPersistData : protected DbConnBasePersistData
@@ -200,6 +199,7 @@ class DbConnPersistData : protected DbConnBasePersistData
 	sqlite3_stmt *Persistent_Data_commit;
 	sqlite3_stmt *Parameters_insert;
 	sqlite3_stmt *Parameters_select;
+	sqlite3_stmt *Parameters_increment;
 	sqlite3_stmt *Blockchain_insert;
 	sqlite3_stmt *Blockchain_select_max;
 	sqlite3_stmt *Blockchain_select;
@@ -234,6 +234,7 @@ public:
 	void ReleaseMutex();
 
 	int ParameterInsert(int key, int subkey, void *value, unsigned valsize);
+	int ParameterIncrement(int key, int subkey);
 	int ParameterSelect(int key, int subkey, void *value, unsigned bufsize, bool add_terminator = false, unsigned *retsize = NULL);
 	int BlockchainInsert(uint64_t level, SmartBuf smartobj);
 	int BlockchainSelect(uint64_t level, SmartBuf *retobj);
@@ -265,11 +266,6 @@ public:
 	static void PersistentData_StartCheckpoint(bool full)
 	{
 		Persistent_Wal.WalStartCheckpoint(full);
-	}
-
-	static void PersistentData_WaitForFullCheckpoint()
-	{
-		Persistent_Wal.WalWaitForFullCheckpoint();
 	}
 };
 
@@ -403,7 +399,7 @@ public:
 	static int64_t GetNextTxSeqnum();
 
 	int ValidObjsInsert(SmartBuf smartobj);
-	int ValidObjsGetObj(const ccoid_t& oid, SmartBuf *retobj);
+	int ValidObjsGetObj(const ccoid_t& oid, SmartBuf *retobj, bool or_greater = false);
 	unsigned ValidObjsFindNew(int64_t& next_seqnum, unsigned limit, bool want_msgs, uint8_t *output, unsigned bufsize);
 
 	int ValidObjsDeleteObj(SmartBuf smartobj);

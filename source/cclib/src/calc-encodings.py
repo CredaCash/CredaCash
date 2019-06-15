@@ -6,7 +6,7 @@
  # calc-encodings.py
 #
 
-# make base26, base58, base64 and base64url encoding tables
+# make base26, base57, base64 and base64url encoding tables
 
 print 'const unsigned char base64[64] ='
 outs = '{'
@@ -82,35 +82,35 @@ for i in range(ord('-'), ord('z') + 1):
 print outs + '};'
 print
 
-print 'const unsigned char base58[58] ='
+print 'const unsigned char base57[57] ='
 outs = '{'
 conv = {}
 c = 'A'
-for i in range(58):
+for i in range(57):
 	conv[c] = i
 	outs += "'" + c + "'"
-	if i < 57:
+	if i < 56:
 		outs += ','
-	if c == 'H':
+	if c == 'H':		# skip I (capital letter I)
 		c = 'J'
-	elif c == 'N':
+	elif c == 'N':		# skip O (capital letter O)
 		c = 'P'
 	elif c == 'Z':
 		c = 'a'
-	elif c == 'k':
+	elif c == 'k':		# skip l (lower case letter L)
 		c = 'm'
-	elif c == 'z':
-		c = '1'
+	elif c == 'z':		# skip 0, 1 (digits 0, 1)
+		c = '2'
 	else:
 		c = chr(ord(c) + 1)
 print outs + '};'
 print
 
-print 'const unsigned char base58int[' + str(ord('z') - ord('1') + 3) + '] ='
+print 'const unsigned char base57int[' + str(ord('z') - ord('2') + 3) + '] ='
 outs = '{'
-outs += "'1',"	# first entry is lowest index
+outs += "'2',"	# first entry is lowest index
 outs += "'z',"	# second entry is highest index
-for i in range(ord('1'), ord('z') + 1):
+for i in range(ord('2'), ord('z') + 1):
 	c = chr(i)
 	if c in conv:
 		outs += str(conv[c])

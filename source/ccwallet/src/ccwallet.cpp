@@ -15,6 +15,7 @@
 #include "secrets.hpp"
 #include "billets.hpp"
 #include "polling.hpp"
+#include "txrpc.h"
 
 #include <CCproof.h>
 #include <transaction.hpp>
@@ -27,6 +28,7 @@
 
 #include <boost/program_options/options_description.hpp>
 #include <boost/program_options/parsers.hpp>
+#include <boost/program_options/errors.hpp>
 
 #define TRANSACT_HOSTS		"transact_tor_hosts.lis"
 
@@ -37,7 +39,7 @@ void set_service_configs()
 	g_tor_services.push_back(&g_rpc_service);
 	g_tor_services.push_back(&g_tor_control_service);
 
-	TorService::SetPorts(g_tor_services, g_params.base_port);
+	TorService::SetPorts(g_tor_services, g_params.base_port + WALLET_RPC_PORT);
 
 	g_params.torproxy_port = g_tor_services[g_tor_services.size()-1]->port + 1;
 
@@ -55,9 +57,10 @@ static void do_show_config()
 	cout << "Configuration settings:" << endl;
 	cout << "   process directory = " << w2s(g_params.process_dir) << endl;
 	cout << "   data directory = " << w2s(g_params.app_data_dir) << endl;
+	cout << "   proof key directory = " << w2s(g_params.proof_key_dir) << endl;
 	cout << "   wallet file = " << g_params.wallet_file << endl;
-	cout << "   path to tor exe = " << w2s(g_params.tor_exe) << endl;
-	cout << "   path to tor config file = " << w2s(g_params.tor_config) << endl;
+	cout << "   path to Tor exe = " << w2s(g_params.tor_exe) << endl;
+	cout << "   path to Tor config file = " << w2s(g_params.tor_config) << endl;
 	cout << "   base port = " << g_params.base_port << endl;
 	cout << endl;
 	if (!g_params.transact_tor)
@@ -65,10 +68,10 @@ static void do_show_config()
 		cout << "   transaction server ip address = " << g_params.transact_host << endl;
 		cout << "   transaction server port = " << g_params.transact_port << endl;
 	}
-	cout << "   access transaction server via tor = " << g_params.transact_tor << endl;
+	cout << "   access transaction server via Tor = " << g_params.transact_tor << endl;
 	if (g_params.transact_tor)
 	{
-		cout << "   new tor circuit for each query = " << yesno(g_params.transact_tor_single_query) << endl;
+		cout << "   new Tor circuit for each query = " << yesno(g_params.transact_tor_single_query) << endl;
 		cout << "   path to file of transaction server hostnames = " << w2s(g_params.transact_tor_hosts_file) << endl;
 	}
 	cout << "   transaction query retries = " << g_params.tx_query_retries << endl;
@@ -104,6 +107,9 @@ static void do_show_config()
 
 static void check_config_values()
 {
+	if (g_params.blockchain < 1 || (g_params.blockchain > (TX_CHAIN_BITS < 64 ? ((uint64_t)1 << TX_CHAIN_BITS) - 1 : (uint64_t)(-1))))
+		throw range_error("Invalid value for blockchain");
+
 	if (g_params.secret_gen_time < 1 || g_params.secret_gen_time > 16383)					// matches generate_master_secret()
 		throw range_error("New secret generation time not in valid range");
 
@@ -128,7 +134,7 @@ static void check_config_values()
 	if (g_params.polling_threads < 0 || g_params.polling_threads > 1000)
 		throw range_error("Number of transaction polling threads not in valid range");
 
-	if (g_params.base_port < 1 || g_params.base_port > 0xFFFF - atoi(TOR_PORT))
+	if (g_params.base_port < 1 || g_params.base_port > 0xFFFF - TOR_PORT)
 		throw range_error("baseport value not in valid range");
 
 	if (g_rpc_service.max_inconns < 0 || g_rpc_service.max_inconns > 100000)
@@ -150,13 +156,11 @@ static int process_options(int argc, char **argv)
 		("interactive", "Run the wallet in interactive mode after executing the command line.")
 		;
 
-	if (atoi(WALLET_RPC_PORT) != 0)
-		CCASSERT("expected WALLET_RPC_PORT == 0");
-
 	po::options_description advanced_options("ADVANCED OPTIONS", 99, 0);
 	advanced_options.add_options()
 		("config", po::wvalue<wstring>(), "Path to file with additional configuration options.")
-		("datadir", po::wvalue<wstring>(), "Path to program data directory (default: \""
+		("blockchain", po::value<uint64_t>(&g_params.blockchain)->default_value(MAINNET_BLOCKCHAIN), "Numeric identifier for blockchain; from " STRINGIFY(TESTNET_BLOCKCHAIN_LO) " to " STRINGIFY(TESTNET_BLOCKCHAIN_HI) " is a test network.")
+		("datadir", po::wvalue<wstring>(&g_params.app_data_dir), "Path to program data directory (default: \""
 #if _WIN32
 				"%LOCALAPPDATA%\\CredaCash\\" CCAPPDIR "\").")
 #else
@@ -165,13 +169,16 @@ static int process_options(int argc, char **argv)
 		("wallet-file", po::value<string>(&g_params.wallet_file)->default_value("CCWallet"), "Wallet filename.")
 		("secret-generation-ms", po::value<int>(&g_params.secret_gen_time)->default_value(4000), "Number of millseconds to expend generating a new secret.")
 		("secret-generation-memory", po::value<int>(&g_params.secret_gen_memory)->default_value(10), "Memory (MB) used to generate a new secret.")
-		("baseport", po::value<int>(&g_params.base_port)->default_value(DEFAULT_BASE_PORT), "Base port for wallet interfaces\n"
-			"(wallet interfaces use ports baseport through baseport+" TOR_PORT ").")
+		("proof-key-dir", po::wvalue<wstring>(&g_params.proof_key_dir), "Path to zero knowledge proof keys; if set to \"env\", the environment variable " KEY_PATH_ENV_VAR " is used (default: the subdirectory \"" ZK_KEY_DIR "\" in same directory as this program).")
+		("baseport", po::value<int>(&g_params.base_port)->default_value(0), (string("Base port for wallet interfaces\n")
+			+ "(default: " STRINGIFY(BASE_PORT) "+(blockchain*10 modulo " + to_string(BASE_PORT_TOP-BASE_PORT) + ")"
+			"; wallet interfaces use ports baseport+" STRINGIFY(WALLET_RPC_PORT) " through baseport+" STRINGIFY(TOR_PORT) ").").c_str())
 
 		("transact-host", po::value<string>(&g_params.transact_host)->default_value(LOCALHOST), "IP address of transaction support server.\n"
 			"If transact-tor = 1, then this value is ignored and transact-tor-hosts-file is used instead.")
-		("transact-port", po::value<int>(&g_params.transact_port)->default_value(9223), "Port of transaction support server.\n"
-			"If transact-tor = 1, then this value is ignored and transact-tor-hosts-file is used instead.")
+		("transact-port", po::value<int>(&g_params.transact_port)->default_value(0), "Port of transaction support server.\n"
+			"If transact-tor = 1, then this value is ignored and transact-tor-hosts-file is used instead"
+			" (default: baseport).")
 		("transact-tor", po::value<bool>(&g_params.transact_tor)->default_value(false), "Connect to transaction support server via Tor.")
 		("transact-tor-single-query", po::value<bool>(&g_params.transact_tor_single_query)->default_value(false), "Create a new Tor circuit for each transaction server query (slower but more private).")
 		("transact-tor-hosts-file", po::wvalue<wstring>(&g_params.transact_tor_hosts_file), "Path to file with transaction server Tor hostnames (default: \"" TRANSACT_HOSTS "\" in same directory as this program).")
@@ -198,16 +205,16 @@ static int process_options(int argc, char **argv)
 		("wallet-rpc-conns", po::value<int>(&g_rpc_service.max_inconns)->default_value(20), "Maximum number of incoming connections for transaction support service.")
 		("wallet-rpc-threads", po::value<float>(&g_rpc_service.threads_per_conn)->default_value(1), "Threads per connection for transaction support service.")
 
-		//("control", po::value<bool>(&g_control_service.enabled)->default_value(0), "Allow other programs to control node operation (at port baseport+" NODE_CONTROL_PORT ").")
+		//("control", po::value<bool>(&g_control_service.enabled)->default_value(0), "Allow other programs to control node operation (at port baseport+" STRINGIFY(NODE_CONTROL_PORT) ").")
 		//("control-addr", po::value<string>(&g_control_service.address_string)->default_value(LOCALHOST), "Network address for node control service;\n"
 		//		"by default, this service is available from the localhost only;\n"
 		//		"this setting can be used to bind to another address for access via the local network or internet.")
 		//("control-password", po::value<string>(&g_control_service.password_string), "SHA1 hash of password to access node control service (default: no password required).")
 		//("control-tor", po::value<bool>(&g_control_service.tor_service)->default_value(0), "Make the node control port available through a Tor hidden service.")
 		//("control-tor-auth", po::value<string>(&g_control_service.tor_auth_string)->default_value("v3"), "Tor hidden service authentication method (none, basic, or v3).")
-		("tor-exe", po::wvalue<wstring>(&g_params.tor_exe), "Path to Tor executable (default: \"" TOR_EXE "\" in same directory as this program).")
+		("tor-exe", po::wvalue<wstring>(&g_params.tor_exe), "Path to Tor executable; if set to \"external\", Tor is not launched by this program, and must be launched and managed externally (default: \"" TOR_EXE "\" in same directory as this program).")
 		("tor-config", po::wvalue<wstring>(&g_params.tor_config), "Path to Tor configuration file (default: \"" TOR_CONFIG "\" in same directory as this program).")
-		("tor-control", po::value<bool>(&g_tor_control_service.enabled)->default_value(0), "Allow other programs to control Tor (at port baseport+" TOR_CONTROL_PORT ").")
+		("tor-control", po::value<bool>(&g_tor_control_service.enabled)->default_value(0), "Allow other programs to control Tor (at port baseport+" STRINGIFY(TOR_CONTROL_PORT) ").")
 		("tor-control-addr", po::value<string>(&g_tor_control_service.address_string)->default_value(LOCALHOST), "Network address for node control service;\n"
 				"by default, this service is available from the localhost only;\n"
 				"this setting can be used to bind to another address for access via the local network or internet.")
@@ -236,6 +243,9 @@ static int process_options(int argc, char **argv)
 		("command", po::value< vector<string> >())
 		("rpcuser", po::value<string>(&g_rpc_service.user_string))
 		("rpcpassword", po::value<string>(&g_rpc_service.pass_string))
+		("initial-master-secret", po::value<string>(&g_params.initial_master_secret))
+		("initial-master-secret-passphrase", po::value<string>(&g_params.initial_master_secret_passphrase))
+		("foundation-wallet", po::value<bool>(&g_params.foundation_wallet)->default_value(0))
 	;
 
 	po::positional_options_description positional_options;
@@ -296,7 +306,7 @@ static int process_options(int argc, char **argv)
 	if (!g_params.transact_tor_hosts_file.length())
 		g_params.transact_tor_hosts_file = g_params.process_dir + WIDE(PATH_DELIMITER) + s2w(TRANSACT_HOSTS);
 
-	g_lpc_service.max_outconns = g_params.polling_threads + 1;
+	g_lpc_service.max_outconns = 1 + g_params.polling_threads + CC_MINT_MAX_THREADS;
 
 	// polling_table[secret type][last_receive>0][list elements][period/endtime]
 		//#define SECRET_TYPE_SEND_ADDRESS			13	// + paynum if known
@@ -360,11 +370,21 @@ static int process_options(int argc, char **argv)
 		r++;
 	g_params.polling_table[a][r] = g_params.polling_table[a][0];
 
-	g_params.app_data_dir = get_app_data_dir(g_params.config_options, WIDE(CCAPPDIR));
+	get_proof_key_dir(g_params.proof_key_dir, g_params.process_dir);
+
+	string def = CCAPPDIR;
+	expand_percent(def, g_params.blockchain);
+	get_app_data_dir(g_params.app_data_dir, def);
 	if (!g_params.app_data_dir.length())
 		throw runtime_error("No data directory specified");
 
 	g_rpc_service.address_string = LOCALHOST; // for now, only allow RPC on localhost
+
+	if (!g_params.base_port)
+		g_params.base_port = BASE_PORT + ((g_params.blockchain * 10) % (BASE_PORT_TOP - BASE_PORT));
+
+	if (!g_params.transact_port)
+		g_params.transact_port = g_params.base_port;
 
 	set_service_configs();
 
@@ -378,7 +398,9 @@ static int process_options(int argc, char **argv)
 
 static int set_rpc_auth_string()
 {
-	wstring fname = g_params.app_data_dir + s2w(PATH_DELIMITER) + L".cookie";
+	// note that the "cookie" is not an HTTP cookie; it is an HTTP Basic Authentication user:password
+	// this basically duplicates bitcoin, i.e, "__cookie__:" + 256-bit random saved in file ".cookie"
+
 	string cookie;
 
 	if (g_rpc_service.pass_string.length())
@@ -392,13 +414,9 @@ static int set_rpc_auth_string()
 
 		cookie = "__cookie__:";
 		cookie += buf2hex(r, sizeof(r), 0);
-
-		if (g_params.interactive)
-		{
-			lock_guard<FastSpinLock> lock(g_cout_lock);
-			cerr << "RPC service username and password saved in file " << w2s(fname) << endl;
-		}
 	}
+
+	wstring fname = g_params.app_data_dir + s2w(PATH_DELIMITER) + L".cookie";
 
 	BOOST_LOG_TRIVIAL(info) << "Saving RCP user and password to file " << fname;
 	//BOOST_LOG_TRIVIAL(info) << "RCP cookie = " << cookie;	// logging this would be a security leak
@@ -432,10 +450,13 @@ static int set_rpc_auth_string()
 
 	//BOOST_LOG_TRIVIAL(info) << "RCP Authorization string = " << g_rpc_service.auth_string;	// logging this would be a security leak
 
+	lock_guard<FastSpinLock> lock(g_cout_lock);
+	cerr << "RPC service username and password saved in file " << w2s(fname) << endl;
+
 	return 0;
 }
 
-#if 0
+#if 0 // not used
 	for (unsigned i = 2048; i > 512; --i)
 	{
 		auto rc = _setmaxstdio(i);
@@ -510,7 +531,7 @@ int main(int argc, char **argv)
 
 	try
 	{
-		CCProof_Init();
+		CCProof_Init(g_params.proof_key_dir);
 		CCProof_PreloadVerifyKeys();
 
 		dbconn = new DbConn(false);
@@ -584,11 +605,8 @@ int main(int argc, char **argv)
 
 		g_rpc_service.Start();
 
-		if (g_params.interactive)
-		{
-			lock_guard<FastSpinLock> lock(g_cout_lock);
-			cerr << "RPC service enabled on port " << g_rpc_service.port << endl;
-		}
+		lock_guard<FastSpinLock> lock(g_cout_lock);
+		cerr << "RPC service enabled on port " << g_rpc_service.port << "\n" << endl;
 	}
 	else if (!command_line_json.size() || g_params.interactive)
 	{
@@ -653,51 +671,55 @@ do_fatal:
 
 	Billet::Shutdown();
 
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 6...";
+
+	cc_mint_threads_shutdown();
+
 	if (txquery_interactive)
 	{
-			if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 6...";
+			if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 7...";
 
 		txquery_interactive->Stop();
 
-			if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 7...";
+			if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 8...";
 
 		txquery_interactive->WaitForStopped();
 
-			if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 8...";
+			if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 9...";
 
 		txquery_interactive->FreeConnection();
 	}
 
-		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 9...";
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 10...";
 
 	g_rpc_service.StartShutdown();
 
-		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 10...";
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 11...";
 
 	g_lpc_service.StartShutdown();
 
-		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 11...";
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 12...";
 
 	g_rpc_service.WaitForShutdown();
 
-		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 12...";
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 14...";
 
 	g_lpc_service.WaitForShutdown();
 
 	if (dbconn)
 	{
-			if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 14...";
+			if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 15...";
 
 		dbconn->CloseDb(1);	// 1 = done
 
 		delete dbconn;
 	}
 
-		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 15...";
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 16...";
 
 	dblog(sqlite3_shutdown());
 
-		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 16...";
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 17...";
 
 	tor_thread.join();
 

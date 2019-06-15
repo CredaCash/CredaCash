@@ -9,19 +9,17 @@
 #pragma once
 
 #define CCAPPNAME	"CredaCash node"
-#define CCVERSION	 "0.92" //@@!
+#define CCVERSION	 "0.97" //@@!
 #define CCEXENAME	"ccnode"
-#define CCAPPDIR	"CCNode"
+#define CCAPPDIR	"CCNode-%"
 
-#define DEFAULT_BASE_PORT	9223
-
-#define TRANSACT_PORT		"0"
-#define RELAY_PORT			"1"
-#define PRIVRELAY_PORT		"2"
-#define BLOCKSERVE_PORT		"3"
-#define NODE_CONTROL_PORT	"4"
-#define TOR_CONTROL_PORT	"5"
-#define TOR_PORT			"6"
+#define TRANSACT_PORT		0
+#define RELAY_PORT			1
+#define PRIVRELAY_PORT		2
+#define BLOCKSERVE_PORT		3
+#define NODE_CONTROL_PORT	4
+#define TOR_CONTROL_PORT	5
+#define TOR_PORT			6
 
 //!#define TEST_SMALL_BUFS	1
 
@@ -31,6 +29,7 @@
 
 #include <CCdef.h>
 #include <CCboost.hpp>
+#include <apputil.h>
 #include <osutil.h>
 #include <ccserver/torservice.hpp>
 
@@ -44,6 +43,7 @@ DECLARE_EXTERN struct global_params_struct
 
 	wstring process_dir;
 	wstring app_data_dir;
+	wstring proof_key_dir;
 
 	wstring tor_exe;
 	wstring tor_config;
@@ -68,7 +68,11 @@ DECLARE_EXTERN struct global_params_struct
 	uint64_t query_work_difficulty;
 	uint64_t tx_work_difficulty;
 
+	int64_t	max_obj_mem;
 	int		tx_validation_threads;
+	int		db_checkpoint_sec;
+	bool	db_update_continuous;
+	bool	index_mint_donations;
 
 	int		trace_level;
 	bool	trace_tx_server;

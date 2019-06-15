@@ -7,7 +7,7 @@ then
     exit 1
 fi
 export CREDACASH_BUILD=`pwd`
-export CPPFLAGS="-pthread -fPIC $cppx"
+export CPPFLAGS="-pthread -fPIC -fstack-protector-strong $cppx"
 export LDLIBS="-lpthread -ldl"
 rm -f ccnode.exe ccwallet.exe cctracker.exe cctx64.dll
 find source -type f \( -name \*.exe -o -name \*.dll \) -delete
@@ -20,7 +20,7 @@ cd ../../..
 cd source/ccdll/Release
 make all
 cd ../../..
-export CPPFLAGS="-pthread $cppx"
+#export CPPFLAGS="-pthread $cppx"
 cd source/cclib/Release
 make all
 cd ../../..

@@ -16,8 +16,6 @@
 
 #define TRACE_DBCONN	(g_params.trace_wal_db)
 
-static const uint32_t g_full_checkpoint_time = 20;	// make this configurable?
-
 //!#define TEST_FREERUN_CHECKPOINTS	1
 
 #ifndef TEST_FREERUN_CHECKPOINTS
@@ -43,9 +41,12 @@ void WalDB::WalStartCheckpoint(bool full)
 	{
 		uint32_t dt = time(NULL) - last_full_checkpoint_time;
 
-		if (dt >= g_full_checkpoint_time)
+		if (dt >= (unsigned)g_params.db_checkpoint_sec)
 			full_checkpoint_pending = true;
 	}
+
+	if (!g_params.db_update_continuous && !full_checkpoint_pending)
+		return;	// might work better when db is saved on an sdcard
 
 	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "WalDB::WalStartCheckpoint " << dbname << " calling notify_one full " << full_checkpoint_pending;
 
@@ -124,41 +125,6 @@ void WalDB::WalCheckpoint(sqlite3 *db)
 	}
 
 	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "WalDB::WalCheckpoint " << dbname << " done";
-}
-
-void WalDB::WalWaitForFullCheckpoint()
-{
-	if (!checkpoint_needed.load() || !do_full_checkpoint.load())
-		return;
-
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "WalDB::WalWaitForFullCheckpoint " << dbname;
-
-	uint32_t t0 = time(NULL);
-
-	while (!g_shutdown)
-	{
-		{
-			if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "WalDB::WalWaitForFullCheckpoint " << dbname << " acquiring mutex...";
-
-			lock_guard<mutex> lock(Wal_db_mutex);	// if checkpoint is started, will wait until checkpoint is done
-
-			if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "WalDB::WalWaitForFullCheckpoint " << dbname << " mutex acquired and released";
-		}
-
-		if (!checkpoint_needed.load())
-			return;
-
-		usleep(10*1000);
-
-		uint32_t dt = time(NULL) - t0;
-
-		if (dt > 5*60 && dt > 3 * g_full_checkpoint_time)
-		{
-			BOOST_LOG_TRIVIAL(error) << "WalDB::WalWaitForFullCheckpoint " << dbname << " checkpointing thread appears to be hung or crashed";
-
-			t0 = time(NULL);
-		}
-	}
 }
 
 void WalDB::WalCheckpointThreadProc(sqlite3 *db)

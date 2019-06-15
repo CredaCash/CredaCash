@@ -121,7 +121,7 @@ def main(argv):
 		t.daemon = True
 		t.start()
 
-	try:	
+	try:
 		while True:
 			time.sleep(2)
 	except KeyboardInterrupt:

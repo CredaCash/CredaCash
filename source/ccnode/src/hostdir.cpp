@@ -36,7 +36,7 @@ bool HostDir::Init()
 	fs.open(g_params.directory_servers_file, fstream::in);
 	if(!fs.is_open())
 	{
-		BOOST_LOG_TRIVIAL(error) << "HostDir::Init error opening private relay hosts file \"" << w2s(g_params.directory_servers_file) << "\"";
+		BOOST_LOG_TRIVIAL(error) << "HostDir::Init error opening rendezvous servers file \"" << w2s(g_params.directory_servers_file) << "\"";
 
 		return true;
 	}
@@ -49,7 +49,7 @@ bool HostDir::Init()
 
 		if (fs.fail() && !fs.eof())
 		{
-			BOOST_LOG_TRIVIAL(error) << "HostDir::Init error reading private relay hosts file \"" << w2s(g_params.directory_servers_file) << "\"";
+			BOOST_LOG_TRIVIAL(error) << "HostDir::Init error reading rendezvous servers file \"" << w2s(g_params.directory_servers_file) << "\"";
 
 			return true;
 		}

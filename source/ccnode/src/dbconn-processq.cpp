@@ -100,7 +100,7 @@ DbConnProcessQ::~DbConnProcessQ()
 
 void DbConnProcessQ::DoProcessQFinish(unsigned type, bool rollback, bool increment_work)
 {
-	if ((TEST_DELAY_DB_RESET & rand()) == 1) sleep(1);
+	if (RandTest(TEST_DELAY_DB_RESET)) sleep(1);
 
 	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnProcessQ::DoProcessQFinish dbconn " << uintptr_t(this) << " type " << type << " rollback " << rollback << " increment work " << increment_work;
 
@@ -300,7 +300,7 @@ int DbConnProcessQ::ProcessQGetNextValidateObj(unsigned type, SmartBuf *retobj, 
 
 	if (dblog(rc = sqlite3_step(Process_Q_select[type]), DB_STMT_SELECT)) return -1;
 
-	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
+	if (RandTest(TEST_RANDOM_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::ProcessQGetNextValidateObj simulating database error post-select";
 
@@ -346,7 +346,7 @@ int DbConnProcessQ::ProcessQGetNextValidateObj(unsigned type, SmartBuf *retobj, 
 	// must have objid_blob for the delete statement
 	// if other columns fail, it is an error but we can still try to clean up by executing the delete statement
 
-	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
+	if (RandTest(TEST_RANDOM_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::ProcessQGetNextValidateObj simulating database error; setting bufp_blob = NULL";
 
@@ -410,7 +410,7 @@ int DbConnProcessQ::ProcessQGetNextValidateObj(unsigned type, SmartBuf *retobj, 
 
 	if (dblog(sqlite3_extended_errcode(Process_Q_db[type]), DB_STMT_SELECT)) return -1;	// check if error retrieving results
 
-	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
+	if (RandTest(TEST_RANDOM_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::ProcessQGetNextValidateObj simulating database error post-error check";
 
@@ -448,7 +448,7 @@ int DbConnProcessQ::ProcessQGetNextValidateObj(unsigned type, SmartBuf *retobj, 
 
 	// COMMIT
 
-	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
+	if (RandTest(TEST_RANDOM_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::ProcessQGetNextValidateObj simulating database error pre-commit";
 
@@ -546,7 +546,7 @@ int DbConnProcessQ::ProcessQCountValidObjs(unsigned type, int64_t auxint)
 
 	if (dblog(rc = sqlite3_step(Process_Q_count[type]), DB_STMT_SELECT)) return -1;
 
-	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
+	if (RandTest(TEST_RANDOM_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::ProcessQCountValidObjs simulating database error post-select";
 
@@ -572,7 +572,7 @@ int DbConnProcessQ::ProcessQCountValidObjs(unsigned type, int64_t auxint)
 
 	if (dblog(sqlite3_extended_errcode(Process_Q_db[type]), DB_STMT_SELECT)) return -1;	// check if error retrieving results
 
-	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
+	if (RandTest(TEST_RANDOM_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::ProcessQCountValidObjs simulating database error post-error check";
 
@@ -633,7 +633,7 @@ int DbConnProcessQ::ProcessQGetNextValidObj(unsigned type, unsigned offset, Smar
 
 	if (dblog(rc = sqlite3_step(Process_Q_select[type]), DB_STMT_SELECT)) return -1;
 
-	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
+	if (RandTest(TEST_RANDOM_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::ProcessQGetNextValidObj simulating database error post-select";
 
@@ -663,7 +663,7 @@ int DbConnProcessQ::ProcessQGetNextValidObj(unsigned type, unsigned offset, Smar
 	SmartBuf smartobj;
 	CCObject* obj = NULL;
 
-	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
+	if (RandTest(TEST_RANDOM_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::ProcessQGetNextValidObj simulating database error; setting bufp_blob = NULL";
 
@@ -695,7 +695,7 @@ int DbConnProcessQ::ProcessQGetNextValidObj(unsigned type, unsigned offset, Smar
 
 	if (dblog(sqlite3_extended_errcode(Process_Q_db[type]), DB_STMT_SELECT)) return -1;	// check if error retrieving results
 
-	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
+	if (RandTest(TEST_RANDOM_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::ProcessQGetNextValidObj simulating database error post-error check";
 
@@ -746,7 +746,7 @@ int DbConnProcessQ::ProcessQPruneLevel(unsigned type, int64_t level)
 
 		if (dblog(rc = sqlite3_step(Process_Q_select_level[type]), DB_STMT_SELECT)) return -1;
 
-		if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
+		if (RandTest(TEST_RANDOM_DB_ERRORS))
 		{
 			BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::ProcessQPruneLevel simulating database error post-select";
 
@@ -778,7 +778,7 @@ int DbConnProcessQ::ProcessQPruneLevel(unsigned type, int64_t level)
 		SmartBuf smartobj;
 		CCObject* obj = NULL;
 
-		if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
+		if (RandTest(TEST_RANDOM_DB_ERRORS))
 		{
 			BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::ProcessQPruneLevel simulating database error; setting bufp_blob = NULL";
 
@@ -838,7 +838,7 @@ int DbConnProcessQ::ProcessQPruneLevel(unsigned type, int64_t level)
 
 		if (dblog(sqlite3_extended_errcode(Process_Q_db[type]), DB_STMT_SELECT)) return -1;	// check if error retrieving results
 
-		if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
+		if (RandTest(TEST_RANDOM_DB_ERRORS))
 		{
 			BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::ProcessQPruneLevel simulating database error post-error check";
 

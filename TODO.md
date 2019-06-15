@@ -4,7 +4,6 @@
 
 ### Needed for First Production Release
 
--	A mechanism to mint the currency supply.  On the current test network, anyone can freely mint currency without limits.
 -	A mechanism to collect user donations paid to the witnesses that assemble the blockchain.
 -	Currently, the nodes on the network only partially validate transactions that have already been placed into blocks.  This needs to be changed to fully validate transactions inside blocks.
 

@@ -202,7 +202,7 @@ void BlockServeConnection::HandleBlockWrite(const boost::system::error_code& e, 
 	if (CancelTimer())
 		return;
 
-	bool sim_err = ((TEST_RANDOM_WRITE_ERRORS & rand()) == 1);
+	bool sim_err = RandTest(TEST_RANDOM_WRITE_ERRORS);
 	if (sim_err) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " BlockServeConnection::HandleBlockWrite simulating write error";
 
 	if (e || sim_err)

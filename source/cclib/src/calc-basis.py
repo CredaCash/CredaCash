@@ -6,7 +6,7 @@
  # calc-basis.py
 #
 
- import hashlib
+import hashlib
 
 wordm = (1 << 64) - 1
 

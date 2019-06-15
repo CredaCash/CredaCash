@@ -33,8 +33,8 @@ class cclib:
 
 # These values are used in mint transactions
 
-TX_CC_MINT_AMOUNT		= 200000*10**27
-TX_CC_MINT_DONATION		= 199000*10**27
+TX_CC_MINT_AMOUNT		= 50000*10**27
+TX_CC_MINT_DONATION		= 49000*10**27
 TX_MINT_NOUT			= 1
 
 # Value sizes
@@ -356,7 +356,7 @@ def TryServer(label, msg, proxyuser = None, isquery = True, retry = True):
 			print 'SubmitServer exception', e
 		if not retry:
 			return 'SubmitServer failed'
-		time.sleep(10)	# pause so we don't overload tor
+		time.sleep(10)	# pause so we don't overload Tor
 
 # Send a message to the transaction server
 # If retry is true and it gets a response that starts with ERROR, then it will retry 20 times before giving up

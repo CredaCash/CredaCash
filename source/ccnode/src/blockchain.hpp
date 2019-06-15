@@ -94,6 +94,8 @@ public:
 	}
 
 	void SetupGenesisBlock(SmartBuf *retobj);
+	int SaveGenesisHash(DbConn *dbconn, SmartBuf genesis_block);
+	int CheckGenesisHash(DbConn *dbconn, SmartBuf genesis_block);
 	void RestoreLastBlocks(DbConn *dbconn, uint64_t level);
 
 	static void CreateGenesisDataFiles();
@@ -106,7 +108,7 @@ public:
 
 	static bool IndexTxs(DbConn *dbconn, SmartBuf smartobj, TxPay& txbuf);
 	static void CheckCreatePseudoSerialnum(TxPay& txbuf, const void *wire, const uint32_t bufsize);
-	static bool IndexTxOutputs(DbConn *dbconn, const TxPay& tx, const TxOut& txout);
+	static bool IndexTxOutputs(DbConn *dbconn, const uint64_t level, const TxPay& tx, const TxOut& txout);
 
 	int CheckSerialnums(DbConn *dbconn, SmartBuf topblock, int type, SmartBuf txobj, void *txwire, unsigned txsize, TxPay& txbuf);
 	int CheckSerialnum(DbConn *dbconn, SmartBuf topblock, int type, SmartBuf txobj, const void *serial, unsigned size);

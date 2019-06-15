@@ -324,6 +324,8 @@ void ProcessBlock::ThreadProc()
 
 		if (conn_index && result < 0)
 		{
+			if (TRACE_PROCESS) BOOST_LOG_TRIVIAL(debug) << "ProcessBlock calling HandleValidateDone Conn " << conn_index << " callback_id " << callback_id << " result " << result;
+
 			auto conn = g_connregistry.GetConn(conn_index);
 
 			conn->HandleValidateDone(callback_id, PROCESS_RESULT_STOP_THRESHOLD);

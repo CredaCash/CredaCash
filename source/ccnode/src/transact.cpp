@@ -11,13 +11,14 @@
 #include "processtx.hpp"
 #include "blockchain.hpp"
 #include "commitments.hpp"
+#include "witness.hpp"
 #include "dbconn.hpp"
 #include "dbparamkeys.h"
 
 #include <CCobjects.hpp>
-#include <transaction.h>
 #include <CCparams.h>
-
+#include <CCmint.h>
+#include <transaction.h>
 #include <ccserver/server.hpp>
 #include <ccserver/connection_manager.hpp>
 
@@ -147,11 +148,7 @@ void TransactConnection::HandleReadComplete()
 	{
 		char *outbuf = m_writebuf.data();
 
-		#if ULONG_MAX == 0xffffffffffffffff
-		sprintf(outbuf, "ERROR:invalid timestamp:%lu", time(NULL));
-		#else
-		sprintf(outbuf, "ERROR:invalid timestamp:%llu", time(NULL));
-		#endif
+		sprintf(outbuf, "ERROR:invalid timestamp:%s", to_string(time(NULL)).c_str());
 
 		if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleReadComplete error invalid timestamp; sending " << outbuf;
 
@@ -181,7 +178,7 @@ void TransactConnection::HandleMsgReadComplete(const boost::system::error_code& 
 	if (CheckOpCount(pending_op_counter))
 		return;
 
-	bool sim_err = ((TEST_RANDOM_READ_ERRORS & rand()) == 1);
+	bool sim_err = RandTest(TEST_RANDOM_READ_ERRORS);
 	if (sim_err) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleMsgReadComplete simulating read error";
 
 	if (e || sim_err)
@@ -241,12 +238,64 @@ void TransactConnection::HandleMsgReadComplete(const boost::system::error_code& 
 		auto obj = (CCObject*)smartobj.data();
 		if (!obj->IsValid())
 		{
-			static const string outbuf = "ERROR:binary object not valid";
+			if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleMsgReadComplete CC_TAG_TX_WIRE error object IsValid false";
 
-			if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleMsgReadComplete error object IsValid false; sending " << outbuf;
+			return SendObjectNotValid();
+		}
+
+		auto param_level = txpay_param_level_from_wire(obj);
+		if (param_level == (uint64_t)(-1))
+		{
+			if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleMsgReadComplete CC_TAG_TX_WIRE invalid object size";
+
+			return SendObjectNotValid();
+		}
+
+		if (Implement_CCMint(g_params.blockchain))
+		{
+			auto block_level = g_blockchain.GetLastIndelibleLevel();
+
+			if (tag == CC_TAG_MINT_WIRE)
+			{
+				if (!param_level
+					||	(param_level == 1 &&				block_level > CC_MINT_ACCEPT_SPAN + 1)
+					||	(param_level  > 1 &&				param_level + CC_MINT_ACCEPT_SPAN + 1 < block_level)
+					||										param_level >= CC_MINT_COUNT
+					||										param_level > block_level)
+				{
+					BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleMsgReadComplete CC_TAG_MINT_WIRE INVALID param level " << param_level << " for mint tx at blockchain level " << block_level;
+
+					static const string outbuf = "INVALID:mint transaction not allowed, invalid or too old";
+
+					WriteAsync("TransactConnection::HandleMsgReadComplete", boost::asio::buffer(outbuf.c_str(), outbuf.size() + 1),
+						boost::bind(&Connection::HandleWrite, this, boost::asio::placeholders::error, AutoCount(this)));
+
+					return;
+				}
+			}
+			else
+			{
+				if (param_level < CC_MINT_COUNT + CC_MINT_ACCEPT_SPAN)
+				{
+					BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleMsgReadComplete CC_TAG_TX_WIRE INVALID param level " << param_level << " for non-mint tx at blockchain level " << block_level;
+
+					static const string outbuf = "INVALID:non-mint transaction during mint";
+
+					WriteAsync("TransactConnection::HandleMsgReadComplete", boost::asio::buffer(outbuf.c_str(), outbuf.size() + 1),
+						boost::bind(&Connection::HandleWrite, this, boost::asio::placeholders::error, AutoCount(this)));
+
+					return;
+				}
+			}
+		}
+		else if (tag == CC_TAG_MINT_WIRE && !IsTestnet(g_params.blockchain))
+		{
+			BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleMsgReadComplete CC_TAG_MINT_WIRE INVALID on non-testnet";
+
+			static const string outbuf = "INVALID:mint transaction not allowed";
 
 			WriteAsync("TransactConnection::HandleMsgReadComplete", boost::asio::buffer(outbuf.c_str(), outbuf.size() + 1),
-					boost::bind(&Connection::HandleWrite, this, boost::asio::placeholders::error, AutoCount(this)));
+				boost::bind(&Connection::HandleWrite, this, boost::asio::placeholders::error, AutoCount(this)));
 
 			return;
 		}
@@ -270,11 +319,7 @@ void TransactConnection::HandleMsgReadComplete(const boost::system::error_code& 
 	{
 		char *outbuf = m_writebuf.data();
 
-		#if ULONG_MAX == 0xffffffffffffffff
-		sprintf(outbuf, "ERROR:proof of work failed:%lu", proof_difficulty);
-		#else
-		sprintf(outbuf, "ERROR:proof of work failed:%llu", proof_difficulty);
-		#endif
+		sprintf(outbuf, "ERROR:proof of work failed:%s", to_string(proof_difficulty).c_str());
 
 		if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleMsgReadComplete error proof of work failed; sending " << outbuf;
 
@@ -304,8 +349,8 @@ void TransactConnection::HandleMsgReadComplete(const boost::system::error_code& 
 	case CC_TAG_TX_QUERY_SERIAL:
 		return HandleTxQuerySerials(m_pread, size);
 
-	case CC_TAG_TX_WIRE:
 	case CC_TAG_MINT_WIRE:
+	case CC_TAG_TX_WIRE:
 		return HandleTx(smartobj);
 
 	default:
@@ -325,9 +370,8 @@ void TransactConnection::HandleTx(SmartBuf smartobj)
 	if (CancelTimer())	// cancel timer first, to make sure we send a response instead of just stopping on timeout
 		return;
 
-	static atomic<int64_t> medpriority(1);
-
-	auto priority = medpriority.fetch_add(1);
+	static atomic<int64_t> med_tx_priority(1);
+	auto priority = med_tx_priority.fetch_add(1);
 	auto callback_id = m_use_count.load();
 
 	auto rc = ProcessTx::TxEnqueueValidate(tx_dbconn, priority, smartobj, m_conn_index, callback_id);
@@ -341,7 +385,7 @@ void TransactConnection::HandleTx(SmartBuf smartobj)
 
 void TransactConnection::HandleValidateDone(uint32_t callback_id, int64_t result)
 {
-	if ((TEST_DELAY_CONN_RELEASE & rand()) == 1) sleep(1);
+	if (RandTest(TEST_DELAY_CONN_RELEASE)) sleep(1);
 
 	// HandleValidateDone was not passed an AutoCount object since we don't want stop to be delayed while the Tx validation runs
 	// so acquire an AutoCount to prevent Stop from running to completion while this function is running
@@ -350,7 +394,7 @@ void TransactConnection::HandleValidateDone(uint32_t callback_id, int64_t result
 	if (!autocount)
 		return;
 
-	if ((TEST_DELAY_CONN_RELEASE & rand()) == 1) sleep(1);
+	if (RandTest(TEST_DELAY_CONN_RELEASE)) sleep(1);
 
 	// increment m_use_count so either HandleValidationTimeout or HandleValidateDone will run, but not both
 
@@ -363,9 +407,14 @@ void TransactConnection::HandleValidateDone(uint32_t callback_id, int64_t result
 		return;
 	}
 
-	if ((TEST_RANDOM_VALIDATION_FAILURES & rand()) == 1)
+	return SendValidateResult(result);
+}
+
+void TransactConnection::SendValidateResult(int64_t result)
+{
+	if (RandTest(TEST_RANDOM_VALIDATION_FAILURES))
 	{
-		BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleValidateDone simulating validation failure";
+		BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " TransactConnection::SendValidateResult simulating validation failure";
 
 		return Stop();
 	}
@@ -378,11 +427,7 @@ void TransactConnection::HandleValidateDone(uint32_t callback_id, int64_t result
 	{
 		char *outbuf = m_writebuf.data();
 
-		#if ULONG_MAX == 0xffffffffffffffff
-		sprintf(outbuf, "OK:%lu", result);
-		#else
-		sprintf(outbuf, "OK:%llu", result);
-		#endif
+		sprintf(outbuf, "OK:%s", to_string(result).c_str());
 
 		poutbuf = outbuf;
 	}
@@ -390,12 +435,12 @@ void TransactConnection::HandleValidateDone(uint32_t callback_id, int64_t result
 	if (!poutbuf)
 		return SendServerError(__LINE__);
 
-	if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleValidateDone result " << result << " sending " << (poutbuf ? poutbuf : "(null)");
+	if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " TransactConnection::SendValidateResult result " << result << " sending " << (poutbuf ? poutbuf : "(null)");
 
 	if (SetTimer(TRANSACT_TIMEOUT))
 		return;
 
-	WriteAsync("TransactConnection::HandleValidateDone", boost::asio::buffer(poutbuf, strlen(poutbuf) + 1),
+	WriteAsync("TransactConnection::SendValidateResult", boost::asio::buffer(poutbuf, strlen(poutbuf) + 1),
 			boost::bind(&Connection::HandleWrite, this, boost::asio::placeholders::error, AutoCount(this)));
 }
 
@@ -408,7 +453,7 @@ bool TransactConnection::SetValidationTimer(uint32_t callback_id, unsigned sec)
 
 void TransactConnection::HandleValidationTimeout(uint32_t callback_id, const boost::system::error_code& e, AutoCount pending_op_counter)
 {
-	if ((TEST_DELAY_CONN_RELEASE & rand()) == 1) sleep(1);
+	if (RandTest(TEST_DELAY_CONN_RELEASE)) sleep(1);
 
 	// increment m_use_count so either HandleValidationTimeout or HandleValidateDone will run, but not both
 
@@ -421,7 +466,7 @@ void TransactConnection::HandleValidationTimeout(uint32_t callback_id, const boo
 		return;
 	}
 
-	if ((TEST_DELAY_CONN_RELEASE & rand()) == 1) sleep(1);
+	if (RandTest(TEST_DELAY_CONN_RELEASE)) sleep(1);
 
 	if (CheckOpCount(pending_op_counter))
 		return;
@@ -895,14 +940,21 @@ void TransactConnection::SendReply(ostringstream& os)
 	//cerr << "SendReply done" << endl;
 }
 
+void TransactConnection::SendObjectNotValid()
+{
+	static const string outbuf = "ERROR:binary object not valid";
+
+	BOOST_LOG_TRIVIAL(error) << Name() << " Conn " << m_conn_index << " TransactConnection::SendObjectNotValid sending " << outbuf;
+
+	WriteAsync("TransactConnection::SendObjectNotValid", boost::asio::buffer(outbuf.c_str(), outbuf.size() + 1),
+			boost::bind(&Connection::HandleWrite, this, boost::asio::placeholders::error, AutoCount(this)));
+}
+
 void TransactConnection::SendBlockchainNumberError()
 {
 	static const string outbuf = "ERROR:requested blockchain not tracked by this server";
 
 	BOOST_LOG_TRIVIAL(error) << Name() << " Conn " << m_conn_index << " TransactConnection::SendBlockchainNumberError sending " << outbuf;
-
-	if (SetTimer(TRANSACT_TIMEOUT))
-		return;
 
 	WriteAsync("TransactConnection::SendBlockchainNumberError", boost::asio::buffer(outbuf.c_str(), outbuf.size() + 1),
 			boost::bind(&Connection::HandleWrite, this, boost::asio::placeholders::error, AutoCount(this)));
@@ -913,9 +965,6 @@ void TransactConnection::SendTooManyObjectsError()
 	static const string outbuf = "ERROR:too many query objects";
 
 	if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " TransactConnection::SendTooManyObjectsError too many query objects; sending " << outbuf;
-
-	if (SetTimer(TRANSACT_TIMEOUT))
-		return;
 
 	WriteAsync("TransactConnection::SendTooManyObjectsError", boost::asio::buffer(outbuf.c_str(), outbuf.size() + 1),
 			boost::bind(&Connection::HandleWrite, this, boost::asio::placeholders::error, AutoCount(this)));
@@ -929,9 +978,6 @@ void TransactConnection::SendServerError(unsigned line)
 
 	BOOST_LOG_TRIVIAL(error) << Name() << " Conn " << m_conn_index << " TransactConnection::SendServerError from line " << line << " sending " << outbuf;
 
-	if (SetTimer(TRANSACT_TIMEOUT))
-		return;
-
 	WriteAsync("TransactConnection::SendServerError", boost::asio::buffer(outbuf.c_str(), outbuf.size() + 1),
 			boost::bind(&Connection::HandleWrite, this, boost::asio::placeholders::error, AutoCount(this)));
 }
@@ -942,9 +988,6 @@ void TransactConnection::SendReplyWriteError()
 
 	BOOST_LOG_TRIVIAL(error) << Name() << " Conn " << m_conn_index << " TransactConnection::SendReplyWriteError sending " << outbuf;
 
-	if (SetTimer(TRANSACT_TIMEOUT))
-		return;
-
 	WriteAsync("TransactConnection::SendReplyWriteError", boost::asio::buffer(outbuf.c_str(), outbuf.size() + 1),
 			boost::bind(&Connection::HandleWrite, this, boost::asio::placeholders::error, AutoCount(this)));
 }
@@ -954,9 +997,6 @@ void TransactConnection::SendTimeout()
 	static const string outbuf = "ERROR:server timeout";
 
 	BOOST_LOG_TRIVIAL(error) << Name() << " Conn " << m_conn_index << " TransactConnection::SendTimeout sending " << outbuf;
-
-	if (SetTimer(TRANSACT_TIMEOUT))
-		return;
 
 	WriteAsync("TransactConnection::SendTimeout", boost::asio::buffer(outbuf.c_str(), outbuf.size() + 1),
 			boost::bind(&Connection::HandleWrite, this, boost::asio::placeholders::error, AutoCount(this)));

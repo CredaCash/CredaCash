@@ -55,6 +55,7 @@ class Transaction
 		TX_BUILD_READY,
 		TX_BUILD_TOTALED,
 		TX_BUILD_SAVED,
+		TX_BUILD_SUBMIT_INVALID,
 		TX_BUILD_SUBMIT_ERR,
 		TX_BUILD_SUBMIT_OK,
 	};
@@ -86,6 +87,8 @@ public:
 private:
 	int we_sent[2];										// computed
 	int inputs_involve_watchonly;						// computed
+
+	void SetMintStatus(DbConn *dbconn, unsigned _status);
 
 	static int LocateBillet(DbConn *dbconn, uint64_t blockchain, const snarkfront::bigint_t& amount, const snarkfront::bigint_t& min_amount, Billet& bill, uint64_t& billet_count, const bigint_t& total_required);
 	static void ReleaseTxBillet(DbConn *dbconn, Billet& bill);
@@ -140,7 +143,7 @@ public:
 
 	void SetAdjustedAmounts(bool incwatch);
 
-	void CreateTxMint(DbConn *dbconn, TxQuery& txquery);
+	int CreateTxMint(DbConn *dbconn, TxQuery& txquery);
 	void CreateTxPay(DbConn *dbconn, TxQuery& txquery, const string& encoded_dest, uint64_t dest_chain, const snarkfront::bigint_t& destination, const snarkfront::bigint_t& amount, const string& comment, const string& comment_to, const bool subfee);
 
 	int CreateTxFromAddressQueryResult(DbConn *dbconn, TxQuery& txquery, const Secret& destination, const Secret& address, QueryAddressResult &result, bool duplicate_txid);

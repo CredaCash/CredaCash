@@ -84,8 +84,10 @@ void RpcConnection::HandleReadComplete()
 
 		const char authheader[] = "Authorization:";
 
-		if (TRACE_RPCSERVE && strncasecmp((const char*)&m_pread[m_parse_point], authheader, sizeof(authheader)-1))
+		if (TRACE_RPCSERVE && strncasecmp((const char*)&m_pread[m_parse_point], authheader, sizeof(authheader)-1))		// don't log auth
 			BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " RpcConnection::HandleReadComplete header line len " << strlen(&m_pread[m_parse_point]) << " >>" << &m_pread[m_parse_point] << "<<";
+		else if (TRACE_RPCSERVE)
+			BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " RpcConnection::HandleReadComplete header line len " << strlen(&m_pread[m_parse_point]) << " >>" << authheader << " *****" << "<<";
 
 		// the code below shouldn't read past the end of the buffer, but this restriction also seems prudent
 		if (termscan + 200 >= m_readbuf.size())
@@ -179,7 +181,7 @@ void RpcConnection::HandleReadComplete()
 			if (TRACE_RPCSERVE) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " RpcConnection::HandleReadComplete " << authheader;
 			//if (TRACE_RPCSERVE) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " RpcConnection::HandleReadComplete " << authheader << "\"" << bufp << "\"";	// logging this would be a security leak
 
-			m_has_auth = !strcmp(bufp, g_rpc_service.auth_string.c_str());
+			m_has_auth = !g_rpc_service.auth_string.empty() && !strcmp(bufp, g_rpc_service.auth_string.c_str());
 
 			if (TRACE_RPCSERVE) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " RpcConnection::HandleReadComplete m_has_auth " << m_has_auth;
 		}
@@ -230,7 +232,7 @@ void RpcConnection::HandleContentReadComplete(const boost::system::error_code& e
 
 	m_nred += bytes_transferred;
 
-	bool sim_err = ((TEST_RANDOM_READ_ERRORS & rand()) == 1);
+	bool sim_err = RandTest(TEST_RANDOM_READ_ERRORS);
 	if (sim_err) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " RpcConnection::HandleContentReadComplete simulating read error";
 
 	if (e || sim_err)
@@ -332,7 +334,7 @@ void RpcConnection::HandleWriteHeader(const boost::system::error_code& e, shared
 
 	// Note: keep m_write_in_progress lock and call WriteAsync with already_own_mutex = true
 
-	bool sim_err = ((TEST_RANDOM_WRITE_ERRORS & rand()) == 1);
+	bool sim_err = RandTest(TEST_RANDOM_WRITE_ERRORS);
 	if (sim_err) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " RpcConnection::HandleWriteHeader simulating write error";
 
 	if (e || sim_err)

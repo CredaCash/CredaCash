@@ -9,7 +9,7 @@
 #include "CCdef.h"
 #include "CCboost.hpp"
 #include "torservice.hpp"
-#include "osutil.h"
+#include "apputil.h"
 
 void TorService::SetPorts(vector<TorService*>& services, unsigned base_port)
 {
@@ -122,6 +122,8 @@ void TorService::DumpConfig()
 	cout << "   enabled = " << yesno(enabled) << endl;
 	if (enabled)
 	{
+		DumpExtraConfigTop();
+
 		if (max_inconns > 0)
 		{
 			cout << "   port = " << port << endl;
@@ -139,6 +141,8 @@ void TorService::DumpConfig()
 		cout << "   max incoming connections = " << max_inconns << endl;
 		cout << "   max outgoing connections = " << max_outconns << endl;
 		cout << "   threads per connection = " << threads_per_conn << endl;
+
+		DumpExtraConfigBottom();
 	}
 	cout << endl;
 }
@@ -149,7 +153,7 @@ const string& TorService::TorHostname()
 		tor_hostname.clear();
 	else if (tor_hostname.empty())
 	{
-		// open, read and close the file as quickly as possible so we don't collide with the tor process
+		// open, read and close the file as quickly as possible so we don't collide with the Tor process
 
 		tor_hostname.resize(88);
 

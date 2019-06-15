@@ -4,5 +4,5 @@
 
 USER_OBJS :=
 
-LIBS := -lcccommon -l3rdparty -lgmpxx -lgmp
+LIBS := -lcccommon -l3rdparty -lboost_filesystem -lboost_system -lgmpxx -lgmp
 

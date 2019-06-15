@@ -65,8 +65,10 @@ public:
 	virtual void ConfigPreset() {}
 	virtual void ConfigPostset() {}
 
-	int SetConfig();
-	void DumpConfig();
+	virtual int SetConfig();
+	virtual void DumpConfig();
+	virtual void DumpExtraConfigTop() {}
+	virtual void DumpExtraConfigBottom() {}
 
 	const string& TorHostname();
 };

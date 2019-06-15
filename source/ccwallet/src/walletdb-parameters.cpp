@@ -27,7 +27,7 @@ int DbConn::ParameterInsert(int key, int subkey, void *value, unsigned valsize, 
 	if (dblog(sqlite3_bind_int(Parameters_insert, 2, subkey))) return -1;
 	if (dblog(sqlite3_bind_blob(Parameters_insert, 3, value, valsize, SQLITE_STATIC))) return -1;
 
-	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
+	if (RandTest(TEST_RANDOM_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConn::ParameterInsert simulating database error pre-insert";
 
@@ -71,7 +71,7 @@ int DbConn::ParameterSelect(int key, int subkey, void *value, unsigned bufsize, 
 
 	if (dblog(rc = sqlite3_step(Parameters_select), DB_STMT_SELECT)) return -1;
 
-	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
+	if (RandTest(TEST_RANDOM_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConn::ParameterSelect simulating database error post-select";
 
@@ -112,7 +112,7 @@ int DbConn::ParameterSelect(int key, int subkey, void *value, unsigned bufsize, 
 
 	if (dblog(sqlite3_extended_errcode(Wallet_db), DB_STMT_SELECT)) return -1;	// check if error retrieving results
 
-	if ((TEST_RANDOM_DB_ERRORS & rand()) == 1)
+	if (RandTest(TEST_RANDOM_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConn::ParameterSelect simulating database error post-error check";
 
