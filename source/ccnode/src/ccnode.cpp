@@ -487,7 +487,7 @@ int main(int argc, char **argv)
 			return -1;
 		}
 
-		//return 1; // !!!!! comment out this line for keygen
+		return 1; // comment out this line for keygen
 	}
 
 	bool need_tor_proxy = true;	// always true?

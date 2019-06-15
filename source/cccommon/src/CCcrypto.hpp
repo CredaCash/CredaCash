@@ -8,7 +8,7 @@
 
 #pragma once
 
-#define TEST_EXTRA_RANDOM	1	// !!!!! use for keygen
+//#define TEST_EXTRA_RANDOM	1	// use for keygen
 
 #ifndef TEST_EXTRA_RANDOM
 #define TEST_EXTRA_RANDOM	0	// don't

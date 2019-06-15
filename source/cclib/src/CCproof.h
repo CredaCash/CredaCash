@@ -12,7 +12,7 @@
 #include "CCbigint.hpp"
 #include "CCparams.h"
 
-#define TEST_SUPPORT_ZK_KEYGEN	1	// for setup; note: 68 minutes on ODROID-C2 to generate 31 key pairs
+//#define TEST_SUPPORT_ZK_KEYGEN	1	// for setup; note: 68 minutes on ODROID-C2 to generate 31 key pairs
 
 #ifndef TEST_SUPPORT_ZK_KEYGEN
 #define TEST_SUPPORT_ZK_KEYGEN		0

@@ -36,12 +36,12 @@ void ZKKeyStore::Init(bool reset)
 		return;
 
 	nproof = (4 * 2 + 8) + (5 * 2 + 5);	// all keys, for testing and keygen
-	//nproof = (4 * 2 + 8);				// all keys with full merkle paths // !!!!! comment out for keygen
+	nproof = (4 * 2 + 8);				// all keys with full merkle paths; comment out for keygen
 	//nproof = 4 * 2;					// for beta release
 
 	nproofsave = 4;						// keep memory requirement low //@@! make this a config option?
-	nproofsave = nproof;				// for releases with smaller keysets, and for benchmarking
-	nproofsave = 0;						// !!!!! for keygen
+	nproofsave = nproof;				// for releases with smaller keysets, and for benchmarking, and for mint !!!!!
+	//nproofsave = 0;					// for keygen
 
 	keytable.resize(nproof);
 	workorder.resize(nproof);
