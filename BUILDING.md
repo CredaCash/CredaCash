@@ -115,7 +115,7 @@ If the build is not successful due to incompatibilities with Boost, Boost can be
 
 	``./bootstrap.sh``
 
-	``./b2 --layout=system cflags=-fPIC variant=release threading=multi link=static runtime-link=shared``
+	``./b2 --layout=system variant=release threading=multi link=static runtime-link=shared``
 
 	The output should be "The Boost C++ Libraries were successfully built!"
 

@@ -19,12 +19,12 @@ tree.
 '''
 
 mint_seed = '''
-2019-06-15 Powerball 8 11 14 16 49 14
-2019-06-12 Powerball 5 35 38 42 57 13
-2019-06-08 Powerball 9 13 42 48 60 18
-2019-06-14 Mega Millions 19 40 47 57 65 6
-2019-06-11 Mega Millions 20 34 39 43 57 13
-2019-06-07 Mega Millions 17 19 27 40 68 2
+2019-05-22 Powerball 7 10 20 44 57 3
+2019-05-18 Powerball 2 10 25 66 67 26
+2019-05-15 Powerball 2 7 17 33 61 68 4
+2019-05-21 Mega Millions 10 50 55 56 58 15
+2019-05-17 Mega Millions 5 17 28 32 63 11
+2019-05-14 Mega Millions 11 59 66 67 68 18
 '''
 
 import hashlib
