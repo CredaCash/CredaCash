@@ -68,7 +68,7 @@ int DbConn::TransactionInsert(Transaction& tx, bool lock_optional)
 		if (dblog(sqlite3_bind_null(insert_update, 8))) return -1;
 	}
 
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
+	if (RandTest(RTEST_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConn::TransactionInsert simulating database error pre-insert";
 
@@ -109,7 +109,7 @@ int DbConn::TransactionSelect(sqlite3_stmt *select, Transaction& tx, bool expect
 
 	if (dblog(rc = sqlite3_step(select), DB_STMT_SELECT)) return -1;
 
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
+	if (RandTest(RTEST_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConn::TransactionSelect simulating database error post-select";
 
@@ -189,7 +189,7 @@ int DbConn::TransactionSelect(sqlite3_stmt *select, Transaction& tx, bool expect
 
 	if (dblog(sqlite3_extended_errcode(Wallet_db), DB_STMT_SELECT)) return -1;	// check if error retrieving results
 
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
+	if (RandTest(RTEST_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConn::TransactionSelect simulating database error post-error check";
 

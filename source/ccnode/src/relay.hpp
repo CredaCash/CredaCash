@@ -44,6 +44,7 @@ private:
 	atomic<int64_t> request_bytes_pending;
 	FastSpinLock request_queue_lock;
 	ObjQueue request_param_queue;
+	uint32_t last_valid_obj_time;
 
 	atomic_flag send_one;
 	FastSpinLock send_queue_lock;

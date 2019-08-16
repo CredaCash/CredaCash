@@ -81,7 +81,7 @@ DbConnValidObjs::~DbConnValidObjs()
 
 void DbConnValidObjs::DoValidObjsFinish()
 {
-	if (RandTest(TEST_DELAY_DB_RESET)) sleep(1);
+	if (RandTest(RTEST_DELAY_DB_RESET)) sleep(1);
 
 	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnValidObjs::DoValidObjsFinish dbconn " << uintptr_t(this);
 
@@ -126,7 +126,7 @@ int DbConnValidObjs::ValidObjsInsert(SmartBuf smartobj)
 	if (dblog(sqlite3_bind_blob(Valid_Objs_insert, 3, obj->OidPtr(), sizeof(ccoid_t), SQLITE_STATIC))) return -1;
 	if (dblog(sqlite3_bind_blob(Valid_Objs_insert, 4, &bufp, sizeof(bufp), SQLITE_STATIC))) return -1;
 
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
+	if (RandTest(RTEST_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnValidObjs::ValidObjsInsert simulating database error pre-insert";
 
@@ -174,7 +174,7 @@ int DbConnValidObjs::ValidObjsGetObj(const ccoid_t& oid, SmartBuf *retobj, bool 
 
 	if (dblog(rc = sqlite3_step(Valid_Objs_select_obj), DB_STMT_SELECT)) return -1;
 
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
+	if (RandTest(RTEST_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnValidObjs::ValidObjsGetObj simulating database error post-select";
 
@@ -200,7 +200,7 @@ int DbConnValidObjs::ValidObjsGetObj(const ccoid_t& oid, SmartBuf *retobj, bool 
 	// Bufp
 	auto bufp_blob = sqlite3_column_blob(Valid_Objs_select_obj, 0);
 
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
+	if (RandTest(RTEST_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnValidObjs::ValidObjsGetObj simulating database error; setting bufp_blob = NULL";
 
@@ -229,8 +229,6 @@ int DbConnValidObjs::ValidObjsGetObj(const ccoid_t& oid, SmartBuf *retobj, bool 
 		return -1;
 	}
 
-	if (TRACE_DBCONN | TRACE_SMARTBUF) BOOST_LOG_TRIVIAL(debug) << "DbConnValidObjs::ValidObjsGetObj db ObjId " << buf2hex(&oid, sizeof(ccoid_t));
-
 	SmartBuf smartobj(bufp);
 	auto obj = (CCObject*)smartobj.data();
 	CCASSERT(obj);
@@ -239,19 +237,21 @@ int DbConnValidObjs::ValidObjsGetObj(const ccoid_t& oid, SmartBuf *retobj, bool 
 
 	if (memcmp(obj->OidPtr(), &oid, sizeof(ccoid_t)) && !or_greater)
 	{
-		if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnValidObjs::ValidObjsGetObj ObjId mismatch";
+		if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnValidObjs::ValidObjsGetObj ObjId mismatch oid " << buf2hex(&oid, sizeof(ccoid_t));
 
 		return 1;
 	}
 
 	if (dblog(sqlite3_extended_errcode(Valid_Objs_db), DB_STMT_SELECT)) return -1;	// check if error retrieving results
 
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
+	if (RandTest(RTEST_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnValidObjs::ValidObjsGetObj simulating database error post-select";
 
 		return -1;
 	}
+
+	if (TRACE_DBCONN | TRACE_SMARTBUF) BOOST_LOG_TRIVIAL(debug) << "DbConnValidObjs::ValidObjsGetObj returning ObjId " << buf2hex(&oid, sizeof(ccoid_t));
 
 	*retobj = smartobj;
 
@@ -280,7 +280,7 @@ unsigned DbConnValidObjs::ValidObjsFindNew(int64_t& next_seqnum, unsigned limit,
 		if (dblog(rc = sqlite3_step(Valid_Objs_select_seqnums), DB_STMT_SELECT))
 			break;
 
-		if (RandTest(TEST_RANDOM_DB_ERRORS))
+		if (RandTest(RTEST_DB_ERRORS))
 		{
 			BOOST_LOG_TRIVIAL(info) << "DbConnValidObjs::ValidObjsFindNew simulating database error post-select";
 
@@ -312,7 +312,7 @@ unsigned DbConnValidObjs::ValidObjsFindNew(int64_t& next_seqnum, unsigned limit,
 
 		next_seqnum = seqnum + 1;	// set now in case there's an error
 
-		if (RandTest(TEST_RANDOM_DB_ERRORS))
+		if (RandTest(RTEST_DB_ERRORS))
 		{
 			BOOST_LOG_TRIVIAL(info) << "DbConnValidObjs::ValidObjsFindNew simulating database error; setting bufp_blob = NULL";
 
@@ -372,7 +372,7 @@ unsigned DbConnValidObjs::ValidObjsFindNew(int64_t& next_seqnum, unsigned limit,
 
 		if (dblog(sqlite3_extended_errcode(Valid_Objs_db), DB_STMT_SELECT)) break;	// check if error retrieving results
 
-		if (RandTest(TEST_RANDOM_DB_ERRORS))
+		if (RandTest(RTEST_DB_ERRORS))
 		{
 			BOOST_LOG_TRIVIAL(info) << "DbConnValidObjs::ValidObjsFindNew simulating database error post-error check";
 
@@ -499,7 +499,7 @@ int DbConnValidObjs::ValidObjsDeleteObj(SmartBuf smartobj)
 
 	if (dblog(sqlite3_bind_blob(Valid_Objs_delete_obj, 1, obj->OidPtr(), sizeof(ccoid_t), SQLITE_STATIC))) return -1;
 
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
+	if (RandTest(RTEST_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnValidObjs::ValidObjsDeleteObj simulating database error pre-delete";
 
@@ -542,7 +542,7 @@ int DbConnValidObjs::ValidObjsDeleteSeqnum(int64_t seqnum)
 
 	if (dblog(sqlite3_bind_int64(Valid_Objs_delete_seqnum, 1, seqnum))) return -1;
 
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
+	if (RandTest(RTEST_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnValidObjs::ValidObjsDeleteSeqnum simulating database error pre-delete";
 
@@ -576,7 +576,7 @@ int DbConnValidObjs::ValidObjsGetExpires(int64_t min_seqnum, int64_t max_seqnum,
 
 	if (dblog(rc = sqlite3_step(Valid_Objs_select_seqnums), DB_STMT_SELECT)) return -1;
 
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
+	if (RandTest(RTEST_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnValidObjs::ValidObjsGetExpires simulating database error post-select";
 
@@ -613,7 +613,7 @@ int DbConnValidObjs::ValidObjsGetExpires(int64_t min_seqnum, int64_t max_seqnum,
 		return -1;
 	}
 
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
+	if (RandTest(RTEST_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnValidObjs::ValidObjsGetExpires simulating database error; setting bufp_blob = NULL";
 
@@ -656,7 +656,7 @@ int DbConnValidObjs::ValidObjsGetExpires(int64_t min_seqnum, int64_t max_seqnum,
 
 	if (dblog(sqlite3_extended_errcode(Valid_Objs_db), DB_STMT_SELECT)) return -1;	// check if error retrieving results
 
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
+	if (RandTest(RTEST_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnValidObjs::ValidObjsGetExpires simulating database error post-select";
 

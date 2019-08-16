@@ -36,6 +36,9 @@ public:
 	void Stop();
 	void DeInit();
 
+	int ExtractTx(const char *wire, const uint32_t txsize, SmartBuf& smartobj);
+	int CompareBinaryTxs(SmartBuf smartobj1, SmartBuf smartobj2);
+
 	int BlockValidate(DbConn *dbconn, SmartBuf smartobj, TxPay& txbuf);
 	void ValidObjsBlockInsert(DbConn *dbconn, SmartBuf smartobj, TxPay& txbuf, bool enqueue = false, bool check_indelible = true);
 

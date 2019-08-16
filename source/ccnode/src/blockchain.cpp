@@ -239,14 +239,6 @@ void BlockChain::SetupGenesisBlock(SmartBuf *retobj)
 	genesis_nwitnesses = auxp->blockchain_params.nwitnesses;
 	genesis_maxmal = auxp->blockchain_params.maxmal;
 
-	if (Implement_CCMint(g_params.blockchain))
-	{
-		auxp->blockchain_params.nwitnesses = auxp->blockchain_params.next_nwitnesses = 1;
-		auxp->blockchain_params.maxmal = auxp->blockchain_params.next_maxmal = 0;
-
-		g_params.tx_work_difficulty /= CC_MINT_POW_FACTOR;	// make POW more difficult during mint
-	}
-
 	auxp->SetConfSigs();
 
 	BOOST_LOG_TRIVIAL(info) << "BlockChain::SetupGenesisBlock blockchain = " << g_params.blockchain;
@@ -255,13 +247,23 @@ void BlockChain::SetupGenesisBlock(SmartBuf *retobj)
 	BOOST_LOG_TRIVIAL(info) << "BlockChain::SetupGenesisBlock nseqconfsigs = " << auxp->blockchain_params.nseqconfsigs;
 	BOOST_LOG_TRIVIAL(info) << "BlockChain::SetupGenesisBlock nskipconfsigs = " << auxp->blockchain_params.nskipconfsigs;
 
+	if (Implement_CCMint(g_params.blockchain))
+	{
+		auxp->blockchain_params.nwitnesses = auxp->blockchain_params.next_nwitnesses = 1;
+		auxp->blockchain_params.maxmal = auxp->blockchain_params.next_maxmal = 0;
+
+		auxp->SetConfSigs();
+
+		g_params.tx_work_difficulty /= CC_MINT_POW_FACTOR;	// make POW more difficult during mint
+	}
+
 	*retobj = smartobj;
 }
 
 void BlockChain::CreateGenesisDataFiles()
 {
 	auto fd_pub = open_file(g_params.genesis_data_file, O_BINARY | O_WRONLY | O_CREAT | O_TRUNC, S_IWUSR | S_IRUSR | S_IRGRP | S_IROTH);
-	if (fd_pub == -1) perror(NULL);
+	if (fd_pub == -1) perror(__FILE__ ":" STRINGIFY(__LINE__));
 	CCASSERT(fd_pub != -1);
 
 	block_signing_private_key_t privkey;
@@ -273,21 +275,21 @@ void BlockChain::CreateGenesisDataFiles()
 	//cerr << "sizeof(privkey) = " << sizeof(privkey) << endl;
 
 	auto rc = write(fd_pub, &genesis_file_tag, sizeof(genesis_file_tag));
-	if (errno) perror(NULL);
+	if (rc == -1) perror(__FILE__ ":" STRINGIFY(__LINE__));
 	CCASSERT(rc == sizeof(genesis_file_tag));
 
 	rc = write(fd_pub, &g_params.blockchain, sizeof(g_params.blockchain));
-	if (errno) perror(NULL);
+	if (rc == -1) perror(__FILE__ ":" STRINGIFY(__LINE__));
 	CCASSERT(rc == sizeof(g_params.blockchain));
 
 	datum = GENESIS_NWITNESSES;
 	rc = write(fd_pub, &datum, sizeof(datum));
-	if (errno) perror(NULL);
+	if (rc == -1) perror(__FILE__ ":" STRINGIFY(__LINE__));
 	CCASSERT(rc == sizeof(datum));
 
 	datum = GENESIS_MAXMAL;
 	rc = write(fd_pub, &datum, sizeof(datum));
-	if (errno) perror(NULL);
+	if (rc == -1) perror(__FILE__ ":" STRINGIFY(__LINE__));
 	CCASSERT(rc == sizeof(datum));
 
 	for (int i = 0; i < GENESIS_NWITNESSES; ++i)
@@ -297,30 +299,30 @@ void BlockChain::CreateGenesisDataFiles()
 		ed25519_publickey(&privkey[0], &pubkey[0]);
 
 		rc = write(fd_pub, &pubkey, sizeof(pubkey));
-		if (errno) perror(NULL);
+		if (rc == -1) perror(__FILE__ ":" STRINGIFY(__LINE__));
 		CCASSERT(rc == sizeof(pubkey));
 
 		char pname[80];
 		sprintf(pname, "%s%i.dat", private_key_file_prefix, i);
 
 		auto fd_priv = open(pname, O_BINARY | O_WRONLY | O_CREAT | O_TRUNC, S_IRWXU);
-		if (fd_priv == -1) perror(NULL);
+		if (fd_priv == -1) perror(__FILE__ ":" STRINGIFY(__LINE__));
 		CCASSERT(fd_priv != -1);
 
 		rc = write(fd_priv, &privkey, sizeof(privkey));
-		if (errno) perror(NULL);
+		if (rc == -1) perror(__FILE__ ":" STRINGIFY(__LINE__));
 		CCASSERT(rc == sizeof(privkey));
 
-		close(fd_priv);
-		if (errno) perror(NULL);
+		rc = close(fd_priv);
+		if (rc == -1) perror(__FILE__ ":" STRINGIFY(__LINE__));
 
 		// don't log the private key in the final release
 		//if (TRACE_SIGNING) BOOST_LOG_TRIVIAL(debug) << "BlockChain::CreateGenesisDataFiles generated witness " << i << " signing private key " << buf2hex(&privkey, sizeof(privkey));
 		if (TRACE_SIGNING) BOOST_LOG_TRIVIAL(debug) << "BlockChain::CreateGenesisDataFiles generated witness " << i << " signing public key " << buf2hex(&pubkey, sizeof(pubkey));
 	}
 
-	close(fd_pub);
-	if (errno) perror(NULL);
+	rc = close(fd_pub);
+	if (rc == -1) perror(__FILE__ ":" STRINGIFY(__LINE__));
 
 	cerr << "Genesis block data files created." << endl;
 }
@@ -574,7 +576,7 @@ void BlockChain::RestoreLastBlocks(DbConn *dbconn, uint64_t last_indelible_level
 
 			if (IsWitness())
 			{
-				auto rc = dbconn->ProcessQEnqueueValidate(PROCESS_Q_TYPE_BLOCK, smartobj, &wire->prior_oid, wire->level.GetValue(), PROCESS_Q_STATUS_VALID, 0, 0, 0);
+				auto rc = dbconn->ProcessQEnqueueValidate(PROCESS_Q_TYPE_BLOCK, smartobj, &wire->prior_oid, wire->level.GetValue(), PROCESS_Q_STATUS_VALID, 0, false, 0, 0);
 
 				if (rc)
 				{
@@ -791,8 +793,8 @@ bool BlockChain::SetNewlyIndelibleBlock(DbConn *dbconn, SmartBuf smartobj, TxPay
 	// BeginWrite will wait for the checkpoint, so we don't need to do this--and more importantly, it will hang if we already hold the write mutex:
 		//DbConnPersistData::PersistentData_WaitForFullCheckpoint();
 
-	auto rc0 = dbconn->BeginWrite();
-	if (rc0 < 0)
+	auto rc = dbconn->BeginWrite();
+	if (rc < 0)
 	{
 		const char *msg = "FATAL ERROR BlockChain::SetNewlyIndelibleBlock error starting db write";
 
@@ -852,12 +854,12 @@ bool BlockChain::SetNewlyIndelibleBlock(DbConn *dbconn, SmartBuf smartobj, TxPay
 		}
 	}
 
-	auto rc1 = IndexTxs(dbconn, smartobj, txbuf);
-	if (rc1)
+	rc = IndexTxs(dbconn, smartobj, txbuf);
+	if (rc)
 		return true;
 
-	auto rc2 = g_commitments.UpdateCommitTree(dbconn, smartobj, timestamp);
-	if (rc2)
+	rc = g_commitments.UpdateCommitTree(dbconn, smartobj, timestamp);
+	if (rc)
 	{
 		const char *msg = "FATAL ERROR BlockChain::SetNewlyIndelibleBlock error updating CommitTree";
 
@@ -866,8 +868,8 @@ bool BlockChain::SetNewlyIndelibleBlock(DbConn *dbconn, SmartBuf smartobj, TxPay
 		return true;
 	}
 
-	auto rc3 = dbconn->BlockchainInsert(level, smartobj);
-	if (rc3)
+	rc = dbconn->BlockchainInsert(level, smartobj);
+	if (rc)
 	{
 		const char *msg = "FATAL ERROR BlockChain::SetNewlyIndelibleBlock error in BlockchainInsert";
 
@@ -876,12 +878,65 @@ bool BlockChain::SetNewlyIndelibleBlock(DbConn *dbconn, SmartBuf smartobj, TxPay
 		return true;
 	}
 
+	bigint_t split = auxp->total_donations * bigint_t(2UL) / (3UL * auxp->blockchain_params.nwitnesses);
+
+	#if 0
+	if (auxp->total_donations)
+	{
+		lock_guard<FastSpinLock> lock(g_cout_lock);
+		cerr << "level " << level << " total_donations " << hex << auxp->total_donations << " split " << split << dec << endl;
+	}
+
+	bigint_t check = auxp->total_donations * bigint_t(2UL) - split * bigint_t(3UL * auxp->blockchain_params.nwitnesses);
+	if (check > bigint_t(3UL * auxp->blockchain_params.nwitnesses))
+	{
+		cerr << "donation split nwitnesses " << auxp->blockchain_params.nwitnesses << " check " << auxp->total_donations * bigint_t(2UL) - split * bigint_t(3UL * auxp->blockchain_params.nwitnesses) << endl;
+
+		const char *msg = "FATAL ERROR BlockChain::SetNewlyIndelibleBlock donation split check failed";
+
+		g_blockchain.SetFatalError(msg);
+
+		return true;
+	}
+	#endif
+
+	for (int i = 0; i < auxp->blockchain_params.nwitnesses && auxp->total_donations; ++i)
+	{
+		bigint_t total;
+		rc = dbconn->ParameterSelect(DB_KEY_DONATION_TOTALS, i, &total, sizeof(total));
+		if (rc > 0)
+			total = 0UL;
+		else if (rc)
+		{
+			const char *msg = "FATAL ERROR BlockChain::SetNewlyIndelibleBlock error in ParameterSelect donation total";
+
+			g_blockchain.SetFatalError(msg);
+
+			return true;
+		}
+
+		if (i == wire->witness)
+			total = total + auxp->total_donations - split * bigint_t(auxp->blockchain_params.nwitnesses - 1UL);
+		else
+			total = total + split;
+
+		rc = dbconn->ParameterInsert(DB_KEY_DONATION_TOTALS, i, &total, sizeof(total));
+		if (rc)
+		{
+			const char *msg = "FATAL ERROR BlockChain::SetNewlyIndelibleBlock error in ParametersInsert donation total";
+
+			g_blockchain.SetFatalError(msg);
+
+			return true;
+		}
+	}
+
 	#if MAX_NCONFSIGS > 64
 	#error MAX_NCONFSIGS > 64
 	#endif
 
-	auto rc4 = dbconn->ParameterInsert(DB_KEY_BLOCK_AUX, level & 63, auxp, (uintptr_t)&auxp->blockchain_params + sizeof(auxp->blockchain_params) - (uintptr_t)auxp);
-	if (rc4)
+	rc = dbconn->ParameterInsert(DB_KEY_BLOCK_AUX, level & 63, auxp, (uintptr_t)&auxp->blockchain_params + sizeof(auxp->blockchain_params) - (uintptr_t)auxp);
+	if (rc)
 	{
 		const char *msg = "FATAL ERROR BlockChain::SetNewlyIndelibleBlock error in ParametersInsert block aux";
 

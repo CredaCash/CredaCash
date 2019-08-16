@@ -15,6 +15,12 @@
 
 #define TRACE_CCSERVER_OPSCOUNT		0
 
+//!#define TEST_VALIDATION_FAIL_NO_STOP	1	// allows bad tx's to be propogated through network
+
+#ifndef TEST_VALIDATION_FAIL_NO_STOP
+#define TEST_VALIDATION_FAIL_NO_STOP	0	// don't test
+#endif
+
 #define DIRECT_TIMEOUT	20	// in seconds	// !!! make this a param
 #define TOR_TIMEOUT		120	// in seconds	// !!! make this a param
 
@@ -210,7 +216,7 @@ void Connection::HandleTorProxyWrite(const string host, const boost::system::err
 	if (CheckOpCount(pending_op_counter))
 		return;
 
-	bool sim_err = RandTest(TEST_RANDOM_WRITE_ERRORS);
+	bool sim_err = RandTest(RTEST_WRITE_ERRORS);
 	if (sim_err) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " Connection::HandleTorProxyWrite simulating write error";
 
 	if (e || sim_err)
@@ -235,7 +241,7 @@ void Connection::HandleTorProxyRead(const string host, const boost::system::erro
 
 	CCASSERT(bytes_transferred <= SOCK_REPLY_SIZE);
 
-	bool sim_err = RandTest(TEST_RANDOM_READ_ERRORS);
+	bool sim_err = RandTest(RTEST_READ_ERRORS);
 	if (sim_err) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " Connection::HandleTorProxyRead simulating read error";
 
 	if (e || !bytes_transferred || sim_err)
@@ -301,13 +307,13 @@ bool Connection::SetTimer(unsigned sec)
 
 	bool rc = AsyncTimerWait("Connection::SetTimer", sec*1000, boost::bind(&Connection::HandleTimeout, this, boost::asio::placeholders::error, AutoCount(this)));
 
-	if (RandTest(TEST_RANDOM_STOPS))
+	if (RandTest(RTEST_STOPS))
 	{
 		BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " Connection::SetTimer simulating random stop";
 
 		Stop();
 
-		if (rand() & 1) sleep(1);
+		if (RandTest(2)) sleep(1);
 	}
 
 	return rc;
@@ -324,23 +330,23 @@ bool Connection::CheckOpCount(AutoCount& pending_op_counter)
 
 		As an optimization--and only as an optimization, a function can return immediately if pending_op_counter is false.
 		This is only an optimization however because the connection can still start to close at any time.
-		To test function operation when the connection is closing, TEST_RANDOM_STOPS and/or TEST_DELAY_CONN_RELEASE can be set
+		To test function operation when the connection is closing, RTEST_STOPS and/or RTEST_DELAY_CONN_RELEASE can be set
 		either of which allows function execution to continue after a stop has been initiated
 	*/
 
 
-	if (RandTest(TEST_RANDOM_STOPS))
+	if (RandTest(RTEST_STOPS))
 	{
 		BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " Connection::CheckOpCount simulating random stop";
 
 		Stop();
 
-		if (rand() & 1) sleep(1);
+		if (RandTest(2)) sleep(1);
 
 		return false;	// continue execution
 	}
 
-	if (!pending_op_counter && RandTest(TEST_DELAY_CONN_RELEASE & 1))
+	if (!pending_op_counter && RandTest(2*!!RTEST_DELAY_CONN_RELEASE))
 		return true;
 
 	return false;
@@ -352,22 +358,22 @@ bool Connection::CancelTimer()
 
 	if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " Connection::CancelTimer " << uintptr_t(this);
 
-	if (RandTest(TEST_RANDOM_STOPS))
+	if (RandTest(RTEST_STOPS))
 	{
 		BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " Connection::CancelTimer simulating random stop";
 
 		Stop();
 
-		if (rand() & 1) sleep(1);
+		if (RandTest(2)) sleep(1);
 
 		return false;	// continue execution
 	}
 
-	if (RandTest(TEST_DELAY_CONN_RELEASE)) sleep(1);
+	if (RandTest(RTEST_DELAY_CONN_RELEASE)) sleep(1);
 
 	lock_guard<FastSpinLock> lock(m_conn_lock);
 
-	if ((g_shutdown || m_stopping.load()) && RandTest(TEST_DELAY_CONN_RELEASE & 1))
+	if ((g_shutdown || m_stopping.load()) && RandTest(2*!!RTEST_DELAY_CONN_RELEASE))
 		return true;
 
 	boost::system::error_code e;
@@ -449,7 +455,7 @@ void Connection::HandleReadCheck(const boost::system::error_code& e, size_t byte
 
 	CCASSERT(m_nred <= m_maxread);
 
-	bool sim_err = RandTest(TEST_RANDOM_READ_ERRORS);
+	bool sim_err = RandTest(RTEST_READ_ERRORS);
 	if (sim_err) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " Connection::HandleReadCheck simulating read error";
 
 	if (e || !bytes_transferred || sim_err)
@@ -535,7 +541,7 @@ void Connection::HandleWrite(const boost::system::error_code& e, AutoCount pendi
 	if (CheckOpCount(pending_op_counter))
 		return;
 
-	bool sim_err = RandTest(TEST_RANDOM_WRITE_ERRORS);
+	bool sim_err = RandTest(RTEST_WRITE_ERRORS);
 	if (sim_err) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " Connection::HandleWrite simulating write error";
 
 	if (e || sim_err)
@@ -556,7 +562,7 @@ void Connection::HandleWrite(const boost::system::error_code& e, AutoCount pendi
 		if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " Connection::HandleWrite closing connection";
 
 		{
-			if (RandTest(TEST_DELAY_CONN_RELEASE)) sleep((rand() & 1) + 1);
+			if (RandTest(RTEST_DELAY_CONN_RELEASE)) sleep((rand() & 1) + 1);
 
 			lock_guard<FastSpinLock> lock(m_conn_lock);
 
@@ -573,7 +579,7 @@ void Connection::HandleValidateDone(uint32_t callback_id, int64_t result)
 {
 	// calling this function is completely asynchronous and can occur long after a connection is closed and reopened, or while its closing or reopening
 
-	if (RandTest(TEST_DELAY_CONN_RELEASE)) sleep(1);
+	if (RandTest(RTEST_DELAY_CONN_RELEASE)) sleep(1);
 
 	lock_guard<FastSpinLock> lock(m_conn_lock);
 
@@ -583,6 +589,9 @@ void Connection::HandleValidateDone(uint32_t callback_id, int64_t result)
 
 		return;
 	}
+
+	if (TEST_VALIDATION_FAIL_NO_STOP)
+		return;
 
 	if (result <= PROCESS_RESULT_STOP_THRESHOLD)
 	{
@@ -594,7 +603,7 @@ void Connection::HandleValidateDone(uint32_t callback_id, int64_t result)
 	{
 		if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " Connection::HandleValidateDone result " << result;
 
-		if (RandTest(TEST_RANDOM_VALIDATION_FAILURES))
+		if (RandTest(RTEST_VALIDATION_FAILURES))
 		{
 			BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " Connection::HandleValidateDone simulating validation failure";
 
@@ -607,7 +616,7 @@ bool Connection::IncRef()
 {
 	//if (TRACE_CCSERVER_OPSCOUNT) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " Connection::IncRef";
 
-	if (RandTest(TEST_DELAY_CONN_RELEASE)) sleep(1);
+	if (RandTest(RTEST_DELAY_CONN_RELEASE)) sleep(1);
 
 	// Stop() sets m_stopping, then checks m_ops_pending
 	// if m_stopping is set, then m_ops_pending should not be incremented
@@ -632,7 +641,7 @@ void Connection::DecRef()
 {
 	//if (TRACE_CCSERVER_OPSCOUNT) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " Connection::DecRef";
 
-	if (RandTest(TEST_DELAY_CONN_RELEASE)) sleep(1);
+	if (RandTest(RTEST_DELAY_CONN_RELEASE)) sleep(1);
 
 	lock_guard<FastSpinLock> lock(m_ref_lock);
 
@@ -663,7 +672,7 @@ void Connection::Stop()
 {
 	//if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " Connection::Stop";
 
-	if (RandTest(TEST_DELAY_CONN_RELEASE)) sleep((rand() & 1) + 1);
+	if (RandTest(RTEST_DELAY_CONN_RELEASE)) sleep((rand() & 1) + 1);
 
 	lock_guard<FastSpinLock> lock(m_conn_lock);
 
@@ -713,14 +722,14 @@ void Connection::HandleStop()
 {
 	if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " Connection::HandleStop closing connection";
 
-	if (RandTest(TEST_DELAY_CONN_RELEASE & 1)) sleep((rand() % 3) + 1);
+	if (RandTest(2*!!RTEST_DELAY_CONN_RELEASE)) ccsleep((rand() & 3) + 1);
 
 	CCASSERT(m_stopping.load() > 0);
 
 	{
 		lock_guard<FastSpinLock> lock(m_conn_lock);
 
-		if (RandTest(TEST_DELAY_CONN_RELEASE & 1)) sleep(1);	// test delay both before and after acquiring m_conn_lock
+		if (RTEST_DELAY_CONN_RELEASE) ccsleep(rand() & 1);	// test delay both before and after acquiring m_conn_lock
 
 		CCASSERTZ(m_ops_pending.load());
 

@@ -26,10 +26,13 @@ randomly flipped, and verifies these are always rejected and do not crash the se
 '''
 
 import collections
+import hashlib
 
 from cclib import *
 
 cclib.server_hostname = 'yof6li2bbjj6vcy4mliftk3svimiqyp37xc4ytlsioa5347ovis6iqad.onion'		# hostname of the Tx server @@!
+
+#cclib.server_allows_bad_txs = True
 
 ####################################################################################
 #
@@ -62,7 +65,7 @@ prob_create_new_destination = 0.2
 # Set this to zero to see how long it takes transactions to clear.
 # Set this to a higher number to spend more time creating transactions and less time waiting.
 
-cleared_check_time_lag = 0
+cleared_check_time_lag = 20
 
 # These parameters are passed directly to the "tx-create" function
 
@@ -72,11 +75,13 @@ test_use_larger_zkkey = 0
 # These are for testing
 
 extra_on_wire = 0				# must match TEST_EXTRA_ON_WIRE in code
-double_spend_probability = 0.2	# probability of attempting to double-spend a bill, if test_double_spends is True
-double_spend_wait_time = 60		# seconds that must elapse before deciding a double-spend attempt did not succeed
-test_nfuzz = 20					# number of times to fuzz a transaction, if the test_bad_txs command line option is set
+bad_tx_probability = 0.5		# probability of creating an invalid tx, if test_bad_txs is set (note: faster testing with mal witness if code compiled with TEST_VALIDATION_FAIL_NO_STOP)
+double_spend_probability = 0.2	# probability of attempting to double-spend a bill, if test_double_spends is set
+bad_spend_wait_time = 120		# seconds that must elapse before deciding an invalid tx did not clear
+test_nfuzz = 20					# number of times to fuzz a transaction, if the test_fuzz_txs is set and server_allows_bad_txs is clear
 
-test_spent_serialnums = {}		# to check for doubles-spends; a real wallet does not need this
+bill_commithashes = {}			# to prevent duplicate commitments; a real wallet does not need this
+spent_serialnums = {}			# to check for doubles-spends; a real wallet does not need this
 
 # Notes on double-spend testing:
 #	txmaxin must be at least 2 to test double-spends inside the same transaction
@@ -386,6 +391,7 @@ class Wallet:
 
 		inputs = QueryInputs(inputs)
 
+		param_level = inputs['parameter-level']
 		default_output_pool = inputs['default-output-pool']
 
 		for i in range(nin):
@@ -491,13 +497,23 @@ class Wallet:
 							break
 
 		if outsum != insum:
+			makebad = True
+		else:
+			makebad = (test_bad_txs and random.random() < bad_tx_probability)
+
+		if makebad and test_bad_txs:
+			print 'Testing an invalid transaction...'
+
+		if makebad:
 			# return input billets to the unspent pool
 			for bill in inbills:
 				if bill.already_spent == 1:
 					bill.already_spent = False
 				spend_order = random.getrandbits(64)
 				self.bills_unspent[spend_order] = bill
-			return
+
+		if makebad and not test_bad_txs:
+			return False
 
 		double_spend_attempt = False
 		for bill in inbills:
@@ -505,7 +521,7 @@ class Wallet:
 				bill.already_spent = True
 				double_spend_attempt = True
 
-		if double_spend_attempt:
+		if not makebad and double_spend_attempt:
 			print 'This transaction is a double-spend attempt'
 
 		print
@@ -539,15 +555,30 @@ class Wallet:
 			# note: this script only creates TxOuts and adds them to txs_unconfirmed when nout > 0
 			# that means tx's with no outputs will not be queried to see if/when they clear
 			txouts = TxOuts()
+			txouts.is_bad_tx = makebad
 			txouts.double_spend = None
+			txouts.dont_requeue = False
 			for i in range(nout):
 				val = outvals[i]
 				while True:
-					if not self.wallet_next_destnum or random.random() < prob_create_new_destination:
-						destnum = self.wallet_next_destnum
-						self.wallet_next_destnum += 1
-					else:
-						destnum = random.randrange(self.wallet_next_destnum)	# use any of prior destination numbers as a stress test
+					for num in range(2):
+						if num or not self.wallet_next_destnum or random.random() < prob_create_new_destination:
+							destnum = self.wallet_next_destnum
+							self.wallet_next_destnum += 1
+						else:
+							destnum = random.randrange(self.wallet_next_destnum)	# use any of prior destination numbers as a stress test
+						# if two tx's contain an identical output commitment, it is not possible to tell which of the two cleared
+						# to prevent this, compute a commitment hash and use it to avoid duplicate commitments
+						# note: M_commitment = zkhash(M_commitment_iv, #dest, #paynum, M_pool, #asset, #amount)
+						hasher = hashlib.new('md5')
+						hasher.update(str(param_level) + '/' + str(destnum) + '/' + str(val))
+						commit_hash = hasher.digest()
+						#print 'commit_hash', num, hasher.hexdigest()
+						if commit_hash in bill_commithashes:
+							if num:
+								raise Exception
+							continue
+						bill_commithashes[commit_hash] = True
 					bill = Bill(self, destnum, default_output_pool, val, nin == 0)
 					if HasAcceptanceRequired(bill.Destination()):
 						# this destination requires acceptance, so pick a different one
@@ -571,7 +602,7 @@ class Wallet:
 		print 'Witness donation:', donation
 
 		print 'Generating transaction...'
-		output = SubmitTx(jstr, test_nfuzz = test_fuzz_txs * test_nfuzz)
+		output = SubmitTx(jstr, makebad = makebad, test_nfuzz = test_fuzz_txs * test_nfuzz)
 		#pprint.pprint(output)
 		#DumpTx()
 
@@ -587,8 +618,16 @@ class Wallet:
 			tx_ok = False
 
 		if not tx_ok:
-			print output
-			DumpTx()
+			if makebad:
+				print 'Invalid tx correctly rejected'
+				return False
+			else:
+				print output
+				DumpTx()
+				raise Exception
+
+		if makebad and not cclib.server_allows_bad_txs:
+			print 'Invalid tx should have been rejected'
 			raise Exception
 
 		# double check the size computation
@@ -636,12 +675,10 @@ class Wallet:
 		if not len(self.txs_unconfirmed):
 			return False
 		txouts = self.txs_unconfirmed[0]
-		if test_double_spends and txouts.double_spend is None:
+		if not txouts.is_bad_tx and txouts.double_spend is None:
 			# a double-spend attempt could clear before the initial spend, so we need to check a table of serialnums to make sure only one clears
-			txouts.double_spend = False
-			txouts.recheck_double_spend = True
 			for i in txouts.serialnums:
-				if i in test_spent_serialnums:
+				if i in spent_serialnums:
 					txouts.double_spend = True
 					break
 		txtime = txouts.Time()
@@ -649,7 +686,7 @@ class Wallet:
 		#print 'txtime', txtime, 'cleared_check_time_lag', cleared_check_time_lag, 'elapsed time', dt
 		if dt < cleared_check_time_lag:
 			return False
-		if txouts.double_spend and dt < double_spend_wait_time:
+		if (txouts.is_bad_tx or txouts.double_spend) and dt < bad_spend_wait_time:
 			return False
 		self.txs_unconfirmed.popleft()
 		check_billnum = txouts.FirstBillnum()
@@ -657,46 +694,45 @@ class Wallet:
 		qcount = 0
 		print
 		while True:
-			if test_double_spends and not txouts.double_spend and (txouts.recheck_double_spend or qcount > 25):
-				# When a double-spend attempt is submitted, either the earlier submitted or the later submitted
-				# transaction will succeed, while the other will fail.  This script checks transactions in the
-				# order they were submitted, so the test_spent_serialnums dictionary won't indicate if a later
-				# submitted double-spend causes this transaction to fail.  Instead, after double_spend_wait_time
-				# elapses, query the server to see if one of the transaction's serialnums is already indelible,
-				# which indicates a double-spend that is causing this transaction to fail.
-				dt = time.time() - txtime
-				if dt > double_spend_wait_time:
-					txouts.recheck_double_spend = False
-					print
-					print 'Checking if this transaction is a double-spend...'
-					for i in txouts.serialnums:
-						if QuerySerialnum(i, False, proxyuser) != 'unspent':
-							print 'This transaction is a double-spend of an already cleared transaction.'
-							txouts.double_spend = True
-							break	# we could just return, but instead continue on to print "Querying...did not clear"
 			print
 			print 'Querying status of',
-			if txouts.double_spend:
+			if txouts.is_bad_tx:
+				print 'invalid',
+			elif txouts.double_spend:
 				print 'double-spent',
 			if txouts.NBills() > 1:
 				print 'bills numbered', check_billnum, '-', check_billnum + txouts.NBills() - 1
 			else:
 				print 'bill number', check_billnum
 			cleared = QueryTxOutputs(txouts, proxyuser)
+			#print 'QueryTxOutputs result', cleared
 			if cleared:
 				break
+			if txouts.is_bad_tx:
+				print 'Invalid tx did not clear'
+				return True
 			if txouts.double_spend:
 				print 'Double-spend did not clear'
 				return True
+			dt = time.time() - txtime
+			if test_double_spends and dt < bad_spend_wait_time:
+				# requeue to check again later
+				self.txs_unconfirmed.append(txouts)
+				return False
+			if dt >= bad_spend_wait_time and not txouts.dont_requeue:
+				# requeue to check again later
+				txouts.dont_requeue = True
+				self.txs_unconfirmed.append(txouts)
+				return False
 			if 0: # qcount == 40: # for debugging
 				print vars(txouts)
 				print vars(txouts.Bills()[0])
 			qcount += 1
 			if qcount > 20:
-				time.sleep(qcount-20)
+				time.sleep(20)
 			else:
 				time.sleep(0.5)
-			if qcount > 120:
+			if qcount > 70:
 				print
 				print 'Timeout waiting for the transaction to clear'
 				print
@@ -706,10 +742,15 @@ class Wallet:
 		else:
 			print 'Bill number', check_billnum, 'has cleared;',
 		print 'elapsed time', round(time.time() - txouts.Time(), 1), 'seconds'
+		if txouts.is_bad_tx:
+			print 'Invalid tx cleared'
+			raise Exception
+		if txouts.double_spend:
+			print 'Double-spend cleared'
+			raise Exception
 		#time.sleep(10)	# for testing
-		if test_double_spends:
-			for i in txouts.serialnums:
-				test_spent_serialnums[i] = True
+		for i in txouts.serialnums:
+			spent_serialnums[i] = True
 		if len(txouts.serialnums):
 			# Make sure the serialnum query works, too.  A real wallet doesn't need to do this.
 			print
@@ -746,8 +787,8 @@ def QueryTxOutputs(txouts, proxyuser):
 		# transaction and used in conjunction with the address of the first output bill in the transaction.
 		txouts.SetNextQueryCommitnum(commitnum + 1)
 
-		#print 'looking for ', bill.Commitment()
-		#print 'have        ', entry['commitment']
+		#print 'looking for', bill.Commitment()
+		#print 'have       ', entry['commitment']
 		if toint(entry['commitment']) == toint(bill.Commitment()):
 			#print 'match'
 			# This wallet's bill was found in the results returned by the server
@@ -800,7 +841,7 @@ def QueryTxOutputs(txouts, proxyuser):
 #
 
 def main(argv):
-	global test_double_spends, test_fuzz_txs, wallet
+	global test_bad_txs, test_double_spends, test_fuzz_txs, wallet
 
 	if len(argv) < 2 or len(argv) > 5:
 		print
@@ -808,7 +849,7 @@ def main(argv):
 		print
 		print ' Note: The standalone Tor proxy by default listens at port 9050'
 		print '       The Tor Browser bundle   by default listens at port 9150'
-		print '       Tx server on localhost   by default listens at port 9210'
+		print '       Tx server on localhost   by default listens at port 9220'
 		print
 		print ' test_bad_txs:'
 		print '       0 = test only valid txs'
@@ -819,24 +860,26 @@ def main(argv):
 		print '       1 = log messages to/from tx server/network'
 		print
 		print ' use_tor_proxy:'
-		print '       Defaults to 1 if port is 9050, 9150 or 9216; otherwise defaults to 0'
+		print '       Defaults to 1 if port is 9050, 9150, 9226, or 29206; otherwise defaults to 0'
 		exit()
 
 	cclib.net_port = int(argv[1])
 
 	# !!! TODO: make sure double-spend test tries serialnums that are old enough to no longer be in tempdb
 
+	test_bad_txs = False
 	test_double_spends = False
 	test_fuzz_txs = False
 	if len(argv) > 2 and int(argv[2]):
+		test_bad_txs = True			# test invalid tx's
 		test_double_spends = True	# test double-spending a bill
-		test_fuzz_txs = True		# test sending random tx data to server (TEST_BREAK_ON_ASSERT in code must be false)
+		test_fuzz_txs = not cclib.server_allows_bad_txs	# test sending random tx data to server (TEST_BREAK_ON_ASSERT in code must be false)
 
 	if len(argv) > 3:
 		cclib.show_queries = int(argv[3])
 		cclib.show_activity = int(argv[3])
 
-	if cclib.net_port == 9050 or cclib.net_port == 9150 or cclib.net_port == 9216:
+	if cclib.net_port == 9050 or cclib.net_port == 9150 or cclib.net_port == 9226 or cclib.net_port == 29206:
 		cclib.use_tor_proxy = True
 	else:
 		cclib.use_tor_proxy = False

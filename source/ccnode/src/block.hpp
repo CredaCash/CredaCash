@@ -10,6 +10,7 @@
 
 #include <CCobjects.hpp>
 #include <SmartBuf.hpp>
+#include <CCbigint.hpp>
 #include <PackedInt.hpp>
 #include <CCparams.h>
 
@@ -89,6 +90,10 @@ public:
 		block_signing_public_key_t signing_keys[MAX_NWITNESSES];
 
 	} blockchain_params;
+
+	// the following are not saved by ParameterInsert(DB_KEY_BLOCK_AUX,...
+
+	snarkfront::bigint_t total_donations;
 
 	struct
 	{

@@ -275,7 +275,7 @@ void DbInit::CreateDBs()
 	// AuxInt is used by the witness to hold the block score
 	for (unsigned i = 0; i < PROCESS_Q_N; ++i)
 	{
-		CCASSERTZ(dbexec(Process_Q_db[i], CREATE_TABLE_SQL "Process_Q (ObjId blob primary key not null, PriorOid blob, Level integer, AuxInt integer, CallbackId integer, Bufp blob not null, Status integer not null, Priority integer not null) without rowid;"));
+		CCASSERTZ(dbexec(Process_Q_db[i], CREATE_TABLE_SQL "Process_Q (ObjId blob primary key not null, PriorOid blob, Level integer, AuxInt integer, ConnId integer, CallbackId integer, Bufp blob not null, Status integer not null, Priority integer not null) without rowid;"));
 		CCASSERTZ(dbexec(Process_Q_db[i], CREATE_INDEX_SQL "Process_Q_Priority_Index on Process_Q (Status, Priority, Level desc);"));
 		CCASSERTZ(dbexec(Process_Q_db[i], CREATE_INDEX_SQL "Process_Q_PriorObj_Index on Process_Q (PriorOid) where Status = " STRINGIFY(PROCESS_Q_STATUS_HOLD) ";"));
 		CCASSERTZ(dbexec(Process_Q_db[i], CREATE_INDEX_SQL "Process_Q_Level_Index on Process_Q (Level) where Level not null;"));
@@ -294,7 +294,7 @@ void DbInit::InitDb()
 
 	string sql("insert or ignore into Parameters values (" STRINGIFY(DB_KEY_SCHEMA));
 
-	CCASSERTZ(dbexec(Persistent_db, (sql + ", 0, \"" DB_TAG "\");").c_str()));
+	CCASSERTZ(dbexec(Persistent_db, (sql + ", 0, '" DB_TAG "');").c_str()));
 	CCASSERTZ(dbexec(Persistent_db, (sql + ", 1, " STRINGIFY(DB_SCHEMA) ");").c_str()));
 }
 

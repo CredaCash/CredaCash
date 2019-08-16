@@ -25,6 +25,7 @@ class Witness
 	uint32_t m_block_start_time;
 	uint32_t m_newblock_bufpos;
 	int64_t m_newblock_next_tx_seqnum;
+	snarkfront::bigint_t m_total_donations;
 
 	bool m_test_ignore_order;
 	bool m_test_try_persistent_double_spend;
@@ -39,7 +40,7 @@ class Witness
 
 	void ThreadProc();
 
-	uint32_t NextTurnTicks();
+	uint32_t NextTurnTicks() const;
 
 	bool AttemptNewBlock();
 	uint64_t FindBestOwnScore(SmartBuf last_indelible_block);
@@ -69,7 +70,7 @@ class Witness
 		m_have_new_block = false;
 	}
 
-	bool HaveNewBlockWork()
+	bool HaveNewBlockWork() const
 	{
 		return m_have_new_block;
 	}
@@ -79,7 +80,7 @@ class Witness
 		m_have_new_tx = value;
 	}
 
-	bool HaveNewTxWork()
+	bool HaveNewTxWork() const
 	{
 		return m_have_new_tx;
 	}
@@ -100,17 +101,18 @@ public:
 	void Init();
 	void DeInit();
 
-	inline bool IsWitness()
+	inline bool IsWitness() const
 	{
 		return witness_index >= 0;
 	}
 
-	inline int WitnessIndex()
+	inline int WitnessIndex() const
 	{
 		return witness_index;
 	}
 
-	bool IsMalTest();
+	bool IsMalTest() const;
+	static bool SimLoss(uint64_t level);
 
 	void NotifyNewWork(bool is_block);
 };

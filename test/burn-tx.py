@@ -427,7 +427,7 @@ def amount_decode(v, is_donation = False):
 	except:
 		int_dll = -999.124836
 	if int_dll != result:
-		print 'amount_decode ', v, 'is_donation', is_donation, 'result', result, 'dll_result', dll_result
+		print 'amount_decode', v, 'is_donation', is_donation, 'result', result, 'dll_result', dll_result
 		raise Exception
 
 	return result

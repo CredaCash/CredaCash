@@ -30,6 +30,7 @@ class cclib:
 	server_hostname = None
 	net_port = None
 	net_timeout = 30
+	server_allows_bad_txs = False
 
 # These values are used in mint transactions
 
@@ -222,10 +223,17 @@ def SendServer(msg, proxyuser = None):
 	sock.sendall(msg)			# send the binary data directed to the transaction server
 	reply = ''
 	while True:					# read reply from transaction server
-		data = sock.recv(4096)
+		data = ''
+		try:
+			data = sock.recv(4096)
+		except socket.error:
+			reply += data
+			return reply
 		if not data:
 			break
 		reply += data
+		#now = time.time()
+		#print time.strftime('%H:%M:%S', time.localtime(int(now))), str(now - int(now)).lstrip('0')
 	#print 'server reply:', reply
 
 	sock.shutdown(socket.SHUT_RDWR)
@@ -340,7 +348,6 @@ def TryServer(label, msg, proxyuser = None, isquery = True, retry = True):
 	#print hexencode(msg)
 	while True:
 		try:
-			#print int(time.time()),
 			if cclib.show_activity:
 				print 'Sending', label, 'to server...'
 			reply = SendServer(msg, proxyuser)
@@ -519,7 +526,7 @@ def DumpTx():
 	if not cclib.show_queries:
 		print result
 
-def SubmitTx(jstr, tx_to_wire_check = 2, test_nfuzz = 0):
+def SubmitTx(jstr, tx_to_wire_check = 2, makebad = False, test_nfuzz = 0):
 		rc, text = DoJsonCmd(jstr, returnrc = True)
 		if rc:
 			return text
@@ -557,7 +564,7 @@ def SubmitTx(jstr, tx_to_wire_check = 2, test_nfuzz = 0):
 					#raise Exception
 				else:
 					#print 'Server reply:', '"' + reply + '"'
-					if reply == 'SubmitServer failed' or reply.startswith('ERROR') or reply.startswith('INVALID'):
+					if cclib.server_allows_bad_txs or reply == 'SubmitServer failed' or reply.startswith('ERROR') or reply.startswith('INVALID'):
 						pass
 					else:
 						print 'SubmitTx server unexpected reply:', '"' + reply + '"'
@@ -574,8 +581,18 @@ def SubmitTx(jstr, tx_to_wire_check = 2, test_nfuzz = 0):
 			while time.time() < target:
 				pass
 
+		if makebad:
+			wire = flipbit(wire, txsize)
+
 		# submit binary transaction to the server
-		reply = SubmitServer('transaction', wire, None, False, return_timeout = True)
+		if not makebad:
+			reply = SubmitServer('transaction', wire, None, False, retry = True, return_timeout = True)
+		else:
+			try:
+				reply = SubmitServer('transaction', wire, None, False, retry = False, return_timeout = True)
+			except:
+				reply = 'EXCEPTION'
+
 		#print 'Server reply:', '"' + reply + '"'
 
 		reply_split = reply.split(':')

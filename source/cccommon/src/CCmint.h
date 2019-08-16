@@ -10,7 +10,7 @@
 
 #define Implement_CCMint(blockchain)	((blockchain) == MAINNET_BLOCKCHAIN)
 
-//#define TEST_SMALL_MINT		1	// set params to test a small mint //@@!
+//#define TEST_SMALL_MINT		1	// set params to test a small mint
 
 #ifndef TEST_SMALL_MINT
 #define TEST_SMALL_MINT		0		// if defined, set params to test a small mint
@@ -28,6 +28,8 @@
 #define CC_MINT_ACCEPT_SPAN	3		// param level acceptance span
 #define CC_MINT_BLOCK_SEC	1		// seconds per block
 #endif
+
+#define CC_MINT_ZKKEY_ID	15
 
 #define CC_MINT_FOUNDATION_POOL	2
 

@@ -9,7 +9,7 @@
 #pragma once
 
 #define CCAPPNAME	"CredaCash Directory Server"
-#define CCVERSION	 "0.98" //@@!
+#define CCVERSION	 "1.00" //@@!
 #define CCEXENAME	"cctracker"
 #define CCAPPDIR	"CCTracker"
 

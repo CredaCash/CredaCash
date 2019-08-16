@@ -57,17 +57,17 @@ When another wallet spends a bill in this wallet:
 
 #include <siphash/siphash.h>
 
-//!#define TEST_NO_ROUND_UP			1
-//!#define TEST_RANDOM_TX_ERRORS	15	// when this is enabled, it's helpful to set polling_addresses = 50 and polling_table[SECRET_TYPE_POLL_ADDRESS][nothing received].first to 5 sec (instead of 60 sec)
-//!#define TEST_FAIL_ALL_TXS		1	// all tx's fail (except mints), so balance should never change--useful for testing that the donation is handled correctly on error
-//#define TEST_BIG_DIVISION			1
+//!#define TEST_NO_ROUND_UP		1
+//!#define RTEST_TX_ERRORS		16	// when this is enabled, it's helpful to set polling_addresses = 50 and polling_table[SECRET_TYPE_POLL_ADDRESS][nothing received].first to 5 sec (instead of 60 sec)
+//!#define TEST_FAIL_ALL_TXS	1	// all tx's fail (except mints), so balance should never change--useful for testing that the donation is handled correctly on error
+//#define TEST_BIG_DIVISION		1
 
 #ifndef TEST_NO_ROUND_UP
-#define TEST_NO_ROUND_UP	0	// don't test
+#define TEST_NO_ROUND_UP		0	// don't test
 #endif
 
-#ifndef TEST_RANDOM_TX_ERRORS
-#define TEST_RANDOM_TX_ERRORS	0	// don't test
+#ifndef RTEST_TX_ERRORS
+#define RTEST_TX_ERRORS			0	// don't test
 #endif
 
 #ifndef TEST_FAIL_ALL_TXS
@@ -75,11 +75,11 @@ When another wallet spends a bill in this wallet:
 #endif
 
 #ifndef TEST_BIG_DIVISION
-#define TEST_BIG_DIVISION	0	// don't test
+#define TEST_BIG_DIVISION		0	// don't test
 #endif
 
 #define WALLET_TX_MINOUT	2
-#define WALLET_TX_MAXOUT	2
+//#define WALLET_TX_MAXOUT	2
 
 #define WALLET_TX_MININ		1
 #define WALLET_TX_MAXIN		4
@@ -1021,7 +1021,7 @@ int Transaction::CreateTxMint(DbConn *dbconn, TxQuery& txquery) // throws RPC_Ex
 	//BeginAndReadTx(dbconn, id);	// testing
 	//BeginAndReadTx(dbconn, id);	// testing
 
-	if (RandTest(TEST_RANDOM_TX_ERRORS))
+	if (RandTest(RTEST_TX_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "Transaction::CreateTxMint simulating error after save, before submit";
 
@@ -1283,7 +1283,7 @@ int Transaction::WaitNewBillet(const bigint_t& total_required, const uint64_t bi
 
 	if (lock) lock.unlock();
 
-	if (RandTest(TEST_RANDOM_TX_ERRORS))
+	if (RandTest(RTEST_TX_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "Transaction::WaitNewBillet simulating error";
 
@@ -1409,9 +1409,6 @@ int Transaction::FillOutTx(DbConn *dbconn, TxQuery& txquery, TxParams& txparams,
 
 	if (Implement_CCMint(txparams.blockchain) && inputs.param_level < CC_MINT_COUNT + CC_MINT_ACCEPT_SPAN)
 		throw txrpc_tx_rejected;
-
-	if (Implement_CCMint(txparams.blockchain)) //@@! remove for production release
-		throw RPC_Exception(RPC_VERIFY_REJECTED, "Please await the final software release before sending transactions on the live network");
 
 	// compute and recheck encoded amounts using txparams returned by QueryInputs
 
@@ -1695,7 +1692,7 @@ void Transaction::CreateTxPay(DbConn *dbconn, TxQuery& txquery, const string& en
 	{
 		if (retry > 2000 || g_shutdown) throw txrpc_wallet_error;
 
-		if (RandTest(TEST_RANDOM_TX_ERRORS))
+		if (RandTest(RTEST_TX_ERRORS))
 		{
 			BOOST_LOG_TRIVIAL(info) << "Transaction::CreateTxPay simulating pre tx, at shutdown check for retry " << retry;
 
@@ -2011,7 +2008,7 @@ int Transaction::TryCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& txpa
 			if (g_shutdown)
 				throw txrpc_wallet_error;
 
-			if (RandTest(TEST_RANDOM_TX_ERRORS))
+			if (RandTest(RTEST_TX_ERRORS))
 			{
 				BOOST_LOG_TRIVIAL(info) << "Transaction::TryCreateTxPay simulating error mid tx, at shutdown check for subtx " << ntx << " nin " << tx->nin;
 
@@ -2075,7 +2072,7 @@ int Transaction::TryCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& txpa
 			new_amount = tx->input_bills[tx->nin].amount;
 			++tx->nin;
 
-			if (RandTest(TEST_RANDOM_TX_ERRORS))
+			if (RandTest(RTEST_TX_ERRORS))
 			{
 				BOOST_LOG_TRIVIAL(info) << "Transaction::TryCreateTxPay simulating error mid tx, after LocateBillet succeeded for nin " << tx->nin;
 
@@ -2242,14 +2239,14 @@ int Transaction::TryCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& txpa
 		}
 	}
 
-	if (RandTest(TEST_RANDOM_TX_ERRORS))
+	if (RandTest(RTEST_TX_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "Transaction::TryCreateTxPay simulating billet spent / amount mismatch retry";
 
 		return 1;
 	}
 
-	if (RandTest(TEST_RANDOM_TX_ERRORS) || (TEST_FAIL_ALL_TXS && 0))
+	if (RandTest(RTEST_TX_ERRORS) || (TEST_FAIL_ALL_TXS && 0))
 	{
 		BOOST_LOG_TRIVIAL(info) << "Transaction::TryCreateTxPay simulating error pre address computation, at shutdown check";
 
@@ -2311,7 +2308,7 @@ int Transaction::TryCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& txpa
 			if (si < 2 && g_shutdown)
 				throw txrpc_wallet_error;
 
-			if (RandTest(TEST_RANDOM_TX_ERRORS) || (TEST_FAIL_ALL_TXS && 0))
+			if (RandTest(RTEST_TX_ERRORS) || (TEST_FAIL_ALL_TXS && 0))
 			{
 				BOOST_LOG_TRIVIAL(info) << "Transaction::TryCreateTxPay simulating error after create, before save and submit for subtx " << si << " of " << active_subtx_count << " need_intermediate_txs " << need_intermediate_txs;
 
@@ -2334,7 +2331,7 @@ int Transaction::TryCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& txpa
 			if (si < 2)
 				parent_id = tx->id;
 
-			if (RandTest(TEST_RANDOM_TX_ERRORS) || (TEST_FAIL_ALL_TXS && 0))
+			if (RandTest(RTEST_TX_ERRORS) || (TEST_FAIL_ALL_TXS && 0))
 			{
 				BOOST_LOG_TRIVIAL(info) << "Transaction::TryCreateTxPay simulating error after save, before submit for subtx " << si << " of " << active_subtx_count << " need_intermediate_txs " << need_intermediate_txs;
 
@@ -2346,7 +2343,7 @@ int Transaction::TryCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& txpa
 
 			uint64_t next_commitnum;
 
-			if (RandTest(TEST_RANDOM_TX_ERRORS) || TEST_FAIL_ALL_TXS)
+			if (RandTest(RTEST_TX_ERRORS) || TEST_FAIL_ALL_TXS)
 			{
 				BOOST_LOG_TRIVIAL(info) << "Transaction::TryCreateTxPay simulating SubmitTx that actually failed for subtx " << si << " of " << active_subtx_count << " need_intermediate_txs " << need_intermediate_txs;
 
@@ -2359,7 +2356,7 @@ int Transaction::TryCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& txpa
 			{
 				BOOST_LOG_TRIVIAL(warning) << "Transaction::TryCreateTxPay SubmitTx did not successfully complete. The network may or may not have received the transaction. If the network did receive the transaction, the wallet will detect it in the blockchain and will then mark the transaction input billets as spent and deduct them from the wallet balance.  In the meantime, before the transaction has cleared, the wallet might attempt to respend the same inputs which would result in a conflicting transaction.  Because this is not currently detected and handled by the wallet, this may result in one or more input billets from the second transaction being deducted from the wallet even though they are not actually spent. This is most likely to occur during high-speed load testing, and can throw off the wallet balance tracking.";
 			}
-			else if (RandTest(TEST_RANDOM_TX_ERRORS) && 0) // will throw off balance if enabled
+			else if (RandTest(RTEST_TX_ERRORS) && 0) // will throw off balance if enabled
 			{
 				// note: this test causes input billets to be deallocated then used in another tx
 				// resulting in conflicting tx's, only one of which will clear, which throws off the balance tracking

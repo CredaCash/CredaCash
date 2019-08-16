@@ -15,7 +15,7 @@
 
 #define TRACE_DBCONN	(g_params.trace_relay_db)
 
-//#define TEST_SEND_TO_SELF		1	// if set to 1, allows relay to download objects it has already downloaded
+//#define TEST_SEND_TO_SELF		1	// if set, allows relay to download objects it has already downloaded
 
 #ifndef TEST_SEND_TO_SELF
 #define TEST_SEND_TO_SELF		0	// don't test
@@ -107,7 +107,7 @@ DbConnRelayObjs::~DbConnRelayObjs()
 
 void DbConnRelayObjs::DoRelayObjsFinish(bool rollback)
 {
-	if (RandTest(TEST_DELAY_DB_RESET)) sleep(1);
+	if (RandTest(RTEST_DELAY_DB_RESET)) sleep(1);
 
 	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnRelayObjs::DoRelayObjsFinish dbconn " << uintptr_t(this) << " rollback " << rollback;
 
@@ -158,7 +158,7 @@ void DbConnRelayObjs::RelayObjsInsert(unsigned peer, unsigned type, const relay_
 
 	if (dblog(rc = sqlite3_step(Relay_Objs_select_seqnum), DB_STMT_SELECT)) return;
 
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
+	if (RandTest(RTEST_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnRelayObjs::RelayObjsInsert simulating database error post-select";
 
@@ -251,7 +251,7 @@ void DbConnRelayObjs::RelayObjsInsert(unsigned peer, unsigned type, const relay_
 
 	// COMMIT
 
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
+	if (RandTest(RTEST_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnRelayObjs::RelayObjsInsert simulating database error pre-commit";
 
@@ -317,7 +317,7 @@ int DbConnRelayObjs::RelayObjsFindDownloads(unsigned conn_index, uint64_t tx_lev
 
 		if (dblog(rc = sqlite3_step(Relay_Objs_select_download), DB_STMT_SELECT)) return -1;
 
-		if (RandTest(TEST_RANDOM_DB_ERRORS))
+		if (RandTest(RTEST_DB_ERRORS))
 		{
 			BOOST_LOG_TRIVIAL(info) << "DbConnRelayObjs::RelayObjsFindDownloads simulating database error post-select";
 
@@ -377,7 +377,7 @@ int DbConnRelayObjs::RelayObjsFindDownloads(unsigned conn_index, uint64_t tx_lev
 
 		if (dblog(sqlite3_extended_errcode(Relay_Objs_db), DB_STMT_SELECT)) return -1;	// check if error retrieving results
 
-		if (RandTest(TEST_RANDOM_DB_ERRORS))
+		if (RandTest(RTEST_DB_ERRORS))
 		{
 			BOOST_LOG_TRIVIAL(info) << "DbConnRelayObjs::RelayObjsFindDownloads simulating database error post-error check";
 
@@ -395,7 +395,7 @@ int DbConnRelayObjs::RelayObjsFindDownloads(unsigned conn_index, uint64_t tx_lev
 		if (dblog(sqlite3_bind_int64(Relay_Peers_update_seqnum, 1, seqnum))) return -1;
 		if (dblog(sqlite3_bind_int(Relay_Peers_update_seqnum, 2, RELAY_PEER_STATUS_STARTED))) return -1;
 
-		if (RandTest(TEST_RANDOM_DB_ERRORS))
+		if (RandTest(RTEST_DB_ERRORS))
 		{
 			BOOST_LOG_TRIVIAL(info) << "DbConnRelayObjs::RelayObjsFindDownloads simulating database error pre-peer status update";
 
@@ -419,7 +419,7 @@ int DbConnRelayObjs::RelayObjsFindDownloads(unsigned conn_index, uint64_t tx_lev
 
 			if (dblog(sqlite3_step(Relay_Objs_update), DB_STMT_STEP)) return -1;
 
-			if (RandTest(TEST_RANDOM_DB_ERRORS))
+			if (RandTest(RTEST_DB_ERRORS))
 			{
 				BOOST_LOG_TRIVIAL(info) << "DbConnRelayObjs::RelayObjsFindDownloads simulating database error post-update";
 
@@ -472,7 +472,7 @@ int DbConnRelayObjs::RelayObjsFindDownloads(unsigned conn_index, uint64_t tx_lev
 
 	// COMMIT
 
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
+	if (RandTest(RTEST_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnRelayObjs::RelayObjsFindDownloads simulating database error pre-commit";
 
@@ -512,7 +512,7 @@ int DbConnRelayObjs::RelayObjsSetStatus(const ccoid_t& oid, int obj_status, int 
 
 		if (dblog(rc = sqlite3_step(Relay_Objs_select_seqnum), DB_STMT_SELECT)) break;
 
-		if (RandTest(TEST_RANDOM_DB_ERRORS))
+		if (RandTest(RTEST_DB_ERRORS))
 		{
 			BOOST_LOG_TRIVIAL(info) << "DbConnRelayObjs::RelayObjsSetStatus simulating database error post-select";
 
@@ -556,7 +556,7 @@ int DbConnRelayObjs::RelayObjsSetStatus(const ccoid_t& oid, int obj_status, int 
 	if (dblog(sqlite3_bind_int(Relay_Objs_update, 2, obj_status))) return -1;
 	if (dblog(sqlite3_bind_int(Relay_Objs_update, 3, timeout))) return -1;
 
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
+	if (RandTest(RTEST_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnRelayObjs::RelayObjsSetStatus simulating database error pre-update";
 
@@ -610,7 +610,7 @@ int DbConnRelayObjs::RelayObjsDeletePeer(unsigned peer)
 
 	if (dblog(sqlite3_bind_int(Relay_Peers_delete_peer, 1, peer))) return -1;
 
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
+	if (RandTest(RTEST_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnRelayObjs::RelayObjsDeletePeer simulating database error pre-delete";
 
@@ -652,7 +652,7 @@ int DbConnRelayObjs::RelayObjsDeleteSeqnum(int64_t seqnum)
 		break;
 	}
 
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
+	if (RandTest(RTEST_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnRelayObjs::RelayObjsDeleteSeqnum simulating database error pre-commit";
 
@@ -686,7 +686,7 @@ int DbConnRelayObjs::RelayObjsGetExpires(int64_t min_seqnum, int64_t max_seqnum,
 
 	if (dblog(rc = sqlite3_step(Relay_Objs_select_oldest), DB_STMT_SELECT)) return -1;
 
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
+	if (RandTest(RTEST_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnRelayObjs::RelayObjsGetExpires simulating database error post-select";
 
@@ -723,7 +723,7 @@ int DbConnRelayObjs::RelayObjsGetExpires(int64_t min_seqnum, int64_t max_seqnum,
 
 	if (dblog(sqlite3_extended_errcode(Relay_Objs_db), DB_STMT_SELECT)) return -1;	// check if error retrieving results
 
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
+	if (RandTest(RTEST_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnRelayObjs::RelayObjsGetExpires simulating database error post-select";
 

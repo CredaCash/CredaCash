@@ -20,48 +20,48 @@
 #define TRACE_CCSERVER		1		// !!! TODO: make this a property of the connection
 #define TRACE_CCSERVER_RW	0		// !!! TODO: make this a property of the connection
 
-//!#define TEST_RANDOM_READ_ERRORS				127
-//!#define TEST_RANDOM_WRITE_ERRORS				127
-//!#define TEST_RANDOM_TIMER_ERRORS				127
-//!#define TEST_RANDOM_STOPS					63
+//!#define RTEST_READ_ERRORS			128
+//!#define RTEST_WRITE_ERRORS			128
+//!#define RTEST_TIMER_ERRORS			128
+//!#define RTEST_STOPS					64
 
-//!#define TEST_RANDOM_VALIDATION_FAILURES		63
+//!#define RTEST_VALIDATION_FAILURES	64
 
-//!#define TEST_CUZZ_TIMER							31
-//!#define TEST_TIMER_TIMEOUT						31
+//!#define RTEST_CUZZ_TIMER				32
+//!#define RTEST_TIMER_TIMEOUT			32
 
-//!#define TEST_DELAY_CONN_RELEASE				31
+//!#define RTEST_DELAY_CONN_RELEASE		32
 
-#ifndef TEST_RANDOM_READ_ERRORS
-#define TEST_RANDOM_READ_ERRORS				0	// don't test
+#ifndef RTEST_READ_ERRORS
+#define RTEST_READ_ERRORS				0	// don't test
 #endif
 
-#ifndef TEST_RANDOM_WRITE_ERRORS
-#define TEST_RANDOM_WRITE_ERRORS			0	// don't test
+#ifndef RTEST_WRITE_ERRORS
+#define RTEST_WRITE_ERRORS				0	// don't test
 #endif
 
-#ifndef TEST_RANDOM_TIMER_ERRORS
-#define TEST_RANDOM_TIMER_ERRORS			0	// don't test
+#ifndef RTEST_TIMER_ERRORS
+#define RTEST_TIMER_ERRORS				0	// don't test
 #endif
 
-#ifndef TEST_RANDOM_STOPS
-#define TEST_RANDOM_STOPS					0	// don't test
+#ifndef RTEST_STOPS
+#define RTEST_STOPS						0	// don't test
 #endif
 
-#ifndef TEST_RANDOM_VALIDATION_FAILURES
-#define TEST_RANDOM_VALIDATION_FAILURES		0	// don't test
+#ifndef RTEST_VALIDATION_FAILURES
+#define RTEST_VALIDATION_FAILURES		0	// don't test
 #endif
 
-#ifndef TEST_CUZZ_TIMER
-#define TEST_CUZZ_TIMER						0	// don't test
+#ifndef RTEST_CUZZ_TIMER
+#define RTEST_CUZZ_TIMER				0	// don't test
 #endif
 
-#ifndef TEST_TIMER_TIMEOUT
-#define TEST_TIMER_TIMEOUT					0	// don't test
+#ifndef RTEST_TIMER_TIMEOUT
+#define RTEST_TIMER_TIMEOUT				0	// don't test
 #endif
 
-#ifndef TEST_DELAY_CONN_RELEASE
-#define TEST_DELAY_CONN_RELEASE				0	// don't test
+#ifndef RTEST_DELAY_CONN_RELEASE
+#define RTEST_DELAY_CONN_RELEASE		0	// don't test
 #endif
 
 #define PROCESS_RESULT_STOP_THRESHOLD	-10
@@ -182,7 +182,7 @@ public:
 	template <typename Handler>
 	bool Post(const char *function, Handler handler)
 	{
-		if (RandTest(TEST_DELAY_CONN_RELEASE)) sleep(1);
+		if (RandTest(RTEST_DELAY_CONN_RELEASE)) sleep(1);
 
 		lock_guard<FastSpinLock> lock(m_conn_lock);
 
@@ -211,7 +211,7 @@ public:
 	template <typename Buffer, typename CompletionCondition, typename Handler>
 	bool ReadAsync(const char *function, Buffer buffer, CompletionCondition completion_condition, Handler handler)
 	{
-		if (RandTest(TEST_DELAY_CONN_RELEASE)) sleep(1);
+		if (RandTest(RTEST_DELAY_CONN_RELEASE)) sleep(1);
 
 		lock_guard<FastSpinLock> lock(m_conn_lock);
 
@@ -255,7 +255,7 @@ public:
 
 		while (!g_shutdown && !m_stopping.load() && !already_own_mutex && m_write_in_progress.test_and_set())
 		{
-			if (!(++wait_count & 1023))	// about 102 seconds
+			if (!(++wait_count & 4095))	// about 82 seconds
 				BOOST_LOG_TRIVIAL(warning) << Name() << " Conn " << m_conn_index << " " << function << " WriteAsync may be hung waiting for prior write to complete";
 
 			//BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " " << function << " WriteAsync waiting for prior write to complete...";
@@ -263,7 +263,7 @@ public:
 			usleep(20*1000);
 		}
 
-		if (RandTest(TEST_RANDOM_WRITE_ERRORS))
+		if (RandTest(RTEST_WRITE_ERRORS))
 		{
 			BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " " << function << " simulating write error";
 
@@ -272,7 +272,7 @@ public:
 			return true;
 		}
 
-		if (RandTest(TEST_DELAY_CONN_RELEASE)) sleep(1);
+		if (RandTest(RTEST_DELAY_CONN_RELEASE)) sleep(1);
 
 		lock_guard<FastSpinLock> lock(m_conn_lock);
 
@@ -299,7 +299,7 @@ public:
 		// note there is only one timer object m_timer associated with the connection, and all AsyncTimerWait calls wait on this same timer
 		// according to boost asio documentation, starting a wait on a timer cancels an already pending wait on the same timer
 
-		if (RandTest(TEST_RANDOM_TIMER_ERRORS))
+		if (RandTest(RTEST_TIMER_ERRORS))
 		{
 			BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " " << function << " simulating timer error";
 
@@ -308,7 +308,7 @@ public:
 			return true;
 		}
 
-		if (ms > 0 && RandTest(TEST_CUZZ_TIMER))
+		if (ms > 0 && RandTest(RTEST_CUZZ_TIMER))
 		{
 			auto newms = rand() % ms;
 			newms = rand() % (newms + 1);	// generate random distribution skewed toward smaller values
@@ -318,7 +318,7 @@ public:
 			ms = newms;
 		}
 
-		if (RandTest(TEST_DELAY_CONN_RELEASE)) sleep(1);
+		if (RandTest(RTEST_DELAY_CONN_RELEASE)) sleep(1);
 
 		lock_guard<FastSpinLock> lock(m_conn_lock);
 
@@ -340,7 +340,7 @@ public:
 			return true;
 		}
 
-		if (RandTest(TEST_TIMER_TIMEOUT))
+		if (RandTest(RTEST_TIMER_TIMEOUT))
 		{
 			BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " " << function << " AsyncTimerWait test sleeping until timer has expired";
 

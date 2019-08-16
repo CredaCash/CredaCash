@@ -103,7 +103,7 @@ The following instructions are specifically for Debian Stretch v9.8.  They may b
 
 If the build is not successful due to incompatibilities with Boost, Boost can be built from source as static libraries under Linux as follows:
 
-1. Download the latest stable version of the Boost library source code from [Sourceforge](https://sourceforge.net/projects/boost/files/boost/)
+1. Download the latest stable version of the Boost library source code from [boost.org](https://www.boost.org/)
 
 2. Extract to CredaCash/depends/boost
 
@@ -270,7 +270,7 @@ Windows executables are available at [CredaCash.com](https://CredaCash.com/softw
 
 ##### Boost
 
-1. Download the latest stable version of the Boost library source code from [Sourceforge](https://sourceforge.net/projects/boost/files/boost/)
+1. Download the latest stable version of the Boost library source code from [boost.org](https://www.boost.org/)
 
 2. Extract to C:\CredaCash\depends\boost
 
@@ -284,7 +284,7 @@ Windows executables are available at [CredaCash.com](https://CredaCash.com/softw
 
 	``bootstrap.bat gcc``
 
-	``b2 -j4 --layout=system toolset=gcc address-model=64 cxxflags="-std=c++11 -D_hypot=hypot" define=BOOST_USE_WINAPI_VERSION=0x0502 variant=release threading=multi link=static runtime-link=static``
+	``b2 --layout=system --without-python toolset=gcc address-model=64 cxxflags="-std=c++11 -D_hypot=hypot" define=BOOST_USE_WINAPI_VERSION=0x0502 variant=release threading=multi link=static runtime-link=static``
 
 	The output should be "The Boost C++ Libraries were successfully built!"
 

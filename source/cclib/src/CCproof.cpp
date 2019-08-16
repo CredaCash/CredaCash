@@ -19,12 +19,10 @@
 
 #include <blake2/blake2.h>
 
-//@@! before release, check all test defs: regexp ^#define TEST.*[1-9] and ^#define TRACE.*[1-9]
+//@@! before release, check all test defs: regexp ^#define TEST.*[1-9], ^#define RTEST.*[1-9], and ^#define TRACE.*[1-9]
 
 //!#define TEST_PUBLIC_INPUTS_UNBOUNDED	1
 //!#define TEST_RANDOM_ANYVALS			1
-
-//#define TEST_SKIP_ZKPROOFS			1	// for faster testing of tx handling ***NOTE: also set *_work_difficulty = 1
 
 #ifdef CC_DLL_EXPORTS
 #define TEST_SHOW_GEN_BENCHMARKS	1	// show benchmarks in DLL build; TODO: make this a json option (ok for production release)
@@ -38,10 +36,6 @@
 
 #ifndef TEST_RANDOM_ANYVALS
 #define TEST_RANDOM_ANYVALS			0	// don't test
-#endif
-
-#ifndef TEST_SKIP_ZKPROOFS
-#define TEST_SKIP_ZKPROOFS			0	// don't skip
 #endif
 
 #ifndef TEST_DEBUG_CONSTRAINTS
@@ -752,7 +746,7 @@ static void bless_input_public_inputs(TxInZKPub& zkinpub, const TxIn& txin, bool
 
 		bool spend_bad = txin.____spend_secrets_valid && txin.params.____spend_delaytime;
 		bool trust_bad = txin.____trust_secrets_valid && txin.params.____trust_delaytime;
-		if ((spend_bad && !trust_bad) || (spend_bad && trust_bad && !(rand() & 1)))
+		if ((spend_bad && !trust_bad) || (spend_bad && trust_bad && RandTest(2)))
 		{
 			badval = txin.params.____spend_delaytime - 1UL;
 			nobad = false;
@@ -2202,6 +2196,8 @@ CCPROOF_API CCProof_GenProof(TxPay& tx)
 
 #if TEST_SKIP_ZKPROOFS
 	CCRandom(&tx.zkproof, sizeof(tx.zkproof));
+	memset(&tx.zkproof, 0, 2*64);
+	*((char*)&tx.zkproof + 128) |= (1 << (rand() & 7));
 	return 0;
 #endif
 
@@ -2289,7 +2285,12 @@ CCPROOF_API CCProof_VerifyProof(TxPay& tx)
 	//cerr << "CCProof_VerifyProof" << endl;
 
 #if TEST_SKIP_ZKPROOFS
-	return 0;
+	// the "proof" is valid if the first 64 bytes appears twice and byte 128 is non-zero
+	if (memcmp(&tx.zkproof, (char*)&tx.zkproof + 64, 64))
+		return -1;
+	if (*((char*)&tx.zkproof + 128))
+		return 0;
+	return -1;
 #endif
 
 	bool valid = false;

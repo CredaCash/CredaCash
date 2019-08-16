@@ -113,6 +113,10 @@ public:
 		return header.tag;
 	}
 
+	static std::uint32_t WireTag(std::uint32_t tag);
+	std::uint32_t WireTag() const;
+
+	static unsigned ObjType(std::uint32_t tag);
 	unsigned ObjType() const;
 
 	bool IsValid() const;

@@ -32,6 +32,7 @@
 
 #define TRANSACT_HOSTS		"transact_tor_hosts.lis"
 
+#define DEFAULT_TRACE_LEVEL	3
 #define TRACE_SHUTDOWN		1
 
 void set_service_configs()
@@ -162,22 +163,23 @@ static int process_options(int argc, char **argv)
 		("blockchain", po::value<uint64_t>(&g_params.blockchain)->default_value(MAINNET_BLOCKCHAIN), "Numeric identifier for blockchain; from " STRINGIFY(TESTNET_BLOCKCHAIN_LO) " to " STRINGIFY(TESTNET_BLOCKCHAIN_HI) " is a test network.")
 		("datadir", po::wvalue<wstring>(&g_params.app_data_dir), "Path to program data directory (default: \""
 #if _WIN32
-				"%LOCALAPPDATA%\\CredaCash\\" CCAPPDIR "\").")
+				"%LOCALAPPDATA%\\CredaCash\\" CCAPPDIR "\""
 #else
-				"~/." CCAPPDIR "\").")
+				"~/." CCAPPDIR "\""
 #endif
+				", where \"#\" is the blockchain number).")
 		("wallet-file", po::value<string>(&g_params.wallet_file)->default_value("CCWallet"), "Wallet filename.")
 		("secret-generation-ms", po::value<int>(&g_params.secret_gen_time)->default_value(4000), "Number of millseconds to expend generating a new secret.")
 		("secret-generation-memory", po::value<int>(&g_params.secret_gen_memory)->default_value(10), "Memory (MB) used to generate a new secret.")
 		("proof-key-dir", po::wvalue<wstring>(&g_params.proof_key_dir), "Path to zero knowledge proof keys; if set to \"env\", the environment variable " KEY_PATH_ENV_VAR " is used (default: the subdirectory \"" ZK_KEY_DIR "\" in same directory as this program).")
 		("baseport", po::value<int>(&g_params.base_port)->default_value(0), (string("Base port for wallet interfaces\n")
-			+ "(default: " STRINGIFY(BASE_PORT) "+(blockchain*10 modulo " + to_string(BASE_PORT_TOP-BASE_PORT) + ")"
+			+ "(default: " STRINGIFY(BASE_PORT) "+20*(blockchain modulo " + to_string((BASE_PORT_TOP-BASE_PORT)/20) + ")"
 			"; wallet interfaces use ports baseport+" STRINGIFY(WALLET_RPC_PORT) " through baseport+" STRINGIFY(TOR_PORT) ").").c_str())
 
 		("transact-host", po::value<string>(&g_params.transact_host)->default_value(LOCALHOST), "IP address of transaction support server.\n"
-			"If transact-tor = 1, then this value is ignored and transact-tor-hosts-file is used instead.")
+			"If transact-tor=1, then this value is ignored and transact-tor-hosts-file is used instead.")
 		("transact-port", po::value<int>(&g_params.transact_port)->default_value(0), "Port of transaction support server.\n"
-			"If transact-tor = 1, then this value is ignored and transact-tor-hosts-file is used instead"
+			"If transact-tor=1, then this value is ignored and transact-tor-hosts-file is used instead"
 			" (default: baseport).")
 		("transact-tor", po::value<bool>(&g_params.transact_tor)->default_value(false), "Connect to transaction support server via Tor.")
 		("transact-tor-single-query", po::value<bool>(&g_params.transact_tor_single_query)->default_value(false), "Create a new Tor circuit for each transaction server query (slower but more private).")
@@ -221,7 +223,7 @@ static int process_options(int argc, char **argv)
 		("tor-control-password", po::value<string>(&g_tor_control_service.password_string), "SHA1 hash of password to access Tor control service (default: no password required).")
 		("tor-control-tor", po::value<bool>(&g_tor_control_service.tor_service)->default_value(0), "Make the Tor control port available through a Tor hidden service.")
 		("tor-control-tor-auth", po::value<string>(&g_tor_control_service.tor_auth_string)->default_value("v3"), "Tor hidden service authentication method (none, basic, or v3).")
-		("trace", po::value<int>(&g_params.trace_level)->default_value(3), "Trace level; affects all trace settings (0=none, 1=fatal, 2=errors, 3=warnings, 4=info, 5=debug, 6=trace)")
+		("trace", po::value<int>(&g_params.trace_level)->default_value(DEFAULT_TRACE_LEVEL), "Trace level; affects all trace settings (0=none, 1=fatal, 2=errors, 3=warnings, 4=info, 5=debug, 6=trace)")
 		("trace-lpcserve", po::value<bool>(&g_params.trace_lpcserve)->default_value(0), "Trace LPC service")
 		("trace-rpcserve", po::value<bool>(&g_params.trace_rpcserve)->default_value(0), "Trace RPC service")
 		("trace-jsonrpc", po::value<bool>(&g_params.trace_jsonrpc)->default_value(0), "Trace JSON RPC calls")
@@ -373,7 +375,7 @@ static int process_options(int argc, char **argv)
 	get_proof_key_dir(g_params.proof_key_dir, g_params.process_dir);
 
 	string def = CCAPPDIR;
-	expand_percent(def, g_params.blockchain);
+	expand_number(def, g_params.blockchain);
 	get_app_data_dir(g_params.app_data_dir, def);
 	if (!g_params.app_data_dir.length())
 		throw runtime_error("No data directory specified");
@@ -381,7 +383,7 @@ static int process_options(int argc, char **argv)
 	g_rpc_service.address_string = LOCALHOST; // for now, only allow RPC on localhost
 
 	if (!g_params.base_port)
-		g_params.base_port = BASE_PORT + ((g_params.blockchain * 10) % (BASE_PORT_TOP - BASE_PORT));
+		g_params.base_port = BASE_PORT + 20 * (g_params.blockchain % ((BASE_PORT_TOP - BASE_PORT)/20));
 
 	if (!g_params.transact_port)
 		g_params.transact_port = g_params.base_port;
@@ -481,7 +483,7 @@ int main(int argc, char **argv)
 	//srand(0);
 	srand(time(NULL));
 
-	g_params.trace_level = 3;
+	g_params.trace_level = DEFAULT_TRACE_LEVEL;
 	set_trace_level(g_params.trace_level);
 
 	g_interactive = true;
@@ -544,12 +546,14 @@ int main(int argc, char **argv)
 		{
 			try
 			{
-				Secret::CreateBaseSecrets(dbconn);
+				auto rc = Secret::CreateBaseSecrets(dbconn);
 
-				if (g_shutdown) goto do_fatal;
+				if (rc) goto do_fatal;
 			}
 			catch (const exception& e)
 			{
+				BOOST_LOG_TRIVIAL(warning) << "Deleting all secrets";
+
 				CCASSERTZ(dbconn->Exec("delete from Secrets;"));
 
 				throw;
@@ -613,7 +617,7 @@ int main(int argc, char **argv)
 		lock_guard<FastSpinLock> lock(g_cout_lock);
 		cerr << "Note: RPC service not enabled ";
 		if (g_params.interactive)
-			cerr << "(use --wallet-rpc=1 to enable)";
+			cerr << "(start " CCEXENAME " with --wallet-rpc=1 if RPC is required)";
 		else
 			cerr << "(try using --interactive and/or --wallet-rpc=1)";
 		cerr << endl;

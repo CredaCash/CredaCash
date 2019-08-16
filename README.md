@@ -31,7 +31,7 @@ The wallet:
 
 ## Project Status
 
-This software is currently in beta.  It runs reliably, has been extensively tested, and has no known issues although some may be uncovered during beta testing.  For a full list of the items left to be completed for the first release, see the [TODO](https://github.com/CredaCash/network-node/blob/master/TODO.md) file.
+The software and network are fully operational and have no known issues.
 
 ## Quick Start
 

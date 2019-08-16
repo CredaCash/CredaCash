@@ -9,15 +9,15 @@
 #pragma once
 
 #define CCAPPNAME	"CredaCash RPC Wallet"
-#define CCVERSION	 "0.98" //@@!
+#define CCVERSION	 "1.00" //@@!
 #define CCEXENAME	"ccwallet"
-#define CCAPPDIR	"CCWallet-%"
+#define CCAPPDIR	"CCWallet-#"
 
-#define WALLET_RPC_PORT		7
-#define TOR_CONTROL_PORT	8
-#define TOR_PORT			9
+#define WALLET_RPC_PORT		14
+#define TOR_CONTROL_PORT	15
+#define TOR_PORT			16
 
-#define CC_MINT_MAX_THREADS	120 //@@! lower for final release
+#define CC_MINT_MAX_THREADS	12
 
 #include <CCdef.h>
 #include <CCboost.hpp>

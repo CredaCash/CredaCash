@@ -3684,6 +3684,14 @@ CCRESULT txpay_to_wire(const string& fn, const TxPay& tx, unsigned err_check, ch
 
 	//cerr << "txpay_to_wire nbytes " << bufpos << " data " << buf2hex(output, bufpos) << endl;
 
+#if TEST_SKIP_ZKPROOFS
+	// replace the zkproof with a hash of the binary tx
+	unsigned zoff = sizeof(CCObject::Header) + sizeof(zero_pow);
+	unsigned hstart = zoff + 2*64;
+	//cerr << "hashing " << bufpos - hstart << " bytes " << buf2hex(binbuf + hstart, bufpos - hstart, 0) << endl;
+	blake2b(binbuf + zoff, 64, NULL, 0, binbuf + hstart, bufpos - hstart);
+#endif
+
 	return 0;
 }
 
@@ -3874,6 +3882,8 @@ static CCRESULT tx_add_from_wire(TxPay& tx, char *binbuf, const uint32_t binsize
 	{
 		//cerr << "error tx.tag " << tx.tag << endl;
 
+		tx.tag_type = -1;
+
 		return -1;
 	}
 
@@ -3881,6 +3891,10 @@ static CCRESULT tx_add_from_wire(TxPay& tx, char *binbuf, const uint32_t binsize
 
 	if (tx.tag == CC_TAG_TX_WIRE || tx.tag == CC_TAG_MINT_WIRE)
 		bufpos += TX_POW_SIZE;
+
+#if TEST_SKIP_ZKPROOFS
+	unsigned hstart = bufpos + 2*64;
+#endif
 
 	tx.tag = CC_TAG_TX_STRUCT;
 
@@ -3907,6 +3921,20 @@ static CCRESULT tx_add_from_wire(TxPay& tx, char *binbuf, const uint32_t binsize
 
 		return -1;
 	}
+
+#if TEST_SKIP_ZKPROOFS
+	// place hash of the binary tx into the zkproof
+	for (unsigned i = 0; i < 64; ++i)
+	{
+		if (*((char*)&tx.zkproof + 64 + i))
+			return 0;	// "proof" has been tampered with, so don't fill in with tx hash
+	}
+	//cerr << "hashing " << bufpos - hstart << " bytes " << buf2hex(binbuf + hstart, bufpos - hstart, 0) << endl;
+	blake2b((char*)&tx.zkproof + 64, 64, NULL, 0, binbuf + hstart, bufpos - hstart);
+	//cerr << buf2hex((char*)&tx.zkproof + 0*64, 64) << endl;
+	//cerr << buf2hex((char*)&tx.zkproof + 1*64, 64) << endl;
+	//cerr << "-- " << buf2hex((char*)&tx.zkproof + 2*64,  8) << endl;
+#endif
 
 	return 0;
 }

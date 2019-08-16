@@ -11,11 +11,11 @@ Note: when doing automated testing, it is helpful to:
 	set the donation params to zero, so no funds are lost and balances can easily be checked
 		or alternately, set TEST_FAIL_ALL_TXS to 1 so balance should not change (after all failed tx's are reverted)
 	for debugging, compile with TEST_LOG_BALANCE = 1
-	for more speed, compile with TEST_SKIP_ZKPROOFS = 1 and *_work_difficulty = 1
+	for more speed, compile with TEST_SKIP_ZKPROOFS = 1 and *_work_difficulty = 1 << 63
 	for more speed, store the databases on a ram disk
 	to test more complex tx's, compile with proof_params.outvalmin = 0
-	test with and without TEST_RANDOM_TX_ERRORS
-	when TEST_RANDOM_TX_ERRORS is enabled:
+	test with and without RTEST_TX_ERRORS
+	when RTEST_TX_ERRORS is enabled:
 			set tx-polling-addresses = 200 so no payments are missed
 			set polling_table[SECRET_TYPE_POLL_ADDRESS nothing received] to clear faster
 			the simulated error in CreateTxMint can be disabled so the wallets get their full intended balances
@@ -25,6 +25,10 @@ Note: when doing automated testing, it is helpful to:
 	set witness-test-block-random-ms = 3000
 	set trace = 4 for both the wallet and tx server
 	set trace-polling = 1
+
+Note also that the same address should not be used by more than one wallet, otherwise, payments to that address may be missed.
+The number of addresses required is therefore the number of wallets squared, ie., four adddress for two wallets, nine addresses
+for three wallets, etc.
 '''
 
 import sys
@@ -97,7 +101,7 @@ def main(argv):
 		print
 		print 'Usage: wallet-burn.py <rpc_port> <nthreads> <nmint> <prob_tx> <pay_destination_1> <pay_destination_2> ...'
 		print
-		print 'Note: This script will only work if ccwallet is stsrted with --wallet-rpc-password=pwd'
+		print 'Note: This script will only work if ccwallet is started with --wallet-rpc=1 --wallet-rpc-password=pwd'
 		print
 		exit()
 

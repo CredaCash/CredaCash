@@ -23,19 +23,19 @@
 #include <boost/thread/locks.hpp>
 
 //!#define TEST_DEBUG_WRITE_LOCKING	1
-//!#define TEST_DELAY_DB_RESET		31
-//#define TEST_RANDOM_DB_ERRORS		63
+//!#define RTEST_DELAY_DB_RESET		32
+//#define RTEST_DB_ERRORS			64
 
 #ifndef TEST_DEBUG_WRITE_LOCKING
 #define TEST_DEBUG_WRITE_LOCKING	0	// don't test
 #endif
 
-#ifndef TEST_DELAY_DB_RESET
-#define TEST_DELAY_DB_RESET			0	// don't test
+#ifndef RTEST_DELAY_DB_RESET
+#define RTEST_DELAY_DB_RESET		0	// don't test
 #endif
 
-#ifndef TEST_RANDOM_DB_ERRORS
-#define TEST_RANDOM_DB_ERRORS		0	// don't test
+#ifndef RTEST_DB_ERRORS
+#define RTEST_DB_ERRORS				0	// don't test
 #endif
 
 class Transaction;

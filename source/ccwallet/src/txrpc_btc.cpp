@@ -643,7 +643,7 @@ void btc_walletlock(stdparams)															// NOT_implemented
 
 	if (TEST_STUB_BTC)
 	{
-		if (rand() & 1)
+		if (RandTest(2))
 			throw RPC_Exception(RPC_WALLET_WRONG_ENC_STATE, "Error: running with an unencrypted wallet, but walletpassphrase was called.");
 
 		rstream << "";

@@ -109,7 +109,7 @@ int DbConn::SecretInsert(Secret& secret, bool lock_optional)
 	if (dblog(sqlite3_bind_int64(insert_update, 16, secret.query_commitnum))) return -1;
 	if (dblog(sqlite3_bind_int64(insert_update, 17, secret.expected_commitnum))) return -1;
 
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
+	if (RandTest(RTEST_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConn::SecretInsert simulating database error pre-insert";
 
@@ -150,7 +150,7 @@ int DbConn::SecretSelect(sqlite3_stmt *select, Secret& secret, bool expect_row, 
 
 	if (dblog(rc = sqlite3_step(select), DB_STMT_SELECT)) return -1;
 
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
+	if (RandTest(RTEST_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConn::SecretSelect simulating database error post-select";
 
@@ -247,7 +247,7 @@ int DbConn::SecretSelect(sqlite3_stmt *select, Secret& secret, bool expect_row, 
 
 	if (dblog(sqlite3_extended_errcode(Wallet_db), DB_STMT_SELECT)) return -1;	// check if error retrieving results
 
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
+	if (RandTest(RTEST_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConn::SecretSelect simulating database error post-error check";
 

@@ -178,7 +178,7 @@ void TransactConnection::HandleMsgReadComplete(const boost::system::error_code& 
 	if (CheckOpCount(pending_op_counter))
 		return;
 
-	bool sim_err = RandTest(TEST_RANDOM_READ_ERRORS);
+	bool sim_err = RandTest(RTEST_READ_ERRORS);
 	if (sim_err) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleMsgReadComplete simulating read error";
 
 	if (e || sim_err)
@@ -374,18 +374,18 @@ void TransactConnection::HandleTx(SmartBuf smartobj)
 	auto priority = med_tx_priority.fetch_add(1);
 	auto callback_id = m_use_count.load();
 
-	auto rc = ProcessTx::TxEnqueueValidate(tx_dbconn, priority, smartobj, m_conn_index, callback_id);
-	if (rc)	// TODO: if rc == 1, the tx is already in the validation queue; instead of returning server error, wait for it?
-	{
+	auto rc = ProcessTx::TxEnqueueValidate(tx_dbconn, false, true, priority, smartobj, m_conn_index, callback_id);
+	if (rc < 0)
 		return SendServerError(__LINE__);
-	}
-
-	SetValidationTimer(callback_id, TRANSACT_VALIDATION_TIMEOUT);
+	else if (rc == 1)
+		SendValidateResult(0);	// tx already in valid obj's
+	else
+		SetValidationTimer(callback_id, TRANSACT_VALIDATION_TIMEOUT);
 }
 
 void TransactConnection::HandleValidateDone(uint32_t callback_id, int64_t result)
 {
-	if (RandTest(TEST_DELAY_CONN_RELEASE)) sleep(1);
+	if (RandTest(RTEST_DELAY_CONN_RELEASE)) sleep(1);
 
 	// HandleValidateDone was not passed an AutoCount object since we don't want stop to be delayed while the Tx validation runs
 	// so acquire an AutoCount to prevent Stop from running to completion while this function is running
@@ -394,7 +394,7 @@ void TransactConnection::HandleValidateDone(uint32_t callback_id, int64_t result
 	if (!autocount)
 		return;
 
-	if (RandTest(TEST_DELAY_CONN_RELEASE)) sleep(1);
+	if (RandTest(RTEST_DELAY_CONN_RELEASE)) sleep(1);
 
 	// increment m_use_count so either HandleValidationTimeout or HandleValidateDone will run, but not both
 
@@ -412,7 +412,7 @@ void TransactConnection::HandleValidateDone(uint32_t callback_id, int64_t result
 
 void TransactConnection::SendValidateResult(int64_t result)
 {
-	if (RandTest(TEST_RANDOM_VALIDATION_FAILURES))
+	if (RandTest(RTEST_VALIDATION_FAILURES))
 	{
 		BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " TransactConnection::SendValidateResult simulating validation failure";
 
@@ -453,7 +453,14 @@ bool TransactConnection::SetValidationTimer(uint32_t callback_id, unsigned sec)
 
 void TransactConnection::HandleValidationTimeout(uint32_t callback_id, const boost::system::error_code& e, AutoCount pending_op_counter)
 {
-	if (RandTest(TEST_DELAY_CONN_RELEASE)) sleep(1);
+	if (RandTest(RTEST_DELAY_CONN_RELEASE)) sleep(1);
+
+	if (e == boost::asio::error::operation_aborted)
+	{
+		//if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleValidationTimeout timer canceled callback id " << callback_id;
+
+		return;
+	}
 
 	// increment m_use_count so either HandleValidationTimeout or HandleValidateDone will run, but not both
 
@@ -466,17 +473,10 @@ void TransactConnection::HandleValidationTimeout(uint32_t callback_id, const boo
 		return;
 	}
 
-	if (RandTest(TEST_DELAY_CONN_RELEASE)) sleep(1);
+	if (RandTest(RTEST_DELAY_CONN_RELEASE)) sleep(1);
 
 	if (CheckOpCount(pending_op_counter))
 		return;
-
-	if (e == boost::asio::error::operation_aborted)
-	{
-		//if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleValidationTimeout timer canceled callback id " << callback_id;
-
-		return;
-	}
 
 	if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleValidationTimeout callback id " << callback_id << ", e = " << e << " " << e.message();
 
@@ -944,7 +944,7 @@ void TransactConnection::SendObjectNotValid()
 {
 	static const string outbuf = "ERROR:binary object not valid";
 
-	BOOST_LOG_TRIVIAL(error) << Name() << " Conn " << m_conn_index << " TransactConnection::SendObjectNotValid sending " << outbuf;
+	BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " TransactConnection::SendObjectNotValid sending " << outbuf;
 
 	WriteAsync("TransactConnection::SendObjectNotValid", boost::asio::buffer(outbuf.c_str(), outbuf.size() + 1),
 			boost::bind(&Connection::HandleWrite, this, boost::asio::placeholders::error, AutoCount(this)));
@@ -954,7 +954,7 @@ void TransactConnection::SendBlockchainNumberError()
 {
 	static const string outbuf = "ERROR:requested blockchain not tracked by this server";
 
-	BOOST_LOG_TRIVIAL(error) << Name() << " Conn " << m_conn_index << " TransactConnection::SendBlockchainNumberError sending " << outbuf;
+	BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " TransactConnection::SendBlockchainNumberError sending " << outbuf;
 
 	WriteAsync("TransactConnection::SendBlockchainNumberError", boost::asio::buffer(outbuf.c_str(), outbuf.size() + 1),
 			boost::bind(&Connection::HandleWrite, this, boost::asio::placeholders::error, AutoCount(this)));

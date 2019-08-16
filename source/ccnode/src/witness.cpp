@@ -18,6 +18,7 @@
 #include <CCcrypto.hpp>
 #include <CCmint.h>
 #include <transaction.h>
+#include <siphash/siphash.h>
 #include <blake2/blake2.h>
 #include <ed25519/ed25519.h>
 
@@ -40,13 +41,16 @@
 //!#define TEST_CUZZ					1
 //#define TEST_PROCESS_Q				1
 
-//#define TEST_WITNESS_LOSS				16
+//#define TEST_UNRECOGNIZED_TAG			1
+
+//!#define TEST_WITNESS_LOSS				(GENESIS_NWITNESSES)
 
 #define TEST_MIN_MAL_RATIO				(GENESIS_NWITNESSES * GENESIS_MAXMAL)
 
-#define WITNESS_TEST_LOSS_NWITNESSES_LO	((GENESIS_NWITNESSES - GENESIS_MAXMAL) / 2 + GENESIS_MAXMAL + 1)
+#define WITNESS_TEST_LOSS_REQ_WITNESS	((GENESIS_NWITNESSES - GENESIS_MAXMAL) / 2 + GENESIS_MAXMAL + 1)
+//#define WITNESS_TEST_LOSS_REQ_WITNESS	(GENESIS_NWITNESSES - 2)
 #define WITNESS_TEST_LOSS_NWITNESSES_HI	GENESIS_NWITNESSES
-//#define WITNESS_TEST_LOSS_NWITNESSES_HI	(WITNESS_TEST_LOSS_NWITNESSES_LO + 1)
+//#define WITNESS_TEST_LOSS_NWITNESSES_HI	(WITNESS_TEST_LOSS_REQ_WITNESS + 1)
 
 #ifndef WITNESS_RANDOM_TEST_TIME
 #define WITNESS_RANDOM_TEST_TIME		0	// don't test
@@ -80,8 +84,8 @@
 #define TEST_PROCESS_Q					0	// don't test
 #endif
 
-#ifndef TEST_WITNESS_LOSS
-#define TEST_WITNESS_LOSS				0	// don't test
+#ifndef TEST_UNRECOGNIZED_TAG
+#define TEST_UNRECOGNIZED_TAG			0	// don't test
 #endif
 
 #ifndef TEST_WITNESS_LOSS
@@ -208,6 +212,8 @@ void Witness::Init()
 		m_dbconn = new DbConn;
 		CCASSERT(m_dbconn);
 
+		if (TEST_WITNESS_LOSS && !TEST_SIM_ALL_WITNESSES) BOOST_LOG_TRIVIAL(info) << "Witness::Init simulating witness loss with max witness " << WITNESS_TEST_LOSS_REQ_WITNESS << " at levels mod " << TEST_WITNESS_LOSS;
+
 		if (TRACE_WITNESS) BOOST_LOG_TRIVIAL(trace) << "Witness::Init launching ThreadProc";
 
 		m_pthread = new thread(&Witness::ThreadProc, this);
@@ -288,13 +294,13 @@ void Witness::ThreadProc()
 		// the following code block probably doesn't work anymore...
 		if (TEST_SIM_ALL_WITNESSES)
 		{
-			if (TEST_WITNESS_LOSS && sim_nwitnesses > WITNESS_TEST_LOSS_NWITNESSES_LO && (wire->level.GetValue() & TEST_WITNESS_LOSS) == 0)
+			if (TEST_WITNESS_LOSS && sim_nwitnesses > WITNESS_TEST_LOSS_REQ_WITNESS && (wire->level.GetValue() & TEST_WITNESS_LOSS) == 0)
 			{
 				usleep(200*1000);	// wait for pending blocks to become indelible
 
-				if (wire->witness < WITNESS_TEST_LOSS_NWITNESSES_LO)	// make the test hard by disabling the witness immediately after it generates a indelible block
+				if (wire->witness < WITNESS_TEST_LOSS_REQ_WITNESS)	// make the test hard by disabling the witness immediately after it generates a indelible block
 				{
-					sim_nwitnesses = WITNESS_TEST_LOSS_NWITNESSES_LO;
+					sim_nwitnesses = WITNESS_TEST_LOSS_REQ_WITNESS;
 
 					BOOST_LOG_TRIVIAL(info) << "Witness::ThreadProc BuildNewBlock simulating witness loss; sim_nwitnesses now = " << sim_nwitnesses;
 				}
@@ -373,7 +379,7 @@ void Witness::ThreadProc()
 	if (TRACE_WITNESS) BOOST_LOG_TRIVIAL(trace) << "Witness::ThreadProc end m_dbconn " << (uintptr_t)m_dbconn;
 }
 
-uint32_t Witness::NextTurnTicks()
+uint32_t Witness::NextTurnTicks() const
 {
 	if (TRACE_WITNESS) BOOST_LOG_TRIVIAL(trace) << "Witness::NextTurnTicks";
 
@@ -382,7 +388,7 @@ uint32_t Witness::NextTurnTicks()
 	return 0;
 }
 
-bool Witness::IsMalTest()
+bool Witness::IsMalTest() const
 {
 	if (!IsWitness() || !test_mal)
 		return false;
@@ -391,6 +397,13 @@ bool Witness::IsMalTest()
 		return false;
 
 	return true;
+}
+
+bool Witness::SimLoss(uint64_t level)
+{
+	auto hash = siphash((const uint8_t *)&level, sizeof(level));
+
+	return !(hash % (TEST_WITNESS_LOSS + 1));
 }
 
 uint64_t Witness::FindBestOwnScore(SmartBuf last_indelible_block)
@@ -449,10 +462,18 @@ SmartBuf Witness::FindBestBuildingBlock(SmartBuf last_indelible_block, uint64_t 
 		auto block = (Block*)smartobj.data();
 		auto wire = block->WireData();
 		auto auxp = block->AuxPtr();
+		auto level = wire->level.GetValue();
 
-		if (m_highest_witnessed_level > wire->level.GetValue() && !m_test_ignore_order)
+		if (0) //TEST_WITNESS_LOSS && witness_index > WITNESS_TEST_LOSS_REQ_WITNESS && SimLoss(level))
 		{
-			if (TRACE_WITNESS) BOOST_LOG_TRIVIAL(trace) << "Witness::FindBestBuildingBlock witness " << witness_index << " highest witnessed level " << m_highest_witnessed_level << " > building block level " << wire->level.GetValue() << " oid " << buf2hex(&auxp->oid, sizeof(ccoid_t));
+			BOOST_LOG_TRIVIAL(info) << "Witness::FindBestBuildingBlock simulating witness " << witness_index << " loss; will not build on level " << level;
+
+			continue;
+		}
+
+		if (m_highest_witnessed_level > level && !m_test_ignore_order)
+		{
+			if (TRACE_WITNESS) BOOST_LOG_TRIVIAL(trace) << "Witness::FindBestBuildingBlock witness " << witness_index << " highest witnessed level " << m_highest_witnessed_level << " > building block level " << level << " oid " << buf2hex(&auxp->oid, sizeof(ccoid_t));
 
 			continue;
 		}
@@ -461,11 +482,11 @@ SmartBuf Witness::FindBestBuildingBlock(SmartBuf last_indelible_block, uint64_t 
 		{
 			if (m_test_ignore_order)
 			{
-				BOOST_LOG_TRIVIAL(info) << "Witness::FindBestBuildingBlock witness " << witness_index << " ignoring bad sig order for building block level " << wire->level.GetValue() << " oid " << buf2hex(&auxp->oid, sizeof(ccoid_t));
+				BOOST_LOG_TRIVIAL(info) << "Witness::FindBestBuildingBlock witness " << witness_index << " ignoring bad sig order for building block level " << level << " oid " << buf2hex(&auxp->oid, sizeof(ccoid_t));
 			}
 			else
 			{
-				if (TRACE_WITNESS) BOOST_LOG_TRIVIAL(trace) << "Witness::FindBestBuildingBlock witness " << witness_index << " bad sig order building block level " << wire->level.GetValue() << " oid " << buf2hex(&auxp->oid, sizeof(ccoid_t));
+				if (TRACE_WITNESS) BOOST_LOG_TRIVIAL(trace) << "Witness::FindBestBuildingBlock witness " << witness_index << " bad sig order building block level " << level << " oid " << buf2hex(&auxp->oid, sizeof(ccoid_t));
 
 				continue;
 			}
@@ -475,7 +496,7 @@ SmartBuf Witness::FindBestBuildingBlock(SmartBuf last_indelible_block, uint64_t 
 
 		if (bestscore >= score && !m_test_ignore_order)
 		{
-			if (TRACE_WITNESS) BOOST_LOG_TRIVIAL(trace) << "Witness::FindBestBuildingBlock witness " << witness_index << " bestscore " << hex << bestscore << " >= score " << score << dec << " for building block level " << wire->level.GetValue() << " oid " << buf2hex(&auxp->oid, sizeof(ccoid_t));
+			if (TRACE_WITNESS) BOOST_LOG_TRIVIAL(trace) << "Witness::FindBestBuildingBlock witness " << witness_index << " bestscore " << hex << bestscore << " >= score " << score << dec << " for building block level " << level << " oid " << buf2hex(&auxp->oid, sizeof(ccoid_t));
 
 			continue;
 		}
@@ -507,8 +528,9 @@ SmartBuf Witness::FindBestBuildingBlock(SmartBuf last_indelible_block, uint64_t 
 		auto block = (Block*)bestobj.data();
 		auto wire = block->WireData();
 		auto auxp = block->AuxPtr();
+		auto level = wire->level.GetValue();
 
-		if (TRACE_WITNESS) BOOST_LOG_TRIVIAL(trace) << "Witness::FindBestBuildingBlock witness " << witness_index << " returning best score " << hex << bestscore << dec << " best block level " << wire->level.GetValue() << " oid " << buf2hex(&auxp->oid, sizeof(ccoid_t));
+		if (TRACE_WITNESS) BOOST_LOG_TRIVIAL(trace) << "Witness::FindBestBuildingBlock witness " << witness_index << " returning best score " << hex << bestscore << dec << " best block level " << level << " oid " << buf2hex(&auxp->oid, sizeof(ccoid_t));
 	}
 	else if (TRACE_WITNESS) BOOST_LOG_TRIVIAL(trace) << "Witness::FindBestBuildingBlock witness " << witness_index << " found no building block";
 
@@ -531,7 +553,7 @@ bool Witness::AttemptNewBlock()
 
 		uint64_t last_indelible_level = 0;
 
-		if (!bestblock || HaveNewBlockWork())
+		while (!bestblock || HaveNewBlockWork())	// use break to exit
 		{
 			ResetNewBlockWork();
 
@@ -549,9 +571,16 @@ bool Witness::AttemptNewBlock()
 
 			last_indelible_level = wire->level.GetValue();
 
-			static bool last_maltest = false;	// not thread safe
+			if (TEST_WITNESS_LOSS && witness_index > WITNESS_TEST_LOSS_REQ_WITNESS && SimLoss(last_indelible_level))
+			{
+				BOOST_LOG_TRIVIAL(info) << "Witness::AttemptNewBlock simulating witness " << witness_index << " loss; req witness " << WITNESS_TEST_LOSS_REQ_WITNESS << " last_indelible_level " << last_indelible_level;
+
+				break;
+			}
 
 			if (TRACE_WITNESS) BOOST_LOG_TRIVIAL(trace) << "Witness::AttemptNewBlock looking for best prior block witness " << witness_index << " maltest " << m_test_ignore_order << " last indelible block witness " << (unsigned)wire->witness << " level " << wire->level.GetValue() << " oid " << buf2hex(&auxp->oid, sizeof(ccoid_t));
+
+			static bool last_maltest = false;	// not thread safe
 
 			if (last_indelible_block != m_last_last_indelible_block || m_test_ignore_order != last_maltest)
 			{
@@ -565,6 +594,8 @@ bool Witness::AttemptNewBlock()
 			auto bestscore = FindBestOwnScore(last_indelible_block);
 
 			bestblock = FindBestBuildingBlock(last_indelible_block, m_highest_witnessed_level[TEST_SIM_ALL_WITNESSES * witness_index], bestscore);
+
+			break;
 		}
 
 		if (!bestblock)
@@ -711,6 +742,8 @@ bool Witness::AttemptNewBlock()
 	auto wire = block->WireData();
 	auto auxp = block->AuxPtr();
 
+	auxp->total_donations = m_total_donations;
+
 	if (m_test_ignore_order)
 		m_test_ignore_order = block->CheckBadSigOrder(-1);
 
@@ -737,7 +770,7 @@ bool Witness::AttemptNewBlock()
 	if (TEST_PROCESS_Q)
 	{
 		// test blocks going through the Process_Q
-		m_dbconn->ProcessQEnqueueValidate(PROCESS_Q_TYPE_BLOCK, smartobj, &wire->prior_oid, wire->level.GetValue(), PROCESS_Q_STATUS_PENDING, -1, 0, 0);
+		m_dbconn->ProcessQEnqueueValidate(PROCESS_Q_TYPE_BLOCK, smartobj, &wire->prior_oid, wire->level.GetValue(), PROCESS_Q_STATUS_PENDING, -1000, false, 0, 0);
 		// the new block needs to be placed into the blockchain before this witness attempts to create another block
 		// since we're not normally using this code path, we'll do this the easy way by just sleeping a little and hoping Process_Q is finished by then
 		usleep(200*1000);
@@ -766,6 +799,7 @@ void Witness::StartNewBlock()
 	m_block_start_time = ccticks();
 	m_newblock_bufpos = 0;
 	m_newblock_next_tx_seqnum = 1;
+	m_total_donations = 0UL;
 
 	m_test_ignore_order = false;
 	m_test_try_persistent_double_spend = false;
@@ -775,17 +809,17 @@ void Witness::StartNewBlock()
 
 	if (IsMalTest() && (GENESIS_MAXMAL > 0 || TEST_MAL_IGNORE_SIG_ORDER))
 	{
-		if (!(rand() & 7))
+		if (RandTest(8))
 			m_test_ignore_order = true;				// add param for this?
 	}
 
 	if (IsMalTest())
 	{
-		if (!(rand() & 7))
+		if (RandTest(8))
 			m_test_try_persistent_double_spend = true;
-		else if (!(rand() & 7))
+		else if (RandTest(8))
 			m_test_try_inter_double_spend = true;
-		else if (!(rand() & 3))
+		else if (RandTest(4))
 			m_test_try_intra_double_spend = true;
 	}
 
@@ -834,16 +868,16 @@ Witness::BuildNewBlockStatus Witness::BuildNewBlock(uint32_t& min_time, uint32_t
 
 			auto bufp = smartobj.BasePtr();
 			auto obj = (CCObject*)smartobj.data();
-			auto tag = obj->ObjTag();
+			auto type = obj->ObjType();
 
-			if (tag != CC_TAG_TX_WIRE && tag != CC_TAG_MINT_WIRE)
+			if (type != CC_TYPE_TXPAY && type != CC_TYPE_MINT)
 			{
-				BOOST_LOG_TRIVIAL(error) << "Witness::BuildNewBlock obj tag " << tag << " bufp " << (uintptr_t)bufp;
+				BOOST_LOG_TRIVIAL(error) << "Witness::BuildNewBlock obj type " << type << " bufp " << (uintptr_t)bufp;
 
 				continue;
 			}
 
-			if (Implement_CCMint(g_params.blockchain) && tag == CC_TAG_MINT_WIRE && !is_ccmint)
+			if (Implement_CCMint(g_params.blockchain) && type == CC_TYPE_MINT && !is_ccmint)
 				continue;
 
 			auto txwire = obj->ObjPtr();
@@ -954,14 +988,31 @@ Witness::BuildNewBlockStatus Witness::BuildNewBlock(uint32_t& min_time, uint32_t
 					if (!min_time)
 						min_time = 1;	// because zero means no wait
 				}
+
+				if (TEST_UNRECOGNIZED_TAG && !witness_index)
+				{
+					uint32_t size = 2*sizeof(uint32_t);
+					copy_to_buf(size, sizeof(size), m_newblock_bufpos, output, bufsize);
+					copy_to_buf(size, sizeof(size), m_newblock_bufpos, output, bufsize);
+
+					lock_guard<FastSpinLock> lock(g_cout_lock);
+					cerr << "testing unrecognized tag" << endl;
+				}
 			}
 
 			uint32_t newtag = 0;
 
-			if (m_txbuf.tag_type == CC_TYPE_TXPAY)
-				newtag = CC_TAG_TX_BLOCK;
-			else if (m_txbuf.tag_type == CC_TYPE_MINT)
+			if (m_txbuf.tag_type == CC_TYPE_MINT)
 				newtag = CC_TAG_MINT_BLOCK;
+			else if (m_txbuf.tag_type == CC_TYPE_TXPAY)
+			{
+				newtag = CC_TAG_TX_BLOCK;
+
+				bigint_t donation;
+				tx_amount_decode(m_txbuf.donation_fp, donation, true, TX_DONATION_BITS, TX_AMOUNT_EXPONENT_BITS);
+
+				m_total_donations = m_total_donations + donation;
+			}
 			else
 			{
 				CCASSERT(newtag);
@@ -1043,11 +1094,17 @@ SmartBuf Witness::FinishNewBlock(SmartBuf priorobj)
 
 	auto wire = block->WireData();
 
+	auto level = priorwire->level.GetValue() + 1;
+	auto timestamp = time(NULL);
+	int32_t delta = timestamp - priorwire->timestamp.GetValue();
+	if (delta < 0)
+		timestamp = priorwire->timestamp.GetValue();
+	if (IsMalTest() && level % 100 < 10)
+		timestamp += 200;
+
 	memcpy(&wire->prior_oid, &priorauxp->oid, sizeof(ccoid_t));
-	wire->timestamp.SetValue(time(NULL));
-	if (wire->timestamp.GetValue() < priorwire->timestamp.GetValue())
-		wire->timestamp.SetValue(priorwire->timestamp.GetValue());
-	wire->level.SetValue(priorwire->level.GetValue() + 1);
+	wire->timestamp.SetValue(timestamp);
+	wire->level.SetValue(level);
 	wire->witness = witness_index;
 
 	if (m_newblock_bufpos)

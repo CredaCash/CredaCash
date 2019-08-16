@@ -15,10 +15,10 @@ using namespace boost::log::trivial;
 
 #define USE_SMARTBUF_GUARD		1
 
-//#define TEST_DELAY_SMARTBUF_RELEASE		31
+//#define RTEST_DELAY_SMARTBUF_RELEASE	32
 
-#ifndef TEST_DELAY_SMARTBUF_RELEASE
-#define TEST_DELAY_SMARTBUF_RELEASE 0	// don't test
+#ifndef RTEST_DELAY_SMARTBUF_RELEASE
+#define RTEST_DELAY_SMARTBUF_RELEASE	0	// don't test
 #endif
 
 #define SMARTBUF_GUARD	0x84758362
@@ -275,7 +275,7 @@ unsigned SmartBuf::DecRef()
 
 	if (!refcount)
 	{
-		if (bufp && RandTest(TEST_DELAY_SMARTBUF_RELEASE)) sleep(1);
+		if (bufp && RandTest(RTEST_DELAY_SMARTBUF_RELEASE)) sleep(1);
 
 		auto asize = alloc_size(bufp);
 
@@ -327,7 +327,7 @@ SmartBuf::~SmartBuf()
 
 	if (!bufp) return;
 
-	if (RandTest(TEST_DELAY_SMARTBUF_RELEASE)) sleep(1);
+	if (RandTest(RTEST_DELAY_SMARTBUF_RELEASE)) sleep(1);
 
 	if (0 && TRACE_SMARTBUF) BOOST_LOG_TRIVIAL(debug) << "SmartBuf " << (uintptr_t)this << " destructor bufp " << (uintptr_t)bufp;
 
@@ -355,7 +355,7 @@ SmartBuf& SmartBuf::operator= (const SmartBuf& s)
 	auto bufp = buf.load();
 	auto sbufp = s.buf.load();
 
-	if (bufp && RandTest(TEST_DELAY_SMARTBUF_RELEASE)) sleep(1);
+	if (bufp && RandTest(RTEST_DELAY_SMARTBUF_RELEASE)) sleep(1);
 
 	if (0 && TRACE_SMARTBUF) BOOST_LOG_TRIVIAL(debug) << "SmartBuf " << (uintptr_t)this << " bufp " << (uintptr_t)bufp << " assigned from smartbuf " << (uintptr_t)&s << " bufp " << (uintptr_t)sbufp;
 
@@ -395,7 +395,7 @@ void SmartBuf::ClearRef()
 
 	if (!bufp) return;
 
-	if (RandTest(TEST_DELAY_SMARTBUF_RELEASE)) sleep(1);
+	if (RandTest(RTEST_DELAY_SMARTBUF_RELEASE)) sleep(1);
 
 	if (0 && TRACE_SMARTBUF) BOOST_LOG_TRIVIAL(debug) << "SmartBuf " << (uintptr_t)this << " ClearRef bufp " << (uintptr_t)bufp;
 

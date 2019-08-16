@@ -70,7 +70,7 @@ int DbConn::BilletInsert(Billet& bill, bool lock_optional)
 		if (dblog(sqlite3_bind_null(insert_update, 16))) return -1;
 	}
 
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
+	if (RandTest(RTEST_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConn::BilletInsert simulating database error pre-insert";
 
@@ -111,7 +111,7 @@ int DbConn::BilletSelect(sqlite3_stmt *select, bool has_hashkey, Billet& bill, b
 
 	if (dblog(rc = sqlite3_step(select), DB_STMT_SELECT)) return -1;
 
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
+	if (RandTest(RTEST_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConn::BilletSelect simulating database error post-select";
 
@@ -271,7 +271,7 @@ int DbConn::BilletSelect(sqlite3_stmt *select, bool has_hashkey, Billet& bill, b
 
 	if (dblog(sqlite3_extended_errcode(Wallet_db), DB_STMT_SELECT)) return -1;	// check if error retrieving results
 
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
+	if (RandTest(RTEST_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConn::BilletSelect simulating database error post-error check";
 
@@ -474,7 +474,7 @@ int DbConn::BilletSpendInsert(uint64_t id, uint64_t bill_id, const void *hashkey
 	if (dblog(sqlite3_bind_int64(Billet_Spends_insert, 2, bill_id))) return -1;
 	if (dblog(sqlite3_bind_blob(Billet_Spends_insert, 3, hashkey, TX_HASHKEY_BYTES, SQLITE_STATIC))) return -1;
 
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
+	if (RandTest(RTEST_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConn::BilletSpendInsert simulating database error pre-insert";
 

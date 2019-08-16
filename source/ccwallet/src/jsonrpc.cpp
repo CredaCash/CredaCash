@@ -808,6 +808,8 @@ static void try_one_rpc(const string& json, const string& method, Json::Value& p
 		else if ((params[0].asString() == "start" || params[0].asString() == "threads") && params.size() <= 2)
 		{
 			int nthreads = thread::hardware_concurrency();
+			nthreads = (nthreads*2 + 2) / 3;
+
 			if (nthreads < 0)
 				nthreads = 4;
 			if (nthreads > CC_MINT_MAX_THREADS)
@@ -843,6 +845,13 @@ static void try_one_rpc(const string& json, const string& method, Json::Value& p
 		//	throw RPC_Exception(RPC_INVALID_PARAMETER, negative_from_err);
 
 		cc_poll_destination(params[0].asString(), params.size() > 1 ? params[1].asUInt64() : 0, dbconn, txquery, rstream);
+	}
+	else if (method == "cc.poll_mint")
+	{
+		if (params.size() != 0)
+			throw RPC_Exception(RPC_MISC_ERROR, method);
+
+		cc_poll_mint(dbconn, txquery, rstream);
 	}
 	else
 	{

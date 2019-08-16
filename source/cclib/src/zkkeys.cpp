@@ -39,8 +39,8 @@ void ZKKeyStore::Init(bool reset)
 	nproof = (4 * 2 + 8);				// all keys with full merkle paths; comment out for keygen
 	//nproof = 4 * 2;					// for beta release
 
-	nproofsave = 4;						// keep memory requirement low //@@! make this a config option?
-	nproofsave = nproof;				// for releases with smaller keysets, and for benchmarking, and for mint !!!!!
+	nproofsave = 8;						// keep memory requirement low //@@! make this a config option?
+	//nproofsave = nproof;				// for releases with smaller keysets, and for benchmarking, and for mint
 	//nproofsave = 0;					// for keygen
 
 	keytable.resize(nproof);
@@ -54,7 +54,7 @@ void ZKKeyStore::Init(bool reset)
 	{
 		keytable[i].keyid = i;	// if mapping ever changes, the verify keys will need their own keytable in SetTxCounts()
 
-		// ninw =  {[0], 1, 2, 3, 4 [5, 6, 7, 8]}
+		// ninw = {[0], 1, 2, 3, 4 [5, 6, 7, 8]}
 		// nout = {2, 5, [10]}
 		// nwo =  {0, [4]}
 

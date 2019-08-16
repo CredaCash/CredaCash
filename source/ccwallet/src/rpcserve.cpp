@@ -232,7 +232,7 @@ void RpcConnection::HandleContentReadComplete(const boost::system::error_code& e
 
 	m_nred += bytes_transferred;
 
-	bool sim_err = RandTest(TEST_RANDOM_READ_ERRORS);
+	bool sim_err = RandTest(RTEST_READ_ERRORS);
 	if (sim_err) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " RpcConnection::HandleContentReadComplete simulating read error";
 
 	if (e || sim_err)
@@ -334,7 +334,7 @@ void RpcConnection::HandleWriteHeader(const boost::system::error_code& e, shared
 
 	// Note: keep m_write_in_progress lock and call WriteAsync with already_own_mutex = true
 
-	bool sim_err = RandTest(TEST_RANDOM_WRITE_ERRORS);
+	bool sim_err = RandTest(RTEST_WRITE_ERRORS);
 	if (sim_err) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " RpcConnection::HandleWriteHeader simulating write error";
 
 	if (e || sim_err)

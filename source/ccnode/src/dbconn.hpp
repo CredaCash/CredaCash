@@ -21,19 +21,19 @@
 
 //!#define TEST_EXPLAIN_DB_QUERIES	1
 
-//#define TEST_RANDOM_DB_ERRORS		63
-//!#define TEST_DELAY_DB_RESET		31
+//#define RTEST_DB_ERRORS			64
+//!#define RTEST_DELAY_DB_RESET		32
 
 #ifndef TEST_EXPLAIN_DB_QUERIES
 #define TEST_EXPLAIN_DB_QUERIES		0	// don't test
 #endif
 
-#ifndef TEST_RANDOM_DB_ERRORS
-#define TEST_RANDOM_DB_ERRORS 0	// don't test
+#ifndef RTEST_DB_ERRORS
+#define RTEST_DB_ERRORS				0	// don't test
 #endif
 
-#ifndef TEST_DELAY_DB_RESET
-#define TEST_DELAY_DB_RESET 0	// don't test
+#ifndef RTEST_DELAY_DB_RESET
+#define RTEST_DELAY_DB_RESET		0	// don't test
 #endif
 
 #define VALID_BLOCK_SEQNUM_START	(INT64_MIN/2+1)
@@ -50,8 +50,8 @@
 
 #define PROCESS_Q_STATUS_PENDING	0
 #define PROCESS_Q_STATUS_HOLD		1
-#define PROCESS_Q_STATUS_VALID		2
-#define PROCESS_Q_STATUS_DONE		3
+#define PROCESS_Q_STATUS_VALID		2	// only used for blocks
+#define PROCESS_Q_STATUS_DONE		3	// only used for blocks
 
 #define PERSISTENT_SERIALS_TYPE		0
 #define TEMP_SERIALS_PROCESS_BLOCKP	1
@@ -337,10 +337,9 @@ public:
 class DbConnProcessQ : protected DbConnBaseProcessQ
 {
 	sqlite3_stmt *Process_Q_insert[PROCESS_Q_N];
-	sqlite3_stmt *Process_Q_begin[PROCESS_Q_N];
-	sqlite3_stmt *Process_Q_rollback[PROCESS_Q_N];
-	sqlite3_stmt *Process_Q_commit[PROCESS_Q_N];
+	sqlite3_stmt *Process_Q_update_queue[PROCESS_Q_N];
 	sqlite3_stmt *Process_Q_select[PROCESS_Q_N];
+	sqlite3_stmt *Process_Q_select_next[PROCESS_Q_N];
 	sqlite3_stmt *Process_Q_update[PROCESS_Q_N];
 	sqlite3_stmt *Process_Q_update_priorobj[PROCESS_Q_N];
 	sqlite3_stmt *Process_Q_clear[PROCESS_Q_N];
@@ -358,13 +357,13 @@ class DbConnProcessQ : protected DbConnBaseProcessQ
 public:
 	DbConnProcessQ();
 	~DbConnProcessQ();
-	void DoProcessQFinish(unsigned type, bool rollback, bool increment_work);
+	void DoProcessQFinish(unsigned type);
 
-	static void IncrementQueuedWork(unsigned type, unsigned changes = 1);
+	static void IncrementQueuedWork(unsigned type, unsigned changes);
 	static void WaitForQueuedWork(unsigned type);
 	static void StopQueuedWork(unsigned type);
 
-	int ProcessQEnqueueValidate(unsigned type, SmartBuf smartobj, const ccoid_t *prior_oid, int64_t level, unsigned status, int64_t priority, unsigned conn_index, uint32_t callback_id);
+	int ProcessQEnqueueValidate(unsigned type, SmartBuf smartobj, const ccoid_t *prior_oid, int64_t level, unsigned status, int64_t priority, bool is_block_tx, unsigned conn_index, uint32_t callback_id);
 	int ProcessQGetNextValidateObj(unsigned type, SmartBuf *retobj, unsigned& conn_index, uint32_t& callback_id);
 	int ProcessQUpdateSubsequentBlockStatus(unsigned type, const ccoid_t& oid);
 
@@ -376,6 +375,7 @@ public:
 
 	int ProcessQDone(unsigned type, int64_t level);
 	int ProcessQPruneLevel(unsigned type, int64_t level);
+	int ProcessQSelectAndDelete(unsigned type, const ccoid_t& oid, unsigned& block_tx_count, unsigned& conn_index, uint32_t& callback_id);
 };
 
 class DbConnValidObjs : protected DbConnBaseValidObjs

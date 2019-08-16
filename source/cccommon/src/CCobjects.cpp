@@ -11,9 +11,27 @@
 
 #include <blake2/blake2.h>
 
-unsigned CCObject::ObjType() const
+uint32_t CCObject::WireTag(uint32_t tag)
 {
-	switch (ObjTag())
+	switch (tag)
+	{
+	case CC_TAG_TX_BLOCK:
+		return CC_TAG_TX_WIRE;
+	case CC_TAG_MINT_BLOCK:
+		return CC_TAG_MINT_WIRE;
+	default:
+		return tag;
+	}
+}
+
+uint32_t CCObject::WireTag() const
+{
+	return WireTag(ObjTag());
+}
+
+unsigned CCObject::ObjType(uint32_t tag)
+{
+	switch (tag)
 	{
 	case CC_TAG_BLOCK:
 		return CC_TYPE_BLOCK;
@@ -26,6 +44,11 @@ unsigned CCObject::ObjType() const
 	default:
 		return 0;
 	}
+}
+
+unsigned CCObject::ObjType() const
+{
+	return ObjType(ObjTag());
 }
 
 bool CCObject::IsValid() const
@@ -78,10 +101,12 @@ void CCObject::SetObjId()
 	// @@! split tx hash into two parts, first everything except the zkproof, then add in the zkproof?
 	// !!! the first part would become the "reference hash" used to link tx's together...
 
-	auto rc = blake2b(OidPtr(), sizeof(ccoid_t), &header.tag, sizeof(header.tag), BodyPtr(), BodySize());
+	uint32_t tag = WireTag();
+
+	auto rc = blake2b(OidPtr(), sizeof(ccoid_t), &tag, sizeof(tag), BodyPtr(), BodySize());
 	CCASSERTZ(rc);
 
-	//cerr << "SetObjId hashed " << BodySize() << " bytes starting with " << hex << *(uint64_t*)BodyPtr() << " result " << *(uint64_t*)OidPtr() << dec << endl;
+	//cerr << "SetObjId hashkey " << tag << " hashed " << BodySize() << " bytes starting with " << hex << *(uint64_t*)BodyPtr() << " result " << *(uint64_t*)OidPtr() << dec << endl;
 
 #if TEST_SEQ_TX_OID
 	*(uint32_t*)OidPtr() = *(uint32_t*)DataPtr();

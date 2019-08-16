@@ -46,7 +46,8 @@ DbConnPersistData::DbConnPersistData()
 	CCASSERTZ(dblog(sqlite3_prepare_v2(Persistent_db, "commit;", -1, &Persistent_Data_commit, NULL)));
 
 	CCASSERTZ(dblog(sqlite3_prepare_v2(Persistent_db, "insert or replace into Parameters (Key, Subkey, Value) values (?1, ?2, ?3);", -1, &Parameters_insert, NULL)));
-	CCASSERTZ(dblog(sqlite3_prepare_v2(Persistent_db, "insert or replace into Parameters select ?1 as Key, ?2 as Subkey, 1 as Value union select Key, Subkey, Value+1 from Parameters where Key = ?1 and Subkey = ?2 order by Value desc limit 1;", -1, &Parameters_increment, NULL)));
+	//CCASSERTZ(dblog(sqlite3_prepare_v2(Persistent_db, "insert or replace into Parameters select Key, Subkey, Value+1 from Parameters where Key = ?1 and Subkey = ?2 union all select ?1 as Key, ?2 as Subkey, 1 as Value order by Value desc limit 1;", -1, &Parameters_increment, NULL)));
+	CCASSERTZ(dblog(sqlite3_prepare_v2(Persistent_db, "insert into Parameters (Key, Subkey, Value) values (?1, ?2, 1) on conflict (Key, Subkey) do update set Value = Value + 1;", -1, &Parameters_increment, NULL)));
 	CCASSERTZ(dblog(sqlite3_prepare_v2(Persistent_db, "select Value from Parameters where Key = ?1 and Subkey = ?2;", -1, &Parameters_select, NULL)));
 
 	CCASSERTZ(dblog(sqlite3_prepare_v2(Persistent_db, "insert into Blockchain (Level, Block) values (?1, ?2);", -1, &Blockchain_insert, NULL)));
@@ -114,7 +115,7 @@ DbConnPersistData::~DbConnPersistData()
 
 void DbConnPersistData::DoPersistentDataFinish()
 {
-	if (RandTest(TEST_DELAY_DB_RESET)) sleep(1);
+	if (RandTest(RTEST_DELAY_DB_RESET)) sleep(1);
 
 	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnPersistData::DoPersistentDataFinish dbconn " << uintptr_t(this);
 
@@ -204,7 +205,7 @@ retry:
 		return -1;
 	}
 
-	if (TEST_FOR_TIMING_ERROR && (rand() & 0x7F))	// try multiple times to make sure there are no timing errors
+	if (TEST_FOR_TIMING_ERROR && RandTest(128))	// try multiple times to make sure there are no timing errors
 	{
 		EndRead();
 		goto retry;
@@ -268,7 +269,7 @@ int DbConnPersistData::ParameterInsert(int key, int subkey, void *value, unsigne
 	if (dblog(sqlite3_bind_int(Parameters_insert, 2, subkey))) return -1;
 	if (dblog(sqlite3_bind_blob(Parameters_insert, 3, value, valsize, SQLITE_STATIC))) return -1;
 
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
+	if (RandTest(RTEST_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnPersistData::ParameterInsert simulating database error pre-insert";
 
@@ -306,7 +307,7 @@ int DbConnPersistData::ParameterIncrement(int key, int subkey)
 	if (dblog(sqlite3_bind_int(Parameters_increment, 1, key))) return -1;
 	if (dblog(sqlite3_bind_int(Parameters_increment, 2, subkey))) return -1;
 
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
+	if (RandTest(RTEST_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnPersistData::ParameterIncrement simulating database error pre-insert";
 
@@ -349,7 +350,7 @@ int DbConnPersistData::ParameterSelect(int key, int subkey, void *value, unsigne
 
 	if (dblog(rc = sqlite3_step(Parameters_select), DB_STMT_SELECT)) return -1;
 
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
+	if (RandTest(RTEST_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnPersistData::ParameterSelect simulating database error post-select";
 
@@ -390,7 +391,7 @@ int DbConnPersistData::ParameterSelect(int key, int subkey, void *value, unsigne
 
 	if (dblog(sqlite3_extended_errcode(Persistent_db), DB_STMT_SELECT)) return -1;	// check if error retrieving results
 
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
+	if (RandTest(RTEST_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnPersistData::ParameterSelect simulating database error post-error check";
 
@@ -438,7 +439,7 @@ int DbConnPersistData::BlockchainInsert(uint64_t level, SmartBuf smartobj)
 	if (dblog(sqlite3_bind_int64(Blockchain_insert, 1, level))) return -1;
 	if (dblog(sqlite3_bind_blob(Blockchain_insert, 2, obj->ObjPtr(), objsize, SQLITE_STATIC))) return -1;
 
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
+	if (RandTest(RTEST_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnPersistData::BlockchainInsert simulating database error pre-insert";
 
@@ -478,7 +479,7 @@ int DbConnPersistData::BlockchainSelect(uint64_t level, SmartBuf *retobj)
 
 	if (dblog(rc = sqlite3_step(Blockchain_select), DB_STMT_SELECT)) return -1;
 
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
+	if (RandTest(RTEST_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnPersistData::BlockchainSelect simulating database error post-select";
 
@@ -519,7 +520,7 @@ int DbConnPersistData::BlockchainSelect(uint64_t level, SmartBuf *retobj)
 
 	if (dblog(sqlite3_extended_errcode(Persistent_db), DB_STMT_SELECT)) return -1;	// check if error retrieving results
 
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
+	if (RandTest(RTEST_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnPersistData::BlockchainSelect simulating database error post-error check";
 
@@ -571,7 +572,7 @@ int DbConnPersistData::BlockchainSelectMax(uint64_t& level)
 
 	if (dblog(rc = sqlite3_step(Blockchain_select_max), DB_STMT_SELECT)) return -1;
 
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
+	if (RandTest(RTEST_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnPersistData::BlockchainSelectMax simulating database error post-select";
 
@@ -605,7 +606,7 @@ int DbConnPersistData::BlockchainSelectMax(uint64_t& level)
 
 	if (dblog(sqlite3_extended_errcode(Persistent_db), DB_STMT_SELECT)) return -1;	// check if error retrieving results
 
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
+	if (RandTest(RTEST_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnPersistData::BlockchainSelectMax simulating database error post-error check";
 
@@ -630,7 +631,7 @@ int DbConnPersistData::SerialnumInsert(const void *serialnum, unsigned serialnum
 	if (dblog(sqlite3_bind_blob(Serialnum_insert, 1, serialnum, serialnum_size, SQLITE_STATIC))) return -1;
 	if (dblog(sqlite3_bind_blob(Serialnum_insert, 2, hashkey, hashkey_size, SQLITE_STATIC))) return -1;
 
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
+	if (RandTest(RTEST_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnPersistData::SerialnumInsert simulating database error pre-insert";
 
@@ -680,7 +681,7 @@ int DbConnPersistData::SerialnumSelect(const void *serialnum, unsigned serialnum
 
 	if (dblog(rc = sqlite3_step(Serialnum_select), DB_STMT_SELECT)) return -1;
 
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
+	if (RandTest(RTEST_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnPersistData::SerialnumSelect simulating database error post-select";
 
@@ -714,7 +715,7 @@ int DbConnPersistData::SerialnumSelect(const void *serialnum, unsigned serialnum
 
 	if (dblog(sqlite3_extended_errcode(Persistent_db), DB_STMT_SELECT)) return -1;	// check if error retrieving results
 
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
+	if (RandTest(RTEST_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnPersistData::SerialnumSelect simulating database error post-error check";
 
@@ -753,7 +754,7 @@ int DbConnPersistData::CommitTreeInsert(unsigned height, uint64_t offset, const 
 	if (dblog(sqlite3_bind_int64(Commit_Tree_insert, 2, offset))) return -1;
 	if (dblog(sqlite3_bind_blob(Commit_Tree_insert, 3, data, datasize, SQLITE_STATIC))) return -1;
 
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
+	if (RandTest(RTEST_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnPersistData::CommitTreeInsert simulating database error pre-insert";
 
@@ -793,7 +794,7 @@ int DbConnPersistData::CommitTreeSelect(unsigned height, uint64_t offset, void *
 
 	if (dblog(rc = sqlite3_step(Commit_Tree_select), DB_STMT_SELECT)) return -1;
 
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
+	if (RandTest(RTEST_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnPersistData::CommitTreeSelect simulating database error post-select";
 
@@ -838,7 +839,7 @@ int DbConnPersistData::CommitTreeSelect(unsigned height, uint64_t offset, void *
 
 	if (dblog(sqlite3_extended_errcode(Persistent_db), DB_STMT_SELECT)) return -1;	// check if error retrieving results
 
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
+	if (RandTest(RTEST_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnPersistData::CommitTreeSelect simulating database error post-error check";
 
@@ -867,7 +868,7 @@ int DbConnPersistData::CommitRootsInsert(uint64_t level, uint64_t timestamp, uin
 	if (dblog(sqlite3_bind_int64(Commit_Roots_insert, 3, next_commitnum))) return -1;
 	if (dblog(sqlite3_bind_blob(Commit_Roots_insert, 4, hash, hashsize, SQLITE_STATIC))) return -1;
 
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
+	if (RandTest(RTEST_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnPersistData::CommitRootsInsert simulating database error pre-insert";
 
@@ -908,7 +909,7 @@ int DbConnPersistData::CommitRootsSelectLevel(uint64_t level, bool or_greater, u
 
 	if (dblog(rc = sqlite3_step(Commit_Roots_Level_select), DB_STMT_SELECT)) return -1;
 
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
+	if (RandTest(RTEST_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnPersistData::CommitRootsSelectLevel simulating database error post-select";
 
@@ -967,7 +968,7 @@ int DbConnPersistData::CommitRootsSelectLevel(uint64_t level, bool or_greater, u
 
 	if (dblog(sqlite3_extended_errcode(Persistent_db), DB_STMT_SELECT)) return -1;	// check if error retrieving results
 
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
+	if (RandTest(RTEST_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnPersistData::CommitRootsSelectLevel simulating database error post-error check";
 
@@ -995,7 +996,7 @@ int DbConnPersistData::CommitRootsSelectCommitnum(uint64_t commitnum, uint64_t& 
 
 	if (dblog(rc = sqlite3_step(Commit_Roots_Commitnum_select), DB_STMT_SELECT)) return -1;
 
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
+	if (RandTest(RTEST_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnPersistData::CommitRootsSelectCommitnum simulating database error post-select";
 
@@ -1045,7 +1046,7 @@ int DbConnPersistData::CommitRootsSelectCommitnum(uint64_t commitnum, uint64_t& 
 
 	if (dblog(sqlite3_extended_errcode(Persistent_db), DB_STMT_SELECT)) return -1;	// check if error retrieving results
 
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
+	if (RandTest(RTEST_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnPersistData::CommitRootsSelectCommitnum simulating database error post-error check";
 
@@ -1074,7 +1075,7 @@ int DbConnPersistData::TxOutputsInsert(const void *addr, unsigned addrsize, uint
 	if (dblog(sqlite3_bind_int64(Tx_Outputs_insert, 5, param_level))) return -1;
 	if (dblog(sqlite3_bind_int64(Tx_Outputs_insert, 6, commitnum))) return -1;
 
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
+	if (RandTest(RTEST_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnPersistData::TxOutputsInsert simulating database error pre-insert";
 
@@ -1122,7 +1123,7 @@ int DbConnPersistData::TxOutputsSelect(const void *addr, unsigned addrsize, uint
 
 		if (dblog(rc = sqlite3_step(Tx_Outputs_select), DB_STMT_SELECT)) return -1;
 
-		if (RandTest(TEST_RANDOM_DB_ERRORS))
+		if (RandTest(RTEST_DB_ERRORS))
 		{
 			BOOST_LOG_TRIVIAL(info) << "DbConnPersistData::TxOutputsSelect simulating database error post-select";
 
@@ -1197,7 +1198,7 @@ int DbConnPersistData::TxOutputsSelect(const void *addr, unsigned addrsize, uint
 
 		if (dblog(sqlite3_extended_errcode(Persistent_db), DB_STMT_SELECT)) return -1;	// check if error retrieving results
 
-		if (RandTest(TEST_RANDOM_DB_ERRORS))
+		if (RandTest(RTEST_DB_ERRORS))
 		{
 			BOOST_LOG_TRIVIAL(info) << "DbConnPersistData::TxOutputsSelect simulating database error post-error check";
 

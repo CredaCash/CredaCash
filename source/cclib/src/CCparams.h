@@ -43,7 +43,7 @@
 #define TX_CC_MINT_DONATION	"49000000000000000000000000000000"
 #define TX_CC_MINT_EXPONENT	22
 #define TX_MINT_NOUT		1					// number of outputs in a TX_MINT
-#define TX_MINT_ZKKEY_ID	15					//@@! change to 0 for final release?
+#define TX_MINT_ZKKEY_ID	0
 
 #define TX_MERKLE_DEPTH				40
 

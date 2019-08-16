@@ -821,7 +821,7 @@ if 1:
 
 if 1:
 	print
-	print '### random test start time = ', int(time.time() - t0 + 0.5)
+	print '### random test start time =', int(time.time() - t0 + 0.5)
 	print
 
 	while True:

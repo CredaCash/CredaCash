@@ -77,7 +77,7 @@ void BlockSyncConnection::HandleSendMsgWrite(const boost::system::error_code& e,
 	if (CancelTimer())
 		return;
 
-	bool sim_err = RandTest(TEST_RANDOM_WRITE_ERRORS);
+	bool sim_err = RandTest(RTEST_WRITE_ERRORS);
 	if (sim_err) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::HandleSendMsgWrite simulating write error";
 
 	if (e || sim_err)
@@ -180,7 +180,7 @@ void BlockSyncConnection::HandleObjReadComplete(const boost::system::error_code&
 
 	m_nred += bytes_transferred;
 
-	bool sim_err = RandTest(TEST_RANDOM_READ_ERRORS);
+	bool sim_err = RandTest(RTEST_READ_ERRORS);
 	if (sim_err) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::HandleObjReadComplete simulating read error";
 
 	if (e || sim_err)
@@ -263,7 +263,7 @@ void BlockSyncConnection::HandleObjReadComplete(const boost::system::error_code&
 
 	BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::HandleObjReadComplete received obj bufp " << (uintptr_t)smartobj.BasePtr() << " tag " << obj->ObjTag() << " size " << obj->ObjSize() << " oid " << buf2hex(obj->OidPtr(), sizeof(ccoid_t));
 
-	blocksync_dbconn->ProcessQEnqueueValidate(PROCESS_Q_TYPE_BLOCK, smartobj, prior_oid, level, PROCESS_Q_STATUS_PENDING, 0, m_conn_index, m_use_count.load());
+	blocksync_dbconn->ProcessQEnqueueValidate(PROCESS_Q_TYPE_BLOCK, smartobj, prior_oid, level, PROCESS_Q_STATUS_PENDING, 0, false, m_conn_index, m_use_count.load());
 
 	++req_msg.entry.level;
 	--req_msg.entry.nlevels;

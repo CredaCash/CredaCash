@@ -16,3 +16,4 @@ void cc_mint_threads_shutdown();
 
 void cc_mint(DbConn *dbconn, TxQuery& txquery, ostringstream& rstream);
 void cc_poll_destination(string destination, uint64_t last_receive_max, DbConn *dbconn, TxQuery& txquery, ostringstream& rstream);
+void cc_poll_mint(DbConn *dbconn, TxQuery& txquery, ostringstream& rstream);

@@ -346,7 +346,7 @@ void DbConn::InitDb()
 
 	string sql, insert("insert or ignore into Parameters values (");
 
-	sql = insert + STRINGIFY(DB_KEY_SCHEMA) ",0,\"" DB_TAG "\");";
+	sql = insert + STRINGIFY(DB_KEY_SCHEMA) ",0,'" DB_TAG "');";
 	//cerr << sql << endl;
 	CCASSERTZ(dbexec(Wallet_db, sql.c_str()));
 
@@ -395,9 +395,9 @@ void DbConn::CheckDb()
 
 	if (blockchain != g_params.blockchain)
 	{
-		cerr << "ERROR: Configuration blockchain = " << g_params.blockchain << "; wallet blockchain = " << blockchain << endl;
+		cerr << "ERROR: Configuration blockchain = " << g_params.blockchain << ", but wallet blockchain = " << blockchain << endl;
 
-		throw runtime_error("Chosen blockchain does not match blockchain of wallet file");
+		throw runtime_error("Chosen blockchain does not match wallet file blockchain");
 	}
 }
 
@@ -504,7 +504,7 @@ void DbConn::CloseDb(bool done)
 
 void DbConn::DoDbFinish()
 {
-	if (RandTest(TEST_DELAY_DB_RESET)) sleep(1);
+	if (RandTest(RTEST_DELAY_DB_RESET)) sleep(1);
 
 	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::DoDbFinish dbconn " << uintptr_t(this);
 
@@ -547,7 +547,7 @@ void DbConn::DoDbFinish()
 
 void DbConn::DoDbFinishTx(int rollback)
 {
-	if (RandTest(TEST_DELAY_DB_RESET)) sleep(1);
+	if (RandTest(RTEST_DELAY_DB_RESET)) sleep(1);
 
 	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::DoDbFinishTx dbconn " << uintptr_t(this) << " rollback " << rollback;
 
@@ -569,6 +569,10 @@ void DbConn::DoDbFinishTx(int rollback)
 
 int DbConn::BeginRead()
 {
+	// acquire lock -- might solve intermittent sqlite errors
+	//lock_guard<boost::shared_mutex> lock(db_mutex);
+	lock_guard<mutex> lock(db_mutex);
+
 	if (0 && TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::BeginRead starting db read transaction";
 
 	if (dblog(sqlite3_step(db_begin_read), DB_STMT_STEP))
@@ -585,6 +589,10 @@ int DbConn::BeginRead()
 
 int DbConn::BeginWrite()
 {
+	// acquire lock -- might solve intermittent sqlite errors
+	//lock_guard<boost::shared_mutex> lock(db_mutex);
+	lock_guard<mutex> lock(db_mutex);
+
 	if (0 && TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::BeginWrite starting db write transaction";
 
 	if (dblog(sqlite3_step(db_begin_write), DB_STMT_STEP))
@@ -771,7 +779,7 @@ void DbConn::TestConcurrent()
 			--n;
 			++val;
 
-			ParameterInsert(0, 0, &val, sizeof(val)); if (rand() & 1) {
+			ParameterInsert(0, 0, &val, sizeof(val)); if (RandTest(2)) {
 			ParameterSelect(0, 0, &va2, sizeof(va2)); CCASSERT(va2 == val); }
 
 			CCASSERTZ(dbexec(Wallet_db, "end;"));
@@ -789,7 +797,7 @@ void DbConn::TestConcurrent()
 			--n;
 			++val;
 
-			ParameterInsert(0, 0, &val, sizeof(val)); if (rand() & 1) {
+			ParameterInsert(0, 0, &val, sizeof(val)); if (RandTest(2)) {
 			ParameterSelect(0, 0, &va2, sizeof(va2)); CCASSERT(va2 == val); }
 
 			dblog(sqlite3_step(db_commit), DB_STMT_STEP);
@@ -809,7 +817,7 @@ void DbConn::TestConcurrent()
 
 			val *= 99;
 
-			ParameterInsert(0, 0, &val, sizeof(val)); if (rand() & 1) {
+			ParameterInsert(0, 0, &val, sizeof(val)); if (RandTest(2)) {
 			ParameterSelect(0, 0, &va2, sizeof(va2)); CCASSERT(va2 == val); }
 
 			CCASSERTZ(dbexec(Wallet_db, "rollback;"));
@@ -824,7 +832,7 @@ void DbConn::TestConcurrent()
 
 			val *= 99;
 
-			ParameterInsert(0, 0, &val, sizeof(val)); if (rand() & 1) {
+			ParameterInsert(0, 0, &val, sizeof(val)); if (RandTest(2)) {
 			ParameterSelect(0, 0, &va2, sizeof(va2)); CCASSERT(va2 == val); }
 
 			break;

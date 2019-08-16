@@ -18,6 +18,8 @@
 #endif
 #endif
 
+#define SQLITE_DQS						0
+
 #define SQLITE_OMIT_DECLTYPE			1
 #define SQLITE_OMIT_DEPRECATED			1
 #define SQLITE_OMIT_PROGRESS_CALLBACK	1

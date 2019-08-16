@@ -15,9 +15,9 @@ void set_trace_level(int level)
     boost::log::core::get()->set_filter(boost::log::trivial::severity > (((int)(fatal)) - level));
 }
 
-void expand_percent(string& s, const uint64_t v)
+void expand_number(string& s, const uint64_t v)
 {
-	auto pos = s.find('%');
+	auto pos = s.find('#');
 	if (pos == string::npos)
 		return;
 

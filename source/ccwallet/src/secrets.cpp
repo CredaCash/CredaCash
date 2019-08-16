@@ -766,7 +766,7 @@ void Secret::GenerateMasterSecret(string& encrypted_master_secret, string& passp
 	encrypted_master_secret = value.asString();
 }
 
-void Secret::CreateBaseSecrets(DbConn *dbconn)
+int Secret::CreateBaseSecrets(DbConn *dbconn)
 {
 	// for now, the only case this needs to handle is creating the initial master secret and it's descendants for the default spend params
 	// TODO: support user option to derive master secret from a passphrase and store the params (seed, etc) in PackedParams field
@@ -795,14 +795,20 @@ void Secret::CreateBaseSecrets(DbConn *dbconn)
 		if (secret.id != MAIN_SECRET_ID)
 			throw runtime_error("Secret id mismatch reading master secret");
 
-		const char *err =  "The wallet already contains a master secret";
+		const char *msg =  "The wallet already contains a master secret";
 
 		if (g_params.initial_master_secret.length())
-			throw runtime_error(err);
+		{
+			cerr << "ERROR: " << msg << endl;
 
-		cerr << err << "." << endl;
+			return 1;
+		}
+		else
+		{
+			cerr << "Note: " << msg << endl;
 
-		return;			// MAIN_SECRET_ID already exists
+			return 0;
+		}
 	}
 
 	// MAIN_SECRET_ID was not found, so create it
@@ -819,7 +825,7 @@ void Secret::CreateBaseSecrets(DbConn *dbconn)
 	else if (!passphrase.length())
 		passphrase = GetPassphrase("the imported master secret");
 
-	if (g_shutdown) return;
+	if (g_shutdown) return -1;
 
 	if (encrypted_master_secret.length() >= sizeof(secret.packed_params))
 		throw runtime_error(string("Error encrypted master secret too long"));
@@ -837,16 +843,6 @@ void Secret::CreateBaseSecrets(DbConn *dbconn)
 	//cerr << "master secret " << hex << secret.value << dec << endl;
 	//cerr << "encrypted master-secret: " << (char*)secret.packed_params << endl;
 	CCASSERT(secret.value);
-
-	cerr << "The master secret has been stored in the wallet file.  This file should be kept safe and private." << endl;
-	cerr << "The encrypted master secret is: " << encrypted_master_secret << endl;
-	cerr <<
-
-R"(If the wallet file is lost, this encrypted master secret and the passphrase can regenerate the master secret and
-might be able recover some or all of the wallet contents. These values could also be used to steal the contents of the
-wallet, so if they are retained, they should be stored separately (not together), and both kept private and secure.)"
-
-	"\n" << endl;
 
 	rc = dbconn->SecretInsert(secret, 1);
 	if (rc || secret.id != MAIN_SECRET_ID)
@@ -871,6 +867,18 @@ wallet, so if they are retained, they should be stored separately (not together)
 		throw runtime_error("Error generating self destination");
 
 	//throw runtime_error("test");
+
+	cerr << "The master secret has been stored in the wallet file.  This file should be kept safe and private." << endl;
+	cerr << "The encrypted master secret is: " << encrypted_master_secret << endl;
+	cerr <<
+
+R"(If the wallet file is lost, this encrypted master secret and the passphrase can regenerate the master secret and
+might be able recover some or all of the wallet contents. These values could also be used to steal the contents of the
+wallet, so if they are retained, they should be stored separately (not together), and both kept private and secure.)"
+
+	"\n" << endl;
+
+	return 0;
 }
 
 /*
@@ -1602,7 +1610,7 @@ int Secret::PollAddress(DbConn *dbconn, TxQuery& txquery, bool update_times)
 done:
 
 	if (update_times)
-		UpdateSavePollingTimes(dbconn, now);
+		UpdateSavePollingTimes(dbconn, now, true);
 
 	bool update_addresses = (last_receive && is_first && (type == SECRET_TYPE_RECV_ADDRESS || type == SECRET_TYPE_POLL_ADDRESS));
 
@@ -1617,7 +1625,7 @@ done:
 	return 0;
 }
 
-int Secret::UpdateSavePollingTimes(DbConn *dbconn, uint64_t now)
+int Secret::UpdateSavePollingTimes(DbConn *dbconn, uint64_t now, bool checked_now)
 {
 	if (TRACE_POLLING) BOOST_LOG_TRIVIAL(trace) << "Secret::UpdateSavePollingTimes";
 
@@ -1642,7 +1650,7 @@ int Secret::UpdateSavePollingTimes(DbConn *dbconn, uint64_t now)
 	first_receive = _first_receive;
 	last_receive = _last_receive;
 
-	UpdatePollingTimes(now, true);
+	UpdatePollingTimes(now, checked_now);
 
 	rc = dbconn->SecretInsert(*this);
 	if (rc) return -1;

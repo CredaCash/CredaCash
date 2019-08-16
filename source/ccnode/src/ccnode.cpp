@@ -34,10 +34,11 @@
 
 #define DEFAULT_TX_VALIDATION_THREADS	16
 
-#define DEFAULT_DIR_SERVERS_FILE			"rendezvous-%.lis"
-#define DEFAULT_GENESIS_DATA_FILE			"genesis-%.dat"
+#define DEFAULT_DIR_SERVERS_FILE			"rendezvous-#.lis"
+#define DEFAULT_GENESIS_DATA_FILE			"genesis-#.dat"
 #define DEFAULT_PRIVATE_RELAY_HOSTS_FILE	"private_relay_hosts.lis"
 
+#define DEFAULT_TRACE_LEVEL	4
 #define TRACE_SHUTDOWN		1
 
 #if 0 // not yet used
@@ -109,6 +110,7 @@ static void do_show_config()
 	cout << "   base port = " << g_params.base_port << endl;
 	cout << "   max object memory in MB = " << g_params.max_obj_mem << endl;
 	cout << "   tx validation threads = " << g_params.tx_validation_threads << endl;
+	cout << "   block future tolerance = " << g_params.block_future_tolerance << endl;
 	cout << "   db checkpoint interval = " << g_params.db_checkpoint_sec << endl;
 	cout << "   db update continuously = " << yesno(g_params.db_update_continuous) << endl;
 
@@ -170,6 +172,9 @@ static void check_config_values()
 	if (g_params.tx_validation_threads < 1 || g_params.tx_validation_threads > 2000)
 		throw range_error("Tx validation threads value not in valid range");
 
+	if (g_params.block_future_tolerance < 1 || g_params.block_future_tolerance > 90000)
+		throw range_error("Block time tolerance not in valid range");
+
 	if (g_params.db_checkpoint_sec < 1 || g_params.db_checkpoint_sec > 3600)
 		throw range_error("Database checkpoint seconds not in valid range");
 
@@ -220,21 +225,22 @@ static int process_options(int argc, char **argv)
 #else
 				"~/." CCAPPDIR "\""
 #endif
-				", where \"%\" is the blockchain).")
-		("rendezvous-file", po::wvalue<wstring>(&g_params.directory_servers_file), "Path to file containing a list of peer rendezvous servers (default: \"" DEFAULT_DIR_SERVERS_FILE "\" in same directory as this program, where \"%\" is the blockchain).")
-		("genesis-file", po::wvalue<wstring>(&g_params.genesis_data_file), "Path to file containing data for the genesis block (default \"" DEFAULT_GENESIS_DATA_FILE "\" in same directory as this program, where \"%\" is the blockchain).")
+				", where \"#\" is the blockchain number).")
+		("rendezvous-file", po::wvalue<wstring>(&g_params.directory_servers_file), "Path to file containing a list of peer rendezvous servers (default: \"" DEFAULT_DIR_SERVERS_FILE "\" in same directory as this program, where \"#\" is the blockchain number).")
+		("genesis-file", po::wvalue<wstring>(&g_params.genesis_data_file), "Path to file containing data for the genesis block (default \"" DEFAULT_GENESIS_DATA_FILE "\" in same directory as this program, where \"#\" is the blockchain number).")
 		("genesis-generate", "Generate new genesis block data files.")
 		("genesis-nwitnesses", po::value<int>(&g_params.genesis_nwitnesses)->default_value(3), "Initial # of witnesses when generating new genesis block data files.")
 		("genesis-maxmal", po::value<int>(&g_params.genesis_maxmal)->default_value(0), "Initial allowance for malicious witnesses when generating new genesis block data files.")
 		("proof-key-dir", po::wvalue<wstring>(&g_params.proof_key_dir), "Path to zero knowledge proof keys; if set to \"env\", the environment variable " KEY_PATH_ENV_VAR " is used (default: the subdirectory \"" ZK_KEY_DIR "\" in same directory as this program).")
 		("tor-exe", po::wvalue<wstring>(&g_params.tor_exe), "Path to Tor executable; if set to \"external\", Tor is not launched by this program, and must be launched and managed externally (default: \"" TOR_EXE "\" in same directory as this program).")
 		("tor-config", po::wvalue<wstring>(&g_params.tor_config), "Path to Tor configuration file (default: \"" TOR_CONFIG "\" in same directory as this program).")
-		("obj-memory-max", po::value<int64_t>(&g_params.max_obj_mem)->default_value(2500), "Maximum object (block and transaction) memory in MB.") //@@! change for production release
+		("obj-memory-max", po::value<int>(&g_params.max_obj_mem)->default_value(500), "Maximum object (block and transaction) memory in MB.")
 		("tx-validation-threads", po::value<int>(&g_params.tx_validation_threads)->default_value(-1), "Transaction validation threads (-1 = auto config).")
-		("db-checkpoint-sec", po::value<int>(&g_params.db_checkpoint_sec)->default_value(8), "Database checkpoint interval in seconds.")
+		("block-future-tolerance", po::value<int>(&g_params.block_future_tolerance)->default_value(3800), "Block future timestamp tolerance in seconds.")
+		("db-checkpoint-sec", po::value<int>(&g_params.db_checkpoint_sec)->default_value(127), "Database checkpoint interval in seconds.")
 		("db-update-continuously", po::value<bool>(&g_params.db_update_continuous)->default_value(0), "Update database continuously or only at checkpoints.")
 		("baseport", po::value<int>(&g_params.base_port)->default_value(0), (string("Base port for node interfaces\n")
-			+ "(default: " STRINGIFY(BASE_PORT) "+(blockchain*10 modulo " + to_string(BASE_PORT_TOP-BASE_PORT) + ")"
+			+ "(default: " STRINGIFY(BASE_PORT) "+20*(blockchain modulo " + to_string((BASE_PORT_TOP-BASE_PORT)/20) + ")"
 			"; node software uses ports baseport through baseport+" STRINGIFY(TOR_PORT) ").").c_str())
 		//("store-blocks", po::value<int>(), "Store entire blockchain;\ndefaults to 0 if micronode=1 or mininode=1.")
 		//("store-created", po::value<int>(), "Store database of created bills;\ndefaults to 0 if micronode=1 or mininode=1.")
@@ -246,7 +252,7 @@ static int process_options(int argc, char **argv)
 		//("transact-password", po::value<string>(&g_transact_service.password_string), "SHA1 hash of password to access transaction support service (default: no password required).")
 		("transact-tor", po::value<bool>(&g_transact_service.tor_service)->default_value(0), "Make the transaction support service available as a Tor hidden service.")
 		("transact-tor-auth", po::value<string>(&g_transact_service.tor_auth_string)->default_value("v3"), "Tor hidden service authentication method (none, basic, or v3).")
-		("transact-conns", po::value<int>(&g_transact_service.max_inconns)->default_value(120), "Maximum number of incoming connections for transaction support service.")	//@@! lower for final release
+		("transact-conns", po::value<int>(&g_transact_service.max_inconns)->default_value(20), "Maximum number of incoming connections for transaction support service.")
 		("transact-threads", po::value<float>(&g_transact_service.threads_per_conn)->default_value(1), "Threads per connection for transaction support service.")
 		("transact-difficulty", po::value<uint64_t>(&g_params.query_work_difficulty)->default_value(0), "Proof-of-work difficulty for transaction server queries (0 = none, otherwise lower numbers have more difficulty).")
 		("relay", po::value<bool>(&g_relay_service.enabled)->default_value(1), "Fetch and relay blocks and transactions (at port baseport+" STRINGIFY(RELAY_PORT) ");\n"
@@ -255,7 +261,7 @@ static int process_options(int argc, char **argv)
 				"by default, this service binds to localhost and is available as a Tor hidden service;\n"
 				"this setting can be used to bind to another address for direct access via the local network or internet.")
 		("relay-out", po::value<int>(&g_relay_service.max_outconns)->default_value(8), "Target number of outgoing relay connections (must be at least 4).")
-		("relay-in", po::value<int>(&g_relay_service.max_inconns)->default_value(16), "Maximum number of incoming relay connections (must be at least 1.5 * relay-out).")
+		("relay-in", po::value<int>(&g_relay_service.max_inconns)->default_value(16), "Maximum number of incoming relay connections (must be at least 1.5*relay-out).")
 		("privrelay", po::value<bool>(&g_privrelay_service.enabled)->default_value(0), "Fetch and relay blocks and transactions (at port baseport+" STRINGIFY(PRIVRELAY_PORT) ");\n"
 				"if no relay is enabled, this node will receive no updates and will only use data previously stored.")
 		("privrelay-file", po::wvalue<wstring>(&g_privrelay_service.priv_hosts_file), "Path to file containing a list of private relay ip_address:port values or Tor onion hostnames (default: \"" DEFAULT_PRIVATE_RELAY_HOSTS_FILE "\").")
@@ -263,7 +269,7 @@ static int process_options(int argc, char **argv)
 		("privrelay-addr", po::value<string>(&g_privrelay_service.address_string)->default_value(LOCALHOST), "Network address for private relay service;\n"
 				"by default, this service binds to localhost and is available as a Tor hidden service;\n"
 				"this setting can be used to bind to another address for direct access via the local network or internet.")
-		("privrelay-tor", po::value<bool>(&g_privrelay_service.tor_service)->default_value(1), "Make the private relay service available as a Tor hidden service.")
+		("privrelay-tor", po::value<bool>(&g_privrelay_service.tor_service)->default_value(0), "Make the private relay service available as a Tor hidden service.")
 		("privrelay-tor-new-hostname", po::value<bool>(&g_privrelay_service.tor_new_hostname)->default_value(0), "Give the private relay Tor hidden service a new hostname.")
 		("privrelay-tor-auth", po::value<string>(&g_privrelay_service.tor_auth_string)->default_value("none"), "Tor hidden service authentication method (none, basic, or v3).")
 		("privrelay-in", po::value<int>(&g_privrelay_service.max_inconns)->default_value(-1), "Maximum number of incoming private relay connections  (-1 = auto config).")
@@ -364,14 +370,14 @@ static int process_options(int argc, char **argv)
 	if (!g_params.directory_servers_file.length())
 	{
 		string def = DEFAULT_DIR_SERVERS_FILE;
-		expand_percent(def, g_params.blockchain);
+		expand_number(def, g_params.blockchain);
 		g_params.directory_servers_file = g_params.process_dir + WIDE(PATH_DELIMITER) + s2w(def);
 	}
 
 	if (!g_params.genesis_data_file.length())
 	{
 		string def = DEFAULT_GENESIS_DATA_FILE;
-		expand_percent(def, g_params.blockchain);
+		expand_number(def, g_params.blockchain);
 		g_params.genesis_data_file = g_params.process_dir + WIDE(PATH_DELIMITER) + s2w(def);
 	}
 
@@ -396,7 +402,7 @@ static int process_options(int argc, char **argv)
 	g_params.max_param_age = 16*60*60;
 	//g_params.max_param_age = 30;	// for testing
 
-	g_params.tx_work_difficulty = (uint64_t)1 << 43; //@@!
+	g_params.tx_work_difficulty = (uint64_t)1 << 43; //@@! larger number is easier
 
 	//set_storage(); // not implemented
 
@@ -413,13 +419,13 @@ static int process_options(int argc, char **argv)
 	get_proof_key_dir(g_params.proof_key_dir, g_params.process_dir);
 
 	string def = CCAPPDIR;
-	expand_percent(def, g_params.blockchain);
+	expand_number(def, g_params.blockchain);
 	get_app_data_dir(g_params.app_data_dir, def);
 	if (!g_params.app_data_dir.length())
 		throw runtime_error("No data directory specified");
 
 	if (!g_params.base_port)
-		g_params.base_port = BASE_PORT + ((g_params.blockchain * 10) % (BASE_PORT_TOP - BASE_PORT));
+		g_params.base_port = BASE_PORT + 20 * (g_params.blockchain % ((BASE_PORT_TOP - BASE_PORT)/20));
 
 	set_service_configs();
 
@@ -539,11 +545,11 @@ int main(int argc, char **argv)
 
 		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 1...";
 
-	g_processblock.Stop();
+	g_processtx.Stop();
 
 		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 2...";
 
-	g_processtx.Stop();
+	g_processblock.Stop();
 
 		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 3...";
 

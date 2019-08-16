@@ -4,6 +4,10 @@
 
 ## Release History
 
+### 2019-08-15 v1.0
+
+First release to support fully-operational network.
+
 ### 2019-06-14 v0.98
 
 Network node software and wallet to support initial currency mining.

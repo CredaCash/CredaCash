@@ -6,8 +6,6 @@
  * relay.cpp
 */
 
-//@@! make sure blocks with too future timestamps are rejected somewhere...
-
 #include "ccnode.h"
 #include "relay.hpp"
 #include "block.hpp"
@@ -29,27 +27,38 @@
 #define TRACE_RELAY		(g_params.trace_relay)
 
 #define RELAY_HEARTBEAT				100
+#define RELAY_TIMEOUT				40
 
 #define RELAY_DOWNLOAD_LOW_WATER	12	//((CC_TX_SEND_MAX)/2)
 #define RELAY_DOWNLOAD_HIGH_WATER	5
 
 #define RELAY_DIR_REFRESH			(30*60)
 
-//!#define TEST_CUZZ		1
-//!#define TEST_RANDOM_NO_SEND			127
-//#define TEST_DELAY_BLOCKS				1
+//!#define TEST_CUZZ					1
+//!#define RTEST_NO_SEND_TX				4
+//!#define RTEST_NO_SEND_BLOCK			16
+//!#define RTEST_DELAY_TXS				4		// when set, tx's will only be sent on the private relay
+//!#define RTEST_DELAY_BLOCKS			4		// when set, blocks will only be sent on the private relay
 //#define TEST_DOUBLECHECK_BLOCK_OIDS	1
 
 #ifndef TEST_CUZZ
 #define TEST_CUZZ						0	// don't test
 #endif
 
-#ifndef TEST_RANDOM_NO_SEND
-#define TEST_RANDOM_NO_SEND				0	// don't test
+#ifndef RTEST_NO_SEND_TX
+#define RTEST_NO_SEND_TX				0	// don't test
 #endif
 
-#ifndef TEST_DELAY_BLOCKS
-#define TEST_DELAY_BLOCKS				0	// don't test
+#ifndef RTEST_NO_SEND_BLOCK
+#define RTEST_NO_SEND_BLOCK				0	// don't test
+#endif
+
+#ifndef RTEST_DELAY_TXS
+#define RTEST_DELAY_TXS				0	// don't test
+#endif
+
+#ifndef RTEST_DELAY_BLOCKS
+#define RTEST_DELAY_BLOCKS				0	// don't test
 #endif
 
 #ifndef TEST_DOUBLECHECK_BLOCK_OIDS
@@ -175,7 +184,7 @@ void RelayConnection::HandleMsgReadComplete(const boost::system::error_code& e, 
 
 	m_nred += bytes_transferred;
 
-	bool sim_err = RandTest(TEST_RANDOM_READ_ERRORS);
+	bool sim_err = RandTest(RTEST_READ_ERRORS);
 	if (sim_err) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleMsgReadComplete simulating read error";
 
 	if (e || sim_err)
@@ -277,20 +286,26 @@ void RelayConnection::HandleMsgReadComplete(const boost::system::error_code& e, 
 				continue;
 			}
 
-			if (tag == CC_MSG_HAVE_TX && SmartBuf::ByteTotal() > (g_params.max_obj_mem << 20))
+			if (tag == CC_MSG_HAVE_TX && SmartBuf::ByteTotal() > ((int64_t)g_params.max_obj_mem << 20))
 			{
-				BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleMsgReadComplete CC_MSG_HAVE_TX skipping download of tx because memory usage " << SmartBuf::ByteTotal() << " > " << (g_params.max_obj_mem << 20);
+				BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleMsgReadComplete CC_MSG_HAVE_TX skipping download of tx because memory usage " << SmartBuf::ByteTotal() << " > " << ((int64_t)g_params.max_obj_mem << 20);
 
 				continue;
 			}
 
-			if (!TEST_DELAY_BLOCKS || tag != CC_MSG_HAVE_BLOCK)
+			#if RTEST_DELAY_BLOCKS && RTEST_DELAY_TXS
+			#error both RTEST_DELAY_BLOCKS and RTEST_DELAY_TXS are set
+			#endif
+			if ((!RTEST_DELAY_BLOCKS || tag != CC_MSG_HAVE_BLOCK) && (!RTEST_DELAY_TXS || tag != CC_MSG_HAVE_TX))
 				relay_dbconn->RelayObjsInsert(m_conn_index, (tag == CC_MSG_HAVE_BLOCK) ? CC_TYPE_BLOCK : CC_TYPE_TXPAY, req_params, RELAY_STATUS_ANNOUNCED, RELAY_PEER_STATUS_READY);
 			else if (private_peer_index >= 0)
 			{
 				// with TEST_DELAY_BLOCKS, blocks are requested on the private relay only, after a delay
-				// as a result, undelayed tx's on the public relay should end up being requested first
-				ccsleep(2);
+				//	as a result, undelayed tx's on the public relay should end up being requested first
+				// with RTEST_DELAY_TXS, blocks are requested on the private relay only, after a delay
+				//	as a result, undelayed blocks on the public relay should end up being requested first
+				if (RTEST_DELAY_BLOCKS && (rand() % (RTEST_DELAY_BLOCKS + 1))) usleep(rand() & (1024*1024-1));
+				if (RTEST_DELAY_TXS && (rand() % (RTEST_DELAY_TXS + 1))) usleep(rand() & (1024*1024-1));
 				relay_dbconn->RelayObjsInsert(m_conn_index, (tag == CC_MSG_HAVE_BLOCK) ? CC_TYPE_BLOCK : CC_TYPE_TXPAY, req_params, RELAY_STATUS_ANNOUNCED, RELAY_PEER_STATUS_READY);
 			}
 		}
@@ -427,6 +442,7 @@ void RelayConnection::HandleMsgReadComplete(const boost::system::error_code& e, 
 
 			objs_pending = request_objs_pending.fetch_sub(1) - 1;
 			bytes_pending = request_bytes_pending.fetch_sub(params->size) - params->size;
+			last_valid_obj_time = time(NULL);
 
 			if (TRACE_RELAY) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleMsgReadComplete received CC_NO_OBJ; still pending " << objs_pending << " objects in " << bytes_pending << " bytes; skipped requested obj oid " << buf2hex(&params->oid, sizeof(ccoid_t));
 
@@ -474,7 +490,7 @@ void RelayConnection::HandleMsgReadComplete(const boost::system::error_code& e, 
 
 			if (TRACE_RELAY) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleMsgReadComplete request params size " << req_params.size << " level " << req_params.level << " witness " << (unsigned)req_params.witness << " oid " << buf2hex(&req_params.oid, sizeof(ccoid_t)) << " prior_oid " << buf2hex(&req_params.prior_oid, sizeof(ccoid_t));
 
-			auto objs_pending = request_objs_pending.fetch_sub(1) - 1;
+			objs_pending = request_objs_pending.fetch_sub(1) - 1;
 			auto bytes_pending = request_bytes_pending.fetch_sub(req_params.size) - req_params.size;
 
 			CCASSERT(objs_pending >= 0);
@@ -705,6 +721,12 @@ void RelayConnection::HandleMsgReadComplete(const boost::system::error_code& e, 
 			}
 		}
 
+		{
+			lock_guard<FastSpinLock> lock(request_queue_lock);
+
+			last_valid_obj_time = time(NULL);
+		}
+
 		if (disregard_object)
 		{
 			BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleMsgReadComplete CC_TAG_TX_WIRE disregarding received obj bufp " << (uintptr_t)smartobj.BasePtr() << " tag " << obj->ObjTag() << " size " << obj->ObjSize() << " oid " << buf2hex(obj->OidPtr(), sizeof(ccoid_t));
@@ -724,8 +746,20 @@ void RelayConnection::HandleMsgReadComplete(const boost::system::error_code& e, 
 			else
 				g_witness.NotifyNewWork(false);
 		}
+		else if (tag == CC_TAG_BLOCK)
+		{
+			relay_dbconn->ProcessQEnqueueValidate(PROCESS_Q_TYPE_BLOCK, smartobj, prior_oid, level, PROCESS_Q_STATUS_PENDING, priority, false, m_conn_index, m_use_count.load());
+		}
 		else
-			relay_dbconn->ProcessQEnqueueValidate((tag == CC_TAG_BLOCK ? PROCESS_Q_TYPE_BLOCK : PROCESS_Q_TYPE_TX), smartobj, prior_oid, level, PROCESS_Q_STATUS_PENDING, priority, m_conn_index, m_use_count.load());
+		{
+			auto rc = ProcessTx::TxEnqueueValidate(relay_dbconn, false, false, priority, smartobj, m_conn_index, m_use_count.load());
+
+			if (rc == 1)
+			{
+				// tx is already validated; ok to skip following line in this situation, since it does nothing when the tx is valid:
+				//HandleValidateDone(m_use_count.load(), 0);
+			}
+		}
 
 		break;
 	}
@@ -772,13 +806,6 @@ void RelayConnection::CheckToSend()
 			memcpy(&oid, oidp, sizeof(ccoid_t));
 		}
 
-		if (RandTest(TEST_RANDOM_NO_SEND))
-		{
-			BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " RelayConnection::CheckToSend test skipping send of object oid " << buf2hex(&oid, sizeof(ccoid_t));
-
-			continue;
-		}
-
 		SmartBuf smartobj;
 
 		auto rc = relay_dbconn->ValidObjsGetObj(oid, &smartobj);
@@ -809,26 +836,42 @@ void RelayConnection::CheckToSend()
 		switch (obj->ObjTag())
 		{
 		case CC_TAG_BLOCK:
+			if (RandTest(RTEST_NO_SEND_BLOCK))
+			{
+				BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " RelayConnection::CheckToSend test skipping send of block oid " << buf2hex(&oid, sizeof(ccoid_t));
+
+				continue;
+			}
 			//if (TRACE_RELAY) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " RelayConnection::CheckToSend sending CC_TAG_BLOCK size " << obj->ObjSize() << " oid " << buf2hex(obj->OidPtr(), sizeof(ccoid_t)); // << " block dump " << buf2hex(obj, obj->ObjSize());
 			if (TEST_DOUBLECHECK_BLOCK_OIDS) ((Block*)obj)->SetOrVerifyOid(false);
 			break;
 		case CC_TAG_TX_WIRE:
-			//if (TRACE_RELAY) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " RelayConnection::CheckToSend sending CC_TAG_TX_WIRE size " << obj->ObjSize() << " oid " << buf2hex(obj->OidPtr(), sizeof(ccoid_t));
-			break;
 		case CC_TAG_MINT_WIRE:
-			//if (TRACE_RELAY) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " RelayConnection::CheckToSend sending CC_TAG_MINT_WIRE size " << obj->ObjSize() << " oid " << buf2hex(obj->OidPtr(), sizeof(ccoid_t));
+			if (RandTest(RTEST_NO_SEND_TX))
+			{
+				BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " RelayConnection::CheckToSend test skipping send of tx tag " << obj->ObjTag() << " oid " << buf2hex(&oid, sizeof(ccoid_t));
+
+				// sending No_Obj_Reply is not required, however, if the relay skips sending too many objects in a row without a No_Obj_Reply,
+				// the peer request queue will fill and it will stall until it internally generates a "peer send timeout"
+
+				WriteAsync("RelayConnection::HandleMsgReadComplete", boost::asio::buffer(No_Obj_Reply, sizeof(No_Obj_Reply)),
+						boost::bind(&Connection::HandleWrite, this, boost::asio::placeholders::error, AutoCount(this)));
+
+				continue;
+			}
+			//if (TRACE_RELAY) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " RelayConnection::CheckToSend sending CC_TAG_TX_WIRE/CC_TAG_MINT_WIRE tag " << obj->ObjTag() << " size " << obj->ObjSize() << " oid " << buf2hex(obj->OidPtr(), sizeof(ccoid_t));
 			break;
 		default:
-			BOOST_LOG_TRIVIAL(warning) << Name() << " Conn " << m_conn_index << " RelayConnection::CheckToSend unknown object tag " << obj->ObjTag() << " size " << obj->ObjSize() << " oid " << buf2hex(obj->OidPtr(), sizeof(ccoid_t));
-			break;
+			//BOOST_LOG_TRIVIAL(warning) << Name() << " Conn " << m_conn_index << " RelayConnection::CheckToSend unknown object tag " << obj->ObjTag() << " size " << obj->ObjSize() << " oid " << buf2hex(obj->OidPtr(), sizeof(ccoid_t));
+			continue;		// try the next object in the queue
 		}
 
-		if (RandTest(TEST_CUZZ)) sleep(1);
+		if (TEST_CUZZ) ccsleep(rand() % 3);
 
 		if (WriteAsync("RelayConnection::CheckToSend", boost::asio::buffer(obj->ObjPtr(), size),
 				boost::bind(&RelayConnection::HandleObjWrite, this, boost::asio::placeholders::error, smartobj, AutoCount(this))))
 		{
-			BOOST_LOG_TRIVIAL(error) << Name() << " Conn " << m_conn_index << " RelayConnection::CheckToSend WriteAsync error";
+			BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " RelayConnection::CheckToSend WriteAsync error";
 
 			send_one.clear();
 		}
@@ -850,7 +893,7 @@ void RelayConnection::HandleObjWrite(const boost::system::error_code& e, SmartBu
 
 	if (TRACE_RELAY) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " RelayConnection::CheckToSend HandleObjWrite " << e << " " << e.message();
 
-	bool sim_err = RandTest(TEST_RANDOM_WRITE_ERRORS);
+	bool sim_err = RandTest(RTEST_WRITE_ERRORS);
 	if (sim_err) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleObjWrite simulating write error";
 
 	if (e || sim_err)
@@ -910,6 +953,7 @@ void RelayConnection::CheckToDownload()
 			}
 
 			reqsize += req_param_buf[i].size;
+			last_valid_obj_time = time(NULL);
 
 			if (TRACE_RELAY)
 			{
@@ -952,7 +996,7 @@ void RelayConnection::HandleSendMsgWrite(const boost::system::error_code& e, Aut
 	if (CheckOpCount(pending_op_counter))
 		return;
 
-	bool sim_err = RandTest(TEST_RANDOM_WRITE_ERRORS);
+	bool sim_err = RandTest(RTEST_WRITE_ERRORS);
 	if (sim_err) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleSendMsgWrite simulating write error";
 
 	if (e || sim_err)
@@ -988,6 +1032,19 @@ void RelayConnection::HandleHeartbeat(const boost::system::error_code& e, AutoCo
 
 	if (TRACE_RELAY) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleHeartbeat " << uintptr_t(this) << " e = " << e << " " << e.message();
 
+	if (request_objs_pending.load())
+	{
+		lock_guard<FastSpinLock> lock(request_queue_lock);
+
+		uint32_t now = time(NULL);
+		if ((int32_t)(now - last_valid_obj_time) > RELAY_TIMEOUT)
+		{
+			BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleHeartbeat peer send timeout ref time " << last_valid_obj_time << " current time " << now;
+
+			return Stop();
+		}
+	}
+
 	CheckToDownload();	// we do this on the same timer just to make it easier
 
 	unsigned nbytes;
@@ -1015,7 +1072,7 @@ void RelayConnection::HandleAnnounceMsgWrite(const boost::system::error_code& e,
 	if (CheckOpCount(pending_op_counter))
 		return;
 
-	bool sim_err = RandTest(TEST_RANDOM_WRITE_ERRORS);
+	bool sim_err = RandTest(RTEST_WRITE_ERRORS);
 	if (sim_err) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleAnnounceMsgWrite simulating write error";
 
 	if (e || sim_err)

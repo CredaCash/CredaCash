@@ -183,7 +183,7 @@ public:
 
 	static void GenerateMasterSecret(string& encrypted_master_secret, string& passphrase);
 
-	static void CreateBaseSecrets(DbConn *dbconn);
+	static int CreateBaseSecrets(DbConn *dbconn);
 
 	int CreateNewSecret(DbConn *dbconn, unsigned _type, uint64_t _parent_id, uint64_t _dest_chain, SpendSecretParams& params, bool recurse = false);
 	int DeriveSecret(DbConn *dbconn, unsigned _type, uint64_t _parent_id, SpendSecretParams& params);
@@ -196,7 +196,7 @@ public:
 
 	int CreatePollingAddresses(DbConn *dbconn, uint64_t _dest_chain, SpendSecretParams& params) const;
 
-	int UpdateSavePollingTimes(DbConn *dbconn, uint64_t now = 0);
+	int UpdateSavePollingTimes(DbConn *dbconn, uint64_t now = 0, bool checked_now = false);
 	int UpdatePollingTimes(uint64_t now = 0, bool checked_now = false);
 	int PollAddress(DbConn *dbconn, TxQuery& txquery, bool update_times = true);
 

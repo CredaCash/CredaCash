@@ -21,6 +21,8 @@
 
 #define DEFAULT_THREADS_PER_SERVICE	"32"
 
+#define DEFAULT_TRACE_LEVEL	4
+
 static void set_nthreads()
 {
 	if (!g_nthreads)
@@ -76,7 +78,7 @@ static int process_options(int argc, char **argv)
 				" default is the value returned by std::thread::hardware_concurrency,"
 				" or " DEFAULT_THREADS_PER_SERVICE " if that result is indeterminate.")
 		("conns", po::value<int>(&g_nconns)->default_value(100), "Number of connections per thread.")
-		("datamem", po::value<int>(&g_datamem)->required(), "Memory for directory data, in units of 8MB ~= 125K directory entries.")
+		("datamem", po::value<int>(&g_datamem)->default_value(1), "Memory for directory data, in units of 8MB ~= 125K directory entries.")
 		("blockfrac", po::value<int>(&g_blockfrac)->default_value(5), "Percentage of memory for blockserver directory.")
 		("hashfill", po::value<int>(&g_hashfill)->default_value(70), "Hash table fill percentage.")
 		("expire", po::value<int>(&g_expire)->default_value(35), "Number of minutes until a directory entry expires.")

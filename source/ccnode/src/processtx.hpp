@@ -38,7 +38,10 @@ public:
 	void Stop();
 	void DeInit();
 
-	static int TxEnqueueValidate(DbConn *dbconn, int64_t priority, SmartBuf smartobj, unsigned conn_index, uint32_t callback_id);
+	void InitBlockScan();
+	void WaitForBlockTxValidation();
+
+	static int TxEnqueueValidate(DbConn *dbconn, bool is_block_tx, bool add_to_relay_objs, int64_t priority, SmartBuf smartobj, unsigned conn_index, uint32_t callback_id);
 	static int TxValidate(DbConn *dbconn, TxPay& tx, SmartBuf smartobj);
 	static const char* ResultString(int result);
 };

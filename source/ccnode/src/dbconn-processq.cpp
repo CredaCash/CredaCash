@@ -35,13 +35,12 @@ DbConnProcessQ::DbConnProcessQ()
 
 		OpenDb(i);
 
-		CCASSERTZ(dblog(sqlite3_prepare_v2(Process_Q_db[i], "insert into Process_Q (ObjId, PriorOid, Level, Status, Priority, AuxInt, CallbackId, Bufp) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8);", -1, &Process_Q_insert[i], NULL)));
-		CCASSERTZ(dblog(sqlite3_prepare_v2(Process_Q_db[i], "begin exclusive;", -1, &Process_Q_begin[i], NULL)));
-		CCASSERTZ(dblog(sqlite3_prepare_v2(Process_Q_db[i], "rollback;", -1, &Process_Q_rollback[i], NULL)));
-		CCASSERTZ(dblog(sqlite3_prepare_v2(Process_Q_db[i], "commit;", -1, &Process_Q_commit[i], NULL)));
-		// ok to use offset in following select because between calls (a) no one will change sort keys; (b) no one will delete an entry (b) if an entry is added, it's ok to get same entry twice
-		CCASSERTZ(dblog(sqlite3_prepare_v2(Process_Q_db[i], "select ObjId, AuxInt, CallbackId, Bufp from Process_Q where Status = ?1 order by Priority, Level desc limit 1 offset ?2;", -1, &Process_Q_select[i], NULL)));
-		CCASSERTZ(dblog(sqlite3_prepare_v2(Process_Q_db[i], "update Process_Q set Status = ?2, AuxInt = ?3 where ObjId = ?1;", -1, &Process_Q_update[i], NULL)));
+		CCASSERTZ(dblog(sqlite3_prepare_v2(Process_Q_db[i], "insert into Process_Q (ObjId, PriorOid, Level, Status, Priority, AuxInt, ConnId, CallbackId, Bufp) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9);", -1, &Process_Q_insert[i], NULL)));
+		CCASSERTZ(dblog(sqlite3_prepare_v2(Process_Q_db[i], "update Process_Q set Priority = min(Priority, ?2), AuxInt = AuxInt + ?3, ConnId = max(ConnId, ?4), CallbackId = case when ConnId > ?4 then CallbackId else ?5 end where ObjId = ?1;", -1, &Process_Q_update_queue[i], NULL)));
+		CCASSERTZ(dblog(sqlite3_prepare_v2(Process_Q_db[i], "select AuxInt, ConnId, CallbackId, Bufp from Process_Q where ObjId = ?1;", -1, &Process_Q_select[i], NULL)));
+		// ok to use offset in following select when witness is selecting valid blocks because between calls (a) no one will change sort keys; (b) no one will delete an entry (b) if an entry is added, it's ok to get same entry twice
+		CCASSERTZ(dblog(sqlite3_prepare_v2(Process_Q_db[i], "select ConnId, CallbackId, Bufp from Process_Q where Status = ?1 order by Priority, Level desc limit 1 offset ?2;", -1, &Process_Q_select_next[i], NULL)));
+		CCASSERTZ(dblog(sqlite3_prepare_v2(Process_Q_db[i], "update Process_Q set Status = ?2, AuxInt = ifnull(?3, AuxInt) where ObjId = ?1;", -1, &Process_Q_update[i], NULL)));
 		CCASSERTZ(dblog(sqlite3_prepare_v2(Process_Q_db[i], "update Process_Q set Status = " STRINGIFY(PROCESS_Q_STATUS_PENDING) " where Status = " STRINGIFY(PROCESS_Q_STATUS_HOLD) " and PriorOid = ?1;", -1, &Process_Q_update_priorobj[i], NULL)));
 		CCASSERTZ(dblog(sqlite3_prepare_v2(Process_Q_db[i], "update Process_Q set AuxInt = 0 where Status = " STRINGIFY(PROCESS_Q_STATUS_VALID) ";", -1, &Process_Q_clear[i], NULL)));
 		CCASSERTZ(dblog(sqlite3_prepare_v2(Process_Q_db[i], "select count(*) from Process_Q where Status = " STRINGIFY(PROCESS_Q_STATUS_VALID) " and AuxInt = ?1;", -1, &Process_Q_count[i], NULL)));	// used for testing
@@ -77,10 +76,9 @@ DbConnProcessQ::~DbConnProcessQ()
 		//	CCASSERTZ(dbexec(Process_Q_db[i], "analyze;"));
 
 		DbFinalize(Process_Q_insert[i], explain);
-		DbFinalize(Process_Q_begin[i], explain);
-		DbFinalize(Process_Q_rollback[i], explain);
-		DbFinalize(Process_Q_commit[i], explain);
+		DbFinalize(Process_Q_update_queue[i], explain);
 		DbFinalize(Process_Q_select[i], explain);
+		DbFinalize(Process_Q_select_next[i], explain);
 		DbFinalize(Process_Q_update[i], explain);
 		DbFinalize(Process_Q_update_priorobj[i], explain);
 		DbFinalize(Process_Q_clear[i], explain);
@@ -98,14 +96,16 @@ DbConnProcessQ::~DbConnProcessQ()
 	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnProcessQ::~DbConnProcessQ done dbconn " << (uintptr_t)this;
 }
 
-void DbConnProcessQ::DoProcessQFinish(unsigned type, bool rollback, bool increment_work)
+void DbConnProcessQ::DoProcessQFinish(unsigned type)
 {
-	if (RandTest(TEST_DELAY_DB_RESET)) sleep(1);
+	if (RandTest(RTEST_DELAY_DB_RESET)) sleep(1);
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnProcessQ::DoProcessQFinish dbconn " << uintptr_t(this) << " type " << type << " rollback " << rollback << " increment work " << increment_work;
+	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnProcessQ::DoProcessQFinish dbconn " << uintptr_t(this) << " type " << type;
 
 	sqlite3_reset(Process_Q_insert[type]);
+	sqlite3_reset(Process_Q_update_queue[type]);
 	sqlite3_reset(Process_Q_select[type]);
+	sqlite3_reset(Process_Q_select_next[type]);
 	sqlite3_reset(Process_Q_update[type]);
 	sqlite3_reset(Process_Q_update_priorobj[type]);
 	sqlite3_reset(Process_Q_clear[type]);
@@ -114,25 +114,6 @@ void DbConnProcessQ::DoProcessQFinish(unsigned type, bool rollback, bool increme
 	sqlite3_reset(Process_Q_done[type]);
 	sqlite3_reset(Process_Q_select_level[type]);
 	sqlite3_reset(Process_Q_delete[type]);
-	sqlite3_reset(Process_Q_commit[type]);
-	sqlite3_reset(Process_Q_begin[type]);
-	sqlite3_reset(Process_Q_rollback[type]);
-
-	if (rollback)
-	{
-		if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnProcessQ::DoProcessQFinish dbconn " << uintptr_t(this) << " type " << type << " rollback";
-
-		dblog(sqlite3_step(Process_Q_rollback[type]), DB_STMT_STEP);
-		sqlite3_reset(Process_Q_rollback[type]);
-	}
-
-
-	if (increment_work)
-	{
-		if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnProcessQ::DoProcessQFinish dbconn " << uintptr_t(this) << " type " << type << " IncrementQueuedWork";
-
-		IncrementQueuedWork(type);
-	}
 }
 
 void DbConnProcessQ::IncrementQueuedWork(unsigned type, unsigned changes)
@@ -211,19 +192,24 @@ void DbConnProcessQ::WaitForQueuedWork(unsigned type)
 	}
 }
 
-int DbConnProcessQ::ProcessQEnqueueValidate(unsigned type, SmartBuf smartobj, const ccoid_t *prior_oid, int64_t level, unsigned status, int64_t priority, unsigned conn_index, uint32_t callback_id)
+int DbConnProcessQ::ProcessQEnqueueValidate(unsigned type, SmartBuf smartobj, const ccoid_t *prior_oid, int64_t level, unsigned status, int64_t priority, bool is_block_tx, unsigned conn_index, uint32_t callback_id)
 {
-	unique_lock<mutex> lock(Process_Q_db_mutex[type]);	// sql statements must be reset before lock is released
-	Finally finally(boost::bind(&DbConnProcessQ::DoProcessQFinish, this, type, 0, 0));		// reset only
+	bool inserted = true;
+	unsigned changes = 0;
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(debug) << "DbConnProcessQ::ProcessQEnqueueValidate type " << type << " level " << level << " status " << status << " priority " << priority << " callback_id " << callback_id << " smartobj " << (uintptr_t)&smartobj;
+	{
+
+	lock_guard<mutex> lock(Process_Q_db_mutex[type]);	// sql statements must be reset before lock is released
+	Finally finally(boost::bind(&DbConnProcessQ::DoProcessQFinish, this, type));
+
+	//if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(debug) << "DbConnProcessQ::ProcessQEnqueueValidate type " << type << " level " << level << " status " << status << " priority " << priority << " is_block_tx " << is_block_tx << " callback_id " << callback_id << " smartobj " << (uintptr_t)&smartobj;
 
 	auto bufp = smartobj.BasePtr();
 	auto obj = (CCObject*)smartobj.data();
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnProcessQ::ProcessQEnqueueValidate type " << type << " level " << level << " status " << status << " priority " << priority << " callback_id " << callback_id << " bufp " << (uintptr_t)bufp << " oid " << buf2hex(obj->OidPtr(), sizeof(ccoid_t)) << " conn_index Conn " << conn_index << " callback_id " << callback_id;
+	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnProcessQ::ProcessQEnqueueValidate type " << type << " level " << level << " status " << status << " priority " << priority << " is_block_tx " << is_block_tx << " callback_id " << callback_id << " bufp " << (uintptr_t)bufp << " oid " << buf2hex(obj->OidPtr(), sizeof(ccoid_t));
 
-	// ObjId, PriorOid, Level, Status, Priority, AuxInt, CallbackId, Bufp
+	// ObjId, PriorOid, Level, Status, Priority, AuxInt, ConnId, CallbackId, Bufp
 	if (dblog(sqlite3_bind_blob(Process_Q_insert[type], 1, obj->OidPtr(), sizeof(ccoid_t), SQLITE_STATIC))) return -1;
 	if (type == PROCESS_Q_TYPE_BLOCK)
 	{
@@ -237,47 +223,65 @@ int DbConnProcessQ::ProcessQEnqueueValidate(unsigned type, SmartBuf smartobj, co
 	}
 	if (dblog(sqlite3_bind_int(Process_Q_insert[type], 4, status))) return -1;
 	if (dblog(sqlite3_bind_int64(Process_Q_insert[type], 5, priority))) return -1;
-	if (dblog(sqlite3_bind_int(Process_Q_insert[type], 6, conn_index))) return -1;
-	if (dblog(sqlite3_bind_int(Process_Q_insert[type], 7, callback_id))) return -1;
-	if (dblog(sqlite3_bind_blob(Process_Q_insert[type], 8, &bufp, sizeof(bufp), SQLITE_STATIC))) return -1;
+	if (dblog(sqlite3_bind_int(Process_Q_insert[type], 6, is_block_tx))) return -1;
+	if (dblog(sqlite3_bind_int(Process_Q_insert[type], 7, conn_index))) return -1;
+	if (dblog(sqlite3_bind_int(Process_Q_insert[type], 8, callback_id))) return -1;
+	if (dblog(sqlite3_bind_blob(Process_Q_insert[type], 9, &bufp, sizeof(bufp), SQLITE_STATIC))) return -1;
 
 	auto rc = sqlite3_step(Process_Q_insert[type]);
 	if (dbresult(rc) == SQLITE_CONSTRAINT)
 	{
-		BOOST_LOG_TRIVIAL(debug) << "DbConnProcessQ::ProcessQEnqueueValidate constraint violation; object downloaded more than once?";
+		if (!is_block_tx)
+			BOOST_LOG_TRIVIAL(debug) << "DbConnProcessQ::ProcessQEnqueueValidate constraint violation; object downloaded more than once?";
+		else if (TRACE_DBCONN)
+			BOOST_LOG_TRIVIAL(debug) << "DbConnProcessQ::ProcessQEnqueueValidate constraint violation";
 
-		return 1;
+		inserted = false;
+
+		// ObjId, Priority, AuxInt, ConnId, CallbackId
+		if (dblog(sqlite3_bind_blob(Process_Q_update_queue[type], 1, obj->OidPtr(), sizeof(ccoid_t), SQLITE_STATIC))) return -1;
+		if (dblog(sqlite3_bind_int64(Process_Q_update_queue[type], 2, priority))) return -1;
+		if (dblog(sqlite3_bind_int(Process_Q_update_queue[type], 3, is_block_tx))) return -1;
+		if (dblog(sqlite3_bind_int(Process_Q_update_queue[type], 4, conn_index))) return -1;
+		if (dblog(sqlite3_bind_int(Process_Q_update_queue[type], 5, callback_id))) return -1;
+
+		if (dblog(sqlite3_step(Process_Q_update_queue[type]), DB_STMT_STEP)) return -1;
 	}
 	else if (dblog(rc, DB_STMT_STEP)) return -1;
 
-	auto changes = sqlite3_changes(Process_Q_db[type]);
+	changes = sqlite3_changes(Process_Q_db[type]);
 
-	if (changes)
+	if (changes && inserted)
 	{
-		if (TRACE_DBCONN || TRACE_SMARTBUF) BOOST_LOG_TRIVIAL(debug) << "DbConnProcessQ::ProcessQEnqueueValidate inserted into Process_Q type " << type << " level " << level << " status " << status << " priority " << priority << " callback_id " << callback_id << " bufp " << (uintptr_t)bufp << " oid " << buf2hex(obj->OidPtr(), sizeof(ccoid_t));
+		if (TRACE_DBCONN || TRACE_SMARTBUF) BOOST_LOG_TRIVIAL(debug) << "DbConnProcessQ::ProcessQEnqueueValidate inserted into Process_Q type " << type << " level " << level << " status " << status << " priority " << priority << " is_block_tx " << is_block_tx << " callback_id " << callback_id << " bufp " << (uintptr_t)bufp << " oid " << buf2hex(obj->OidPtr(), sizeof(ccoid_t));
 
 		smartobj.IncRef();
 	}
 
-	DoProcessQFinish(type, 0, 0);	// don't rollback or increment work
-
-	finally.Clear();
-
-	lock.unlock();
-
 	if (changes != 1)
-		BOOST_LOG_TRIVIAL(error) << "DbConnProcessQ::ProcessQEnqueueValidate sqlite3_changes " << changes << " after insert into Process_Q type " << type << " status " << status << " level " << level << " priority " << priority << " callback_id " << callback_id << " bufp " << (uintptr_t)bufp << " oid " << buf2hex(obj->OidPtr(), sizeof(ccoid_t));
+	{
+		if (inserted)
+			BOOST_LOG_TRIVIAL(error) << "DbConnProcessQ::ProcessQEnqueueValidate sqlite3_changes " << changes << " after insert into Process_Q type " << type << " status " << status << " level " << level << " priority " << priority << " is_block_tx " << is_block_tx << " callback_id " << callback_id << " bufp " << (uintptr_t)bufp << " oid " << buf2hex(obj->OidPtr(), sizeof(ccoid_t));
+		else
+			BOOST_LOG_TRIVIAL(debug) << "DbConnProcessQ::ProcessQEnqueueValidate sqlite3_changes " << changes << " after update Process_Q type " << type << " status " << status << " level " << level << " priority " << priority << " is_block_tx " << is_block_tx << " callback_id " << callback_id << " oid " << buf2hex(obj->OidPtr(), sizeof(ccoid_t));
+	}
 
-	if (changes)
-		IncrementQueuedWork(type);
+	} // unlock db
+
+	if (changes && inserted)
+		IncrementQueuedWork(type, changes);
 
 	return 0;
 }
 
 int DbConnProcessQ::ProcessQGetNextValidateObj(unsigned type, SmartBuf *retobj, unsigned& conn_index, uint32_t& callback_id)
 {
+	Finally finally2(boost::bind(&DbConnProcessQ::IncrementQueuedWork, type, 1));		// increment work on error
+
+	{
+
 	lock_guard<mutex> lock(Process_Q_db_mutex[type]);	// sql statements must be reset before lock is released
-	Finally finally(boost::bind(&DbConnProcessQ::DoProcessQFinish, this, type, 1, 1));		// rollback and increment work
+	Finally finally(boost::bind(&DbConnProcessQ::DoProcessQFinish, this, type));
 
 	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnProcessQ::ProcessQGetNextValidateObj type " << type;
 
@@ -288,19 +292,15 @@ int DbConnProcessQ::ProcessQGetNextValidateObj(unsigned type, SmartBuf *retobj, 
 	int result = 0;
 	int rc;
 
-	// BEGIN
-
-	if (dblog(sqlite3_step(Process_Q_begin[type]), DB_STMT_STEP)) return -1;
-
 	// SELECT an entry from Process_Q --> Priority, ObjId, Callback, Bufp
 
 	// Status, offset
-	if (dblog(sqlite3_bind_int(Process_Q_select[type], 1, PROCESS_Q_STATUS_PENDING))) return -1;
-	if (dblog(sqlite3_bind_int(Process_Q_select[type], 2, 0))) return -1;
+	if (dblog(sqlite3_bind_int(Process_Q_select_next[type], 1, PROCESS_Q_STATUS_PENDING))) return -1;
+	if (dblog(sqlite3_bind_int(Process_Q_select_next[type], 2, 0))) return -1;
 
-	if (dblog(rc = sqlite3_step(Process_Q_select[type]), DB_STMT_SELECT)) return -1;
+	if (dblog(rc = sqlite3_step(Process_Q_select_next[type]), DB_STMT_SELECT)) return -1;
 
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
+	if (RandTest(RTEST_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::ProcessQGetNextValidateObj simulating database error post-select";
 
@@ -311,9 +311,7 @@ int DbConnProcessQ::ProcessQGetNextValidateObj(unsigned type, SmartBuf *retobj, 
 	{
 		if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnProcessQ::ProcessQGetNextValidateObj select returned SQLITE_DONE";
 
-		DoProcessQFinish(type, 1, 0);	// rollback but don't increment work
-
-		finally.Clear();
+		finally2.Clear();	// don't increment work
 
 		return 1;
 	}
@@ -325,161 +323,103 @@ int DbConnProcessQ::ProcessQGetNextValidateObj(unsigned type, SmartBuf *retobj, 
 		return -1;
 	}
 
-	if (sqlite3_data_count(Process_Q_select[type]) != 4)
+	if (sqlite3_data_count(Process_Q_select_next[type]) != 3)
 	{
-		BOOST_LOG_TRIVIAL(error) << "DbConnProcessQ::ProcessQGetNextValidateObj select returned " << sqlite3_data_count(Process_Q_select[type]) << " columns";
+		BOOST_LOG_TRIVIAL(error) << "DbConnProcessQ::ProcessQGetNextValidateObj select returned " << sqlite3_data_count(Process_Q_select_next[type]) << " columns";
 
 		return -1;
 	}
 
-	// ObjId, AuxInt, CallbackId, Bufp
-	auto objid_blob = sqlite3_column_blob(Process_Q_select[type], 0);
-	conn_index = sqlite3_column_int(Process_Q_select[type], 1);
-	callback_id = sqlite3_column_int(Process_Q_select[type], 2);
-	auto bufp_blob = sqlite3_column_blob(Process_Q_select[type], 3);
+	// ConnId, CallbackId, Bufp
+	conn_index = sqlite3_column_int(Process_Q_select_next[type], 0);
+	callback_id = sqlite3_column_int(Process_Q_select_next[type], 1);
+	auto bufp_blob = sqlite3_column_blob(Process_Q_select_next[type], 2);
 
-	ccoid_t oid;
-	void *bufp = NULL;
-	SmartBuf smartobj;
-	CCObject* obj = NULL;
-
-	// must have objid_blob for the delete statement
-	// if other columns fail, it is an error but we can still try to clean up by executing the delete statement
-
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
+	if (RandTest(RTEST_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::ProcessQGetNextValidateObj simulating database error; setting bufp_blob = NULL";
 
 		bufp_blob = NULL;
 	}
 
-	if (!objid_blob)
-	{
-		BOOST_LOG_TRIVIAL(error) << "DbConnProcessQ::ProcessQGetNextValidateObj ObjId is null";
-
-		return -1;
-	}
-	else if (sqlite3_column_bytes(Process_Q_select[type], 0) != sizeof(ccoid_t))
-	{
-		BOOST_LOG_TRIVIAL(error) << "DbConnProcessQ::ProcessQGetNextValidateObj ObjId size " << sqlite3_column_bytes(Process_Q_select[type], 0) << " != " << sizeof(ccoid_t);
-
-		return -1;
-	}
-
 	if (!bufp_blob)
 	{
 		BOOST_LOG_TRIVIAL(error) << "DbConnProcessQ::ProcessQGetNextValidateObj bufp_blob is null";
+
+		return -1;
 	}
-	else if (sqlite3_column_bytes(Process_Q_select[type], 3) != sizeof(void*))
+
+	if (sqlite3_column_bytes(Process_Q_select_next[type], 2) != sizeof(void*))
 	{
-		BOOST_LOG_TRIVIAL(error) << "DbConnProcessQ::ProcessQGetNextValidateObj Bufp size " << sqlite3_column_bytes(Process_Q_select[type], 3) << " != " << sizeof(void*);
+		BOOST_LOG_TRIVIAL(error) << "DbConnProcessQ::ProcessQGetNextValidateObj Bufp size " << sqlite3_column_bytes(Process_Q_select_next[type], 2) << " != " << sizeof(void*);
 
-		bufp_blob = NULL;
+		return -1;
 	}
 
-	memcpy(&oid, objid_blob, sizeof(ccoid_t));
-
-	if (!bufp_blob)
-		result = -1;
-	else
-		bufp = *(void**)bufp_blob;
+	void *bufp = *(void**)bufp_blob;
 
 	if (!bufp)
 	{
-		BOOST_LOG_TRIVIAL(error) << "DbConnProcessQ::ProcessQGetNextValidateObj bufp is null";
+		BOOST_LOG_TRIVIAL(error) << "DbConnProcessQ::ProcessQGetNextValidObj bufp is null";
 
-		result = -1;
+		return -1;
 	}
-	else
-	{
-		if (TRACE_DBCONN | TRACE_SMARTBUF) BOOST_LOG_TRIVIAL(debug) << "DbConnProcessQ::ProcessQGetNextValidateObj smartobj " << (uintptr_t)&smartobj << " bufp " << (uintptr_t)bufp << " db ObjId " << buf2hex(objid_blob, sizeof(ccoid_t));
 
-		smartobj.SetBasePtr(bufp);
-		obj = (CCObject*)smartobj.data();
-		CCASSERT(obj);
+	SmartBuf smartobj(bufp);
+	auto obj = (CCObject*)smartobj.data();
+	CCASSERT(obj);
 
-		if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnProcessQ::ProcessQGetNextValidateObj bufp " << (uintptr_t)bufp << " obj.oid " << buf2hex(obj->OidPtr(), sizeof(ccoid_t));
-
-		if (memcmp(obj->OidPtr(), objid_blob, sizeof(ccoid_t)))
-		{
-			BOOST_LOG_TRIVIAL(error) << "DbConnProcessQ::ProcessQGetNextValidateObj ObjId mismatch";
-
-			result = -1;	// server error
-		}
-	}
+	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnProcessQ::ProcessQGetNextValidateObj type " << type << " bufp " << (uintptr_t)bufp << " obj.oid " << buf2hex(obj->OidPtr(), sizeof(ccoid_t));
 
 	if (dblog(sqlite3_extended_errcode(Process_Q_db[type]), DB_STMT_SELECT)) return -1;	// check if error retrieving results
 
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
+	if (RandTest(RTEST_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::ProcessQGetNextValidateObj simulating database error post-error check";
 
 		return -1;
 	}
 
-	if (type == PROCESS_Q_TYPE_TX)
-	{
-		// DELETE tx from processing queue
+	// UPDATE to status = PROCESS_Q_STATUS_HOLD
 
-		if (dblog(sqlite3_bind_blob(Process_Q_delete[type], 1, &oid, sizeof(ccoid_t), SQLITE_STATIC))) return -1;
+	// ObjId, Status, AuxInt
+	if (dblog(sqlite3_bind_blob(Process_Q_update[type], 1, obj->OidPtr(), sizeof(ccoid_t), SQLITE_STATIC))) return -1;
+	if (dblog(sqlite3_bind_int(Process_Q_update[type], 2, PROCESS_Q_STATUS_HOLD))) return -1;
+	if (dblog(sqlite3_bind_null(Process_Q_update[type], 3))) return -1;
 
-		if (dblog(sqlite3_step(Process_Q_delete[type]), DB_STMT_STEP)) return -1;
-	}
-	else
-	{
-		// UPDATE block to status = PROCESS_Q_STATUS_HOLD
-
-		// ObjId, Status, AuxInt
-		if (dblog(sqlite3_bind_blob(Process_Q_update[type], 1, &oid, sizeof(ccoid_t), SQLITE_STATIC))) return -1;
-		if (dblog(sqlite3_bind_int(Process_Q_update[type], 2, PROCESS_Q_STATUS_HOLD))) return -1;
-		if (dblog(sqlite3_bind_int64(Process_Q_update[type], 3, 0))) return -1;
-
-		if (dblog(sqlite3_step(Process_Q_update[type]), DB_STMT_STEP)) return -1;
-	}
+	if (dblog(sqlite3_step(Process_Q_update[type]), DB_STMT_STEP)) return -1;
 
 	auto changes = sqlite3_changes(Process_Q_db[type]);
 
 	if (changes != 1)
 	{
-		BOOST_LOG_TRIVIAL(error) << "DbConnProcessQ::ProcessQGetNextValidateObj sqlite3_changes " << changes << " after Process_Q_update/Process_Q_delete type " << type << " bufp " << (uintptr_t)bufp << " oid " << buf2hex(&oid, sizeof(ccoid_t));
+		BOOST_LOG_TRIVIAL(error) << "DbConnProcessQ::ProcessQGetNextValidateObj sqlite3_changes " << changes << " after Process_Q_update type " << type << " bufp " << (uintptr_t)bufp << " oid " << buf2hex(obj->OidPtr(), sizeof(ccoid_t));
 
 		return -1;
 	}
 
-	// COMMIT
-
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
-	{
-		BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::ProcessQGetNextValidateObj simulating database error pre-commit";
-
-		return -1;
-	}
-
-	if (dblog(sqlite3_step(Process_Q_commit[type]), DB_STMT_STEP)) return -1;
-
-	if (type == PROCESS_Q_TYPE_TX)
-	{
-		if (TRACE_SMARTBUF) BOOST_LOG_TRIVIAL(debug) << "DbConnProcessQ::ProcessQGetNextValidateObj DecRef bufp " << (uintptr_t)smartobj.BasePtr() << " oid " << buf2hex(&oid, sizeof(ccoid_t));
-
-		smartobj.DecRef();		// it's now deleted from the db
-	}
-
-	DoProcessQFinish(type, 0, 0);	// don't rollback or increment work
-
-	finally.Clear();
-
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnProcessQ::ProcessQGetNextValidateObj done result " << result;
+	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnProcessQ::ProcessQGetNextValidateObj type " << type << " result " << result;
 
 	if (!result)
+	{
 		*retobj = smartobj;
 
+		finally2.Clear();	// don't increment work
+	}
+
 	return result;
+
+	} // unlock db
 }
 
 int DbConnProcessQ::ProcessQUpdateSubsequentBlockStatus(unsigned type, const ccoid_t& oid)
 {
-	unique_lock<mutex> lock(Process_Q_db_mutex[type]);	// sql statements must be reset before lock is released
-	Finally finally(boost::bind(&DbConnProcessQ::DoProcessQFinish, this, type, 0, 0));		// reset only
+	unsigned changes = 0;
+
+	{
+
+	lock_guard<mutex> lock(Process_Q_db_mutex[type]);	// sql statements must be reset before lock is released
+	Finally finally(boost::bind(&DbConnProcessQ::DoProcessQFinish, this, type));
 
 	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnProcessQ::ProcessQUpdateSubsequentBlockStatus type " << type << " oid " << buf2hex(&oid, sizeof(ccoid_t));
 
@@ -488,13 +428,9 @@ int DbConnProcessQ::ProcessQUpdateSubsequentBlockStatus(unsigned type, const cco
 
 	if (dblog(sqlite3_step(Process_Q_update_priorobj[type]), DB_STMT_STEP)) return -1;
 
-	auto changes = sqlite3_changes(Process_Q_db[type]);
+	changes = sqlite3_changes(Process_Q_db[type]);
 
-	DoProcessQFinish(type, 0, 0);	// don't rollback or increment work
-
-	finally.Clear();
-
-	lock.unlock();
+	} // unlock db
 
 	if (changes > 0)
 	{
@@ -509,7 +445,7 @@ int DbConnProcessQ::ProcessQUpdateSubsequentBlockStatus(unsigned type, const cco
 int DbConnProcessQ::ProcessQUpdateValidObj(unsigned type, const ccoid_t& oid, int status, int64_t auxint)
 {
 	lock_guard<mutex> lock(Process_Q_db_mutex[type]);	// sql statements must be reset before lock is released
-	Finally finally(boost::bind(&DbConnProcessQ::DoProcessQFinish, this, type, 0, 0));		// reset only
+	Finally finally(boost::bind(&DbConnProcessQ::DoProcessQFinish, this, type));
 
 	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnProcessQ::ProcessQUpdateValidObj type " << type << " status " << status << " auxint " << auxint << " oid " << buf2hex(&oid, sizeof(ccoid_t));
 
@@ -535,7 +471,7 @@ int DbConnProcessQ::ProcessQUpdateValidObj(unsigned type, const ccoid_t& oid, in
 int DbConnProcessQ::ProcessQCountValidObjs(unsigned type, int64_t auxint)
 {
 	lock_guard<mutex> lock(Process_Q_db_mutex[type]);	// sql statements must be reset before lock is released
-	Finally finally(boost::bind(&DbConnProcessQ::DoProcessQFinish, this, type, 0, 0));		// reset only
+	Finally finally(boost::bind(&DbConnProcessQ::DoProcessQFinish, this, type));
 
 	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnProcessQ::ProcessQCountValidObjs type " << type << " auxint " << auxint;
 
@@ -546,7 +482,7 @@ int DbConnProcessQ::ProcessQCountValidObjs(unsigned type, int64_t auxint)
 
 	if (dblog(rc = sqlite3_step(Process_Q_count[type]), DB_STMT_SELECT)) return -1;
 
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
+	if (RandTest(RTEST_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::ProcessQCountValidObjs simulating database error post-select";
 
@@ -572,7 +508,7 @@ int DbConnProcessQ::ProcessQCountValidObjs(unsigned type, int64_t auxint)
 
 	if (dblog(sqlite3_extended_errcode(Process_Q_db[type]), DB_STMT_SELECT)) return -1;	// check if error retrieving results
 
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
+	if (RandTest(RTEST_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::ProcessQCountValidObjs simulating database error post-error check";
 
@@ -587,7 +523,7 @@ int DbConnProcessQ::ProcessQCountValidObjs(unsigned type, int64_t auxint)
 int DbConnProcessQ::ProcessQClearValidObjs(unsigned type)
 {
 	lock_guard<mutex> lock(Process_Q_db_mutex[type]);	// sql statements must be reset before lock is released
-	Finally finally(boost::bind(&DbConnProcessQ::DoProcessQFinish, this, type, 0, 0));		// reset only
+	Finally finally(boost::bind(&DbConnProcessQ::DoProcessQFinish, this, type));
 
 	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnProcessQ::ProcessQClearValidObjs type " << type;
 
@@ -603,7 +539,7 @@ int DbConnProcessQ::ProcessQClearValidObjs(unsigned type)
 int DbConnProcessQ::ProcessQRandomizeValidObjs(unsigned type)
 {
 	lock_guard<mutex> lock(Process_Q_db_mutex[type]);	// sql statements must be reset before lock is released
-	Finally finally(boost::bind(&DbConnProcessQ::DoProcessQFinish, this, type, 0, 0));		// reset only
+	Finally finally(boost::bind(&DbConnProcessQ::DoProcessQFinish, this, type));
 
 	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnProcessQ::ProcessQRandomizeValidObjs type " << type;
 
@@ -619,7 +555,7 @@ int DbConnProcessQ::ProcessQRandomizeValidObjs(unsigned type)
 int DbConnProcessQ::ProcessQGetNextValidObj(unsigned type, unsigned offset, SmartBuf *retobj)
 {
 	lock_guard<mutex> lock(Process_Q_db_mutex[type]);	// sql statements must be reset before lock is released
-	Finally finally(boost::bind(&DbConnProcessQ::DoProcessQFinish, this, type, 0, 0));		// reset only
+	Finally finally(boost::bind(&DbConnProcessQ::DoProcessQFinish, this, type));
 
 	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnProcessQ::ProcessQGetNextValidObj type " << type << " offset " << offset;
 
@@ -628,12 +564,12 @@ int DbConnProcessQ::ProcessQGetNextValidObj(unsigned type, unsigned offset, Smar
 	int rc;
 
 	// Status, offset
-	if (dblog(sqlite3_bind_int(Process_Q_select[type], 1, PROCESS_Q_STATUS_VALID))) return -1;
-	if (dblog(sqlite3_bind_int(Process_Q_select[type], 2, offset))) return -1;
+	if (dblog(sqlite3_bind_int(Process_Q_select_next[type], 1, PROCESS_Q_STATUS_VALID))) return -1;
+	if (dblog(sqlite3_bind_int(Process_Q_select_next[type], 2, offset))) return -1;
 
-	if (dblog(rc = sqlite3_step(Process_Q_select[type]), DB_STMT_SELECT)) return -1;
+	if (dblog(rc = sqlite3_step(Process_Q_select_next[type]), DB_STMT_SELECT)) return -1;
 
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
+	if (RandTest(RTEST_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::ProcessQGetNextValidObj simulating database error post-select";
 
@@ -649,21 +585,17 @@ int DbConnProcessQ::ProcessQGetNextValidObj(unsigned type, unsigned offset, Smar
 		return -1;
 	}
 
-	if (sqlite3_data_count(Process_Q_select[type]) != 4)
+	if (sqlite3_data_count(Process_Q_select_next[type]) != 3)
 	{
-		BOOST_LOG_TRIVIAL(error) << "DbConnProcessQ::ProcessQGetNextValidObj select returned " << sqlite3_data_count(Process_Q_select[type]) << " columns";
+		BOOST_LOG_TRIVIAL(error) << "DbConnProcessQ::ProcessQGetNextValidObj select returned " << sqlite3_data_count(Process_Q_select_next[type]) << " columns";
 
 		return -1;
 	}
 
-	// ObjId, AuxInt, CallbackId, Bufp
-	auto bufp_blob = sqlite3_column_blob(Process_Q_select[type], 3);
+	// ConnId, CallbackId, Bufp
+	auto bufp_blob = sqlite3_column_blob(Process_Q_select_next[type], 2);
 
-	void *bufp = NULL;
-	SmartBuf smartobj;
-	CCObject* obj = NULL;
-
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
+	if (RandTest(RTEST_DB_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::ProcessQGetNextValidObj simulating database error; setting bufp_blob = NULL";
 
@@ -677,14 +609,23 @@ int DbConnProcessQ::ProcessQGetNextValidObj(unsigned type, unsigned offset, Smar
 		return -1;
 	}
 
-	if (sqlite3_column_bytes(Process_Q_select[type], 3) != sizeof(void*))
+	if (sqlite3_column_bytes(Process_Q_select_next[type], 2) != sizeof(void*))
 	{
-		BOOST_LOG_TRIVIAL(error) << "DbConnProcessQ::ProcessQGetNextValidObj Bufp size " << sqlite3_column_bytes(Process_Q_select[type], 3) << " != " << sizeof(void*);
+		BOOST_LOG_TRIVIAL(error) << "DbConnProcessQ::ProcessQGetNextValidObj Bufp size " << sqlite3_column_bytes(Process_Q_select_next[type], 2) << " != " << sizeof(void*);
 
 		return -1;
 	}
 
-	bufp = *(void**)bufp_blob;
+	if (dblog(sqlite3_extended_errcode(Process_Q_db[type]), DB_STMT_SELECT)) return -1;	// check if error retrieving results
+
+	if (RandTest(RTEST_DB_ERRORS))
+	{
+		BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::ProcessQGetNextValidObj simulating database error post-error check";
+
+		return -1;
+	}
+
+	void *bufp = *(void**)bufp_blob;
 
 	if (!bufp)
 	{
@@ -693,17 +634,8 @@ int DbConnProcessQ::ProcessQGetNextValidObj(unsigned type, unsigned offset, Smar
 		return -1;
 	}
 
-	if (dblog(sqlite3_extended_errcode(Process_Q_db[type]), DB_STMT_SELECT)) return -1;	// check if error retrieving results
-
-	if (RandTest(TEST_RANDOM_DB_ERRORS))
-	{
-		BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::ProcessQGetNextValidObj simulating database error post-error check";
-
-		return -1;
-	}
-
-	smartobj.SetBasePtr(bufp);
-	obj = (CCObject*)smartobj.data();
+	SmartBuf smartobj(bufp);
+	auto obj = (CCObject*)smartobj.data();
 	CCASSERT(obj);
 
 	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnProcessQ::ProcessQGetNextValidObj bufp " << (uintptr_t)bufp << " obj.oid " << buf2hex(obj->OidPtr(), sizeof(ccoid_t));
@@ -716,7 +648,7 @@ int DbConnProcessQ::ProcessQGetNextValidObj(unsigned type, unsigned offset, Smar
 int DbConnProcessQ::ProcessQDone(unsigned type, int64_t level)
 {
 	lock_guard<mutex> lock(Process_Q_db_mutex[type]);	// sql statements must be reset before lock is released
-	Finally finally(boost::bind(&DbConnProcessQ::DoProcessQFinish, this, type, 0, 0));		// reset only
+	Finally finally(boost::bind(&DbConnProcessQ::DoProcessQFinish, this, type));
 
 	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnProcessQ::ProcessQDone type " << type << " level " << level;
 
@@ -734,7 +666,7 @@ int DbConnProcessQ::ProcessQDone(unsigned type, int64_t level)
 int DbConnProcessQ::ProcessQPruneLevel(unsigned type, int64_t level)
 {
 	lock_guard<mutex> lock(Process_Q_db_mutex[type]);	// sql statements must be reset before lock is released
-	Finally finally(boost::bind(&DbConnProcessQ::DoProcessQFinish, this, type, 0, 0));		// reset only
+	Finally finally(boost::bind(&DbConnProcessQ::DoProcessQFinish, this, type));
 
 	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(debug) << "DbConnProcessQ::ProcessQPruneLevel type " << type << " level " << level;
 
@@ -746,7 +678,7 @@ int DbConnProcessQ::ProcessQPruneLevel(unsigned type, int64_t level)
 
 		if (dblog(rc = sqlite3_step(Process_Q_select_level[type]), DB_STMT_SELECT)) return -1;
 
-		if (RandTest(TEST_RANDOM_DB_ERRORS))
+		if (RandTest(RTEST_DB_ERRORS))
 		{
 			BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::ProcessQPruneLevel simulating database error post-select";
 
@@ -778,7 +710,7 @@ int DbConnProcessQ::ProcessQPruneLevel(unsigned type, int64_t level)
 		SmartBuf smartobj;
 		CCObject* obj = NULL;
 
-		if (RandTest(TEST_RANDOM_DB_ERRORS))
+		if (RandTest(RTEST_DB_ERRORS))
 		{
 			BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::ProcessQPruneLevel simulating database error; setting bufp_blob = NULL";
 
@@ -838,7 +770,7 @@ int DbConnProcessQ::ProcessQPruneLevel(unsigned type, int64_t level)
 
 		if (dblog(sqlite3_extended_errcode(Process_Q_db[type]), DB_STMT_SELECT)) return -1;	// check if error retrieving results
 
-		if (RandTest(TEST_RANDOM_DB_ERRORS))
+		if (RandTest(RTEST_DB_ERRORS))
 		{
 			BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::ProcessQPruneLevel simulating database error post-error check";
 
@@ -862,6 +794,130 @@ int DbConnProcessQ::ProcessQPruneLevel(unsigned type, int64_t level)
 			smartobj.DecRef();		// it's now deleted from the db
 		}
 	}
+
+	return 0;
+}
+
+int DbConnProcessQ::ProcessQSelectAndDelete(unsigned type, const ccoid_t& oid, unsigned& block_tx_count, unsigned& conn_index, uint32_t& callback_id)
+{
+	lock_guard<mutex> lock(Process_Q_db_mutex[type]);	// sql statements must be reset before lock is released
+	Finally finally(boost::bind(&DbConnProcessQ::DoProcessQFinish, this, type));
+
+	block_tx_count = 0;
+	conn_index = 0;
+	callback_id = 0;
+
+	int rc;
+
+	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnProcessQ::ProcessQSelectAndDelete type " << type << " oid " << buf2hex(&oid, sizeof(ccoid_t));
+
+	if (dblog(sqlite3_bind_blob(Process_Q_select[type], 1, &oid, sizeof(ccoid_t), SQLITE_STATIC))) return -1;
+
+	if (dblog(rc = sqlite3_step(Process_Q_select[type]), DB_STMT_SELECT)) return -1;
+
+	if (RandTest(RTEST_DB_ERRORS))
+	{
+		BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::ProcessQSelectAndDelete simulating database error post-select";
+
+		return -1;
+	}
+
+	if (dbresult(rc) == SQLITE_DONE)
+	{
+		if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnProcessQ::ProcessQSelectAndDelete select returned SQLITE_DONE";
+
+		return 1;
+	}
+
+	if (dbresult(rc) != SQLITE_ROW)
+	{
+		BOOST_LOG_TRIVIAL(error) << "DbConnProcessQ::ProcessQSelectAndDelete select returned " << rc;
+
+		return -1;
+	}
+
+	if (sqlite3_data_count(Process_Q_select[type]) != 4)
+	{
+		BOOST_LOG_TRIVIAL(error) << "DbConnProcessQ::ProcessQSelectAndDelete select returned " << sqlite3_data_count(Process_Q_select[type]) << " columns";
+
+		return -1;
+	}
+
+	// AuxInt, ConnId, CallbackId, Bufp
+	block_tx_count = sqlite3_column_int(Process_Q_select[type], 0);
+	conn_index = sqlite3_column_int(Process_Q_select[type], 1);
+	callback_id = sqlite3_column_int(Process_Q_select[type], 2);
+	auto bufp_blob = sqlite3_column_blob(Process_Q_select[type], 3);
+
+	if (dblog(sqlite3_extended_errcode(Process_Q_db[type]), DB_STMT_SELECT)) return -1;	// check if error retrieving results
+
+	// if bufp fails, we can still try to clean up by executing the delete statement
+	if (RandTest(RTEST_DB_ERRORS))
+	{
+		BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::ProcessQSelectAndDelete simulating database error; setting bufp_blob = NULL";
+
+		bufp_blob = NULL;
+	}
+
+	if (!bufp_blob)
+	{
+		BOOST_LOG_TRIVIAL(error) << "DbConnProcessQ::ProcessQSelectAndDelete bufp_blob is null";
+	}
+	else if (sqlite3_column_bytes(Process_Q_select[type], 3) != sizeof(void*))
+	{
+		BOOST_LOG_TRIVIAL(error) << "DbConnProcessQ::ProcessQSelectAndDelete Bufp size " << sqlite3_column_bytes(Process_Q_select[type], 3) << " != " << sizeof(void*);
+
+		bufp_blob = NULL;
+	}
+
+	auto *bufp = *(void**)bufp_blob;
+	SmartBuf smartobj;
+	CCObject* obj = NULL;
+
+	if (!bufp)
+	{
+		BOOST_LOG_TRIVIAL(error) << "DbConnProcessQ::ProcessQSelectAndDelete bufp is null";
+	}
+	else
+	{
+		if (TRACE_DBCONN | TRACE_SMARTBUF) BOOST_LOG_TRIVIAL(debug) << "DbConnProcessQ::ProcessQSelectAndDelete smartobj " << (uintptr_t)&smartobj << " bufp " << (uintptr_t)bufp << " db ObjId " << buf2hex(&oid, sizeof(ccoid_t));
+
+		smartobj.SetBasePtr(bufp);
+		obj = (CCObject*)smartobj.data();
+		CCASSERT(obj);
+
+		if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnProcessQ::ProcessQSelectAndDelete bufp " << (uintptr_t)bufp << " obj.oid " << buf2hex(obj->OidPtr(), sizeof(ccoid_t));
+
+		if (memcmp(obj->OidPtr(), &oid, sizeof(ccoid_t)))
+		{
+			BOOST_LOG_TRIVIAL(error) << "DbConnProcessQ::ProcessQSelectAndDelete ObjId mismatch";
+
+			smartobj.ClearRef();
+		}
+	}
+
+	if (dblog(sqlite3_extended_errcode(Process_Q_db[type]), DB_STMT_SELECT)) return -1;	// check if error retrieving results
+
+	// DELETE tx from processing queue
+
+	if (dblog(sqlite3_bind_blob(Process_Q_delete[type], 1, &oid, sizeof(ccoid_t), SQLITE_STATIC))) return -1;
+
+	if (dblog(sqlite3_step(Process_Q_delete[type]), DB_STMT_STEP)) return -1;
+
+	auto changes = sqlite3_changes(Process_Q_db[type]);
+
+	if (changes != 1)
+	{
+		BOOST_LOG_TRIVIAL(error) << "DbConnProcessQ::ProcessQSelectAndDelete sqlite3_changes " << changes << " after Process_Q_delete type " << type << " bufp " << (uintptr_t)bufp << " oid " << buf2hex(&oid, sizeof(ccoid_t));
+
+		return -1;
+	}
+
+	if (TRACE_SMARTBUF) BOOST_LOG_TRIVIAL(debug) << "DbConnProcessQ::ProcessQSelectAndDelete DecRef bufp " << (uintptr_t)smartobj.BasePtr() << " oid " << buf2hex(&oid, sizeof(ccoid_t));
+
+	smartobj.DecRef();		// it's now deleted from the db
+
+	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnProcessQ::ProcessQSelectAndDelete type " << type << " oid " << buf2hex(&oid, sizeof(ccoid_t)) << " block_tx_count " << block_tx_count << " conn_index " << conn_index << " callback_id " << callback_id;
 
 	return 0;
 }

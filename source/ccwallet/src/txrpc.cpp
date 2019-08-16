@@ -131,6 +131,11 @@ static void cc_mint_thread_proc(unsigned threadnum, bool interactive)
 	{
 		auto t0 = ccticks();
 
+		//usleep(20*1000);	// for testing--slow it down a little
+
+		//if (((t0/CCTICKS_PER_SEC) & 31) == 0)	// for testing--burst transactions
+		//	ccsleep(35);
+
 		try
 		{
 			Transaction tx;
@@ -146,7 +151,7 @@ static void cc_mint_thread_proc(unsigned threadnum, bool interactive)
 				if (interactive && !g_shutdown)
 				{
 					lock_guard<FastSpinLock> lock(g_cout_lock);
-					cerr << "cc.mint thread " << threadnum << " mint complete (or not allowed)" << endl;	//@@! change msg for final release?
+					cerr << "cc.mint thread " << threadnum << " mint transaction not allowed" << endl;
 				}
 
 				return;
@@ -280,6 +285,50 @@ void cc_poll_destination(string destination, uint64_t last_receive_max, DbConn *
 
 	rc = Secret::PollDestination(dbconn, txquery, secret.id, last_receive_max);
 	if (rc < 0) throw txrpc_wallet_error;
+
+	//rstream << "done";
+}
+
+void cc_poll_mint(DbConn *dbconn, TxQuery& txquery, ostringstream& rstream)
+{
+	if (TRACE_TX) BOOST_LOG_TRIVIAL(info) << "cc_poll_mint";
+
+	TxParams txparams;
+
+	auto rc = g_txparams.GetParams(txparams, txquery);
+	if (rc) throw txrpc_server_error;
+
+	if (g_interactive)
+	{
+		lock_guard<FastSpinLock> lock(g_cout_lock);
+		cerr << "Creating all possible mint addresses associated with this wallet...\n" << endl;
+	}
+
+	unsigned count = 0;
+
+	while (!g_shutdown)
+	{
+		Secret address;
+		SpendSecretParams params;
+		memset(&params, 0, sizeof(params));
+
+		auto rc = address.CreateNewSecret(dbconn, SECRET_TYPE_SELF_ADDRESS, MINT_DESTINATION_ID, txparams.blockchain, params);
+		if (rc) break;
+
+		rc = address.UpdateSavePollingTimes(dbconn);
+		if (rc) break;
+
+		++count;
+
+		//if (!(count & 4095))
+		//	cerr << "count " << count << endl;
+	}
+
+	if (g_interactive)
+	{
+		lock_guard<FastSpinLock> lock(g_cout_lock);
+		cerr << "Created " << count << " addresses. These addresses will be polled in the background for successful mint transactions...\n" << endl;
+	}
 
 	//rstream << "done";
 }

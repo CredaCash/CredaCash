@@ -11,7 +11,7 @@
 #include <string>
 
 void set_trace_level(int level);
-void expand_percent(std::string& s, const uint64_t v);
+void expand_number(std::string& s, const uint64_t v);
 std::wstring get_process_dir();
 void get_app_data_dir(std::wstring& path, const std::string& appname);
 void get_proof_key_dir(std::wstring& path, const std::wstring& appdir);
