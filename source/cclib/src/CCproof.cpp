@@ -19,7 +19,7 @@
 
 #include <blake2/blake2.h>
 
-//@@! before release, check all test defs: regexp ^#define TEST.*[1-9], ^#define RTEST.*[1-9], and ^#define TRACE.*[1-9]
+//@@! before release, check all test defs: regexp ^#define TEST.*[1-9]|^#define RTEST.*[1-9]|^#define TRACE.*[1-9]
 
 //!#define TEST_PUBLIC_INPUTS_UNBOUNDED	1
 //!#define TEST_RANDOM_ANYVALS			1
@@ -2110,7 +2110,7 @@ CCPROOF_API CCProof_GenKeys()
 
 	for (unsigned i = 0; i < keystore.GetNKeys(); ++i)
 	{
-		memset(&tx, 0, sizeof(TxPay));
+		memset((void*)&tx, 0, sizeof(TxPay));
 
 		keystore.SetTxCounts(i, tx.nout, tx.nin, tx.nin_with_path);
 
@@ -2196,7 +2196,7 @@ CCPROOF_API CCProof_GenProof(TxPay& tx)
 
 #if TEST_SKIP_ZKPROOFS
 	CCRandom(&tx.zkproof, sizeof(tx.zkproof));
-	memset(&tx.zkproof, 0, 2*64);
+	memset((void*)&tx.zkproof, 0, 2*64);
 	*((char*)&tx.zkproof + 128) |= (1 << (rand() & 7));
 	return 0;
 #endif

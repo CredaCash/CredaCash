@@ -112,7 +112,6 @@ static void do_show_config()
 	cout << "   tx validation threads = " << g_params.tx_validation_threads << endl;
 	cout << "   block future tolerance = " << g_params.block_future_tolerance << endl;
 	cout << "   db checkpoint interval = " << g_params.db_checkpoint_sec << endl;
-	cout << "   db update continuously = " << yesno(g_params.db_update_continuous) << endl;
 
 	cout << endl;
 
@@ -175,7 +174,7 @@ static void check_config_values()
 	if (g_params.block_future_tolerance < 1 || g_params.block_future_tolerance > 90000)
 		throw range_error("Block time tolerance not in valid range");
 
-	if (g_params.db_checkpoint_sec < 1 || g_params.db_checkpoint_sec > 3600)
+	if (g_params.db_checkpoint_sec < 0 || g_params.db_checkpoint_sec > 3600)
 		throw range_error("Database checkpoint seconds not in valid range");
 
 	if (g_params.base_port < 1 || g_params.base_port > 0xFFFF - TOR_PORT)
@@ -219,15 +218,14 @@ static int process_options(int argc, char **argv)
 	advanced_options.add_options()
 		("config", po::wvalue<wstring>(), "Path to file with additional configuration options.")
 		("blockchain", po::value<uint64_t>(&g_params.blockchain)->default_value(MAINNET_BLOCKCHAIN), "Numeric identifier for blockchain; from " STRINGIFY(TESTNET_BLOCKCHAIN_LO) " to " STRINGIFY(TESTNET_BLOCKCHAIN_HI) " is a test network.")
-		("datadir", po::wvalue<wstring>(&g_params.app_data_dir), "Path to program data directory (default: \""
+		("datadir", po::wvalue<wstring>(&g_params.app_data_dir), "Path to program data directory; a \"#\" character in this path will be replaced by the blockchain number (default: \""
 #if _WIN32
-				"%LOCALAPPDATA%\\CredaCash\\" CCAPPDIR "\""
+				"%LOCALAPPDATA%\\CredaCash\\" CCAPPDIR "\").")
 #else
-				"~/." CCAPPDIR "\""
+				"~/." CCAPPDIR "\").")
 #endif
-				", where \"#\" is the blockchain number).")
-		("rendezvous-file", po::wvalue<wstring>(&g_params.directory_servers_file), "Path to file containing a list of peer rendezvous servers (default: \"" DEFAULT_DIR_SERVERS_FILE "\" in same directory as this program, where \"#\" is the blockchain number).")
-		("genesis-file", po::wvalue<wstring>(&g_params.genesis_data_file), "Path to file containing data for the genesis block (default \"" DEFAULT_GENESIS_DATA_FILE "\" in same directory as this program, where \"#\" is the blockchain number).")
+		("rendezvous-file", po::wvalue<wstring>(&g_params.directory_servers_file), "Path to file containing a list of peer rendezvous servers; a \"#\" character in this path will be replaced by the blockchain number (default: \"" DEFAULT_DIR_SERVERS_FILE "\" in same directory as this program).")
+		("genesis-file", po::wvalue<wstring>(&g_params.genesis_data_file), "Path to file containing data for the genesis block; a \"#\" character in this path will be replaced by the blockchain number (default: \"" DEFAULT_GENESIS_DATA_FILE "\" in same directory as this program).")
 		("genesis-generate", "Generate new genesis block data files.")
 		("genesis-nwitnesses", po::value<int>(&g_params.genesis_nwitnesses)->default_value(3), "Initial # of witnesses when generating new genesis block data files.")
 		("genesis-maxmal", po::value<int>(&g_params.genesis_maxmal)->default_value(0), "Initial allowance for malicious witnesses when generating new genesis block data files.")
@@ -237,8 +235,7 @@ static int process_options(int argc, char **argv)
 		("obj-memory-max", po::value<int>(&g_params.max_obj_mem)->default_value(500), "Maximum object (block and transaction) memory in MB.")
 		("tx-validation-threads", po::value<int>(&g_params.tx_validation_threads)->default_value(-1), "Transaction validation threads (-1 = auto config).")
 		("block-future-tolerance", po::value<int>(&g_params.block_future_tolerance)->default_value(3800), "Block future timestamp tolerance in seconds.")
-		("db-checkpoint-sec", po::value<int>(&g_params.db_checkpoint_sec)->default_value(127), "Database checkpoint interval in seconds.")
-		("db-update-continuously", po::value<bool>(&g_params.db_update_continuous)->default_value(0), "Update database continuously or only at checkpoints.")
+		("db-checkpoint-sec", po::value<int>(&g_params.db_checkpoint_sec)->default_value(21), "Database checkpoint interval in seconds (0 = continuous).")
 		("baseport", po::value<int>(&g_params.base_port)->default_value(0), (string("Base port for node interfaces\n")
 			+ "(default: " STRINGIFY(BASE_PORT) "+20*(blockchain modulo " + to_string((BASE_PORT_TOP-BASE_PORT)/20) + ")"
 			"; node software uses ports baseport through baseport+" STRINGIFY(TOR_PORT) ").").c_str())
@@ -288,7 +285,7 @@ static int process_options(int argc, char **argv)
 		("witness-block-ms", po::value<int>(&g_witness.block_time_ms)->default_value(2000), "Nominal milliseconds between blocks.")
 		("witness-block-min-work-ms", po::value<int>(&g_witness.block_min_work_ms)->default_value(200), "Minimum milliseconds to work assembling a block.")
 		("witness-block-idle-sec", po::value<int>(&g_witness.block_max_time)->default_value(20), "Seconds between blocks when there are no transactions to witness.")
-		("witness-test-block-random-ms", po::value<int>(&g_witness.test_block_random_ms)->default_value(-1), "Test randomly generating blocks, with this average milliseconds between blocks (-1 = disabled).")
+		("witness-test-block-random-ms", po::value<int>(&g_witness.test_block_random_ms)->default_value(0), "Test randomly generating blocks, with this average milliseconds between blocks (0 = disabled).")
 		("witness-test-mal", po::value<bool>(&g_witness.test_mal)->default_value(0), "Act as a malicious witness.")
 		//("control", po::value<bool>(&g_control_service.enabled)->default_value(0), "Allow other programs to control node operation (at port baseport+" STRINGIFY(NODE_CONTROL_PORT) ").")
 		//("control-addr", po::value<string>(&g_control_service.address_string)->default_value(LOCALHOST), "Network address for node control service;\n"
@@ -373,6 +370,8 @@ static int process_options(int argc, char **argv)
 		expand_number(def, g_params.blockchain);
 		g_params.directory_servers_file = g_params.process_dir + WIDE(PATH_DELIMITER) + s2w(def);
 	}
+	else
+		expand_number_wide(g_params.directory_servers_file, g_params.blockchain);
 
 	if (!g_params.genesis_data_file.length())
 	{
@@ -380,6 +379,8 @@ static int process_options(int argc, char **argv)
 		expand_number(def, g_params.blockchain);
 		g_params.genesis_data_file = g_params.process_dir + WIDE(PATH_DELIMITER) + s2w(def);
 	}
+	else
+		expand_number_wide(g_params.genesis_data_file, g_params.blockchain);
 
 	if (!g_privrelay_service.priv_hosts_file.length())
 		g_privrelay_service.priv_hosts_file = g_params.process_dir + WIDE(PATH_DELIMITER) + s2w(DEFAULT_PRIVATE_RELAY_HOSTS_FILE);
@@ -403,6 +404,10 @@ static int process_options(int argc, char **argv)
 	//g_params.max_param_age = 30;	// for testing
 
 	g_params.tx_work_difficulty = (uint64_t)1 << 43; //@@! larger number is easier
+
+	#if 0 // for testing
+	g_params.tx_work_difficulty = 0;
+	#endif
 
 	//set_storage(); // not implemented
 

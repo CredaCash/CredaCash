@@ -20,13 +20,13 @@
 class TxParams;
 struct TxPay;
 
-#define SERIALNUM_STATUS_AVAILABLE	0
+#define SERIALNUM_STATUS_UNSPENT	0
 #define SERIALNUM_STATUS_PENDING	1
 #define SERIALNUM_STATUS_SPENT		2
 
 enum PowType
 {
-	PowType_None,
+	PowType_None = 0,
 	PowType_Query,
 	PowType_Tx,
 };
@@ -71,6 +71,7 @@ class TxQuery : public TxConnection
 	int ParseQueryAddressQueryResults(const snarkfront::bigint_t& address, const uint64_t commitstart, Json::Value root, QueryAddressResults &results);
 
 	unsigned m_host_index;
+	bool m_possibly_sent;
 
 public:
 	static CCServer::ConnectionFactoryInstantiation<TxQuery> txconnfac;
@@ -80,6 +81,11 @@ public:
 	 :	TxConnection(manager, io_service, connfac)
 	{
 		ClearHost();
+	}
+
+	bool WasPossiblySent() const
+	{
+		return m_possibly_sent;
 	}
 
 	static int ReadHostsFile(const wstring &path);

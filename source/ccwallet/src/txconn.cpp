@@ -27,8 +27,11 @@ void TxConnection::StartConnection()
 
 	// send the request
 
-	WriteAsync("TxConnection::StartConnection", boost::asio::buffer(m_pquery->data(), nbytes),
-			boost::bind(&Connection::HandleWrite, this, boost::asio::placeholders::error, AutoCount(this)));
+	if (!WriteAsync("TxConnection::StartConnection", boost::asio::buffer(m_pquery->data(), nbytes),
+			boost::bind(&Connection::HandleWrite, this, boost::asio::placeholders::error, AutoCount(this))))
+	{
+		m_data_written = true;
+	}
 
 	m_pquery = NULL;
 }

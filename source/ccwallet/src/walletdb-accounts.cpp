@@ -58,7 +58,7 @@ int DbConn::AccountInsert(Account& account, bool lock_optional)
 
 	if (dbresult(rc) == SQLITE_CONSTRAINT)
 	{
-		BOOST_LOG_TRIVIAL(info) << "DbConn::AccountInsert constraint violation";
+		BOOST_LOG_TRIVIAL(warning) << "DbConn::AccountInsert constraint violation " << account.DebugString();
 
 		return 1;
 	}

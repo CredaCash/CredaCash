@@ -24,6 +24,15 @@ void expand_number(string& s, const uint64_t v)
 	s.replace(pos, 1, to_string(v));
 }
 
+void expand_number_wide(wstring& s, const uint64_t v)
+{
+	auto pos = s.find('#');
+	if (pos == string::npos)
+		return;
+
+	s.replace(pos, 1, to_wstring(v));
+}
+
 static wstring get_process_dir_static()
 {
 #ifdef _WIN32

@@ -7,19 +7,19 @@
 */
 
 #include "ccwallet.h"
-#include "walletdb.hpp"
 #include "accounts.hpp"
 #include "secrets.hpp"
 #include "billets.hpp"
 #include "transactions.hpp"
-#include "totals.hpp"
+#include "walletdb.hpp"
 
-#include <dblog.h>
 #include <CCparams.h>
+#include <dblog.h>
 
 #define TRACE_DBCONN	(g_params.trace_db)
 
-//#define TEST_ENABLE_SQLITE_BUSY			1	// when enabled, mutex problems will result in SQLITE_BUSY errors
+//#define TEST_ENABLE_SQLITE_BUSY	1	// when enabled, mutex problems will result in SQLITE_BUSY errors
+//!#define RTEST_CUZZ				32
 
 #define DB_OPEN_PARAMS			"?cache=private&mode=rw"
 #define DB_CREATE_PARAMS		"?cache=private&mode=rwc"
@@ -37,13 +37,19 @@
 #define TEST_ENABLE_SQLITE_BUSY		0	// don't test
 #endif
 
+#ifndef RTEST_CUZZ
+#define RTEST_CUZZ					0	// don't test
+#endif
+
 #define DB_TAG			"CredaCash Wallet"
-#define DB_SCHEMA		3
+#define DB_SCHEMA		4
 
 #define WALLET_ID_BYTES	(128/8)
 
 //static boost::shared_mutex db_mutex; // v1.69 boost::shared_mutex is buggy--throwing exceptions that exclusive waiter count went negative
 static mutex db_mutex;
+
+using namespace snarkfront;
 
 #if 0
 static int db_callback(void* p, int cols, char** vals, char** names)
@@ -119,9 +125,9 @@ static void OpenDbFile(const char *name, bool createdb, sqlite3** db, bool inter
 	}
 }
 
-void DbConn::Startup(bool createdb, bool resetdb)
+void DbConn::Startup(bool createdb)
 {
-	BOOST_LOG_TRIVIAL(debug) << "DbConn::Startup createdb " << createdb << " resetdb " << resetdb;
+	BOOST_LOG_TRIVIAL(debug) << "DbConn::Startup createdb " << createdb;
 
 	CCASSERT(sqlite3_threadsafe());
 	CCASSERTZ(dblog(sqlite3_config(SQLITE_CONFIG_MULTITHREAD)));
@@ -132,29 +138,47 @@ void DbConn::Startup(bool createdb, bool resetdb)
 
 	if (createdb)
 	{
-		OpenDbFile(g_params.wallet_file.c_str(), true, &Wallet_db);
+		OpenDbFile(g_params.wallet_file.c_str(), true, &Wallet_db, true);
 
-		CreateTables();
-
-		InitDb();
+		if (!CreateTables())
+		{
+			InitDb();
+		}
 
 		CloseDb();
 	}
 
-	OpenDb(true);
+	for (unsigned i = 0; ;++i)
+	{
+		OpenDbFile(g_params.wallet_file.c_str(), false, &Wallet_db, i == 0 && !createdb);
 
-	CheckDb();
+		PrepareDbConnParameters();
 
-	if (resetdb)
-		ResetDb();
+		if (!CheckDb(true))
+			break;
+
+		// retry until schema all updated
+
+		CloseDb();
+
+		if (++i > 1000)
+			throw runtime_error("Retry error updating wallet schema");
+	}
+
+	PrepareDbConn();
 }
 
-void DbConn::CreateTables()
+int DbConn::CreateTables()
 {
 	BOOST_LOG_TRIVIAL(debug) << "DbConn::CreateTables";
 
 	// key-value store for persistent parameters
 	CCASSERTZ(dbexec(Wallet_db, CREATE_TABLE_SQL "Parameters (Key integer not null, Subkey integer not null, Value blob, primary key (Key, Subkey)) without rowid;"));
+
+	PrepareDbConnParameters();
+
+	if (CheckDb(false))
+		return 1;
 
 	// accounts
 	CCASSERTZ(dbexec(Wallet_db, CREATE_TABLE_SQL "Accounts (Id integer primary key not null, Name varchar not null) --without rowid;")); // integer primary key is rowid
@@ -178,10 +202,12 @@ void DbConn::CreateTables()
 	CCASSERTZ(dbexec(Wallet_db, CREATE_INDEX_SQL "Secrets_CheckTime_Index on Secrets (NextCheck) where NextCheck not null;"));
 
 	// transactions
-	CCASSERTZ(dbexec(Wallet_db, CREATE_TABLE_SQL "Transactions (Id integer primary key not null, Parent " REFERENCES_SQL("Transactions(id)") ", Type integer not null, Status integer not null, CreateTime integer not null, BtcBlockLevel integer, Donation blob, Body varchar) --without rowid;")); // integer primary key is rowid
+	CCASSERTZ(dbexec(Wallet_db, CREATE_TABLE_SQL "Transactions (Id integer primary key not null, Parent " REFERENCES_SQL("Transactions(id)") ", Type integer not null, Status integer not null, RefId varchar, ParamLevel integer not null, CreateTime integer not null, BtcBlockLevel integer, Donation blob, Body varchar) --without rowid;")); // integer primary key is rowid
 	//CCASSERTZ(dbexec(Wallet_db, CREATE_INDEX_SQL "Transactions_Parent_Index on Transactions (Parent) where Parent not null;"));
 	//CCASSERTZ(dbexec(Wallet_db, CREATE_INDEX_UNIQUE_SQL "Transactions_Status_Index on Transactions (Status, Id);"));
 	CCASSERTZ(dbexec(Wallet_db, CREATE_INDEX_UNIQUE_SQL "Transactions_BlockLevel_Index on Transactions (BtcBlockLevel, Id);"));
+	CCASSERTZ(dbexec(Wallet_db, CREATE_INDEX_UNIQUE_SQL "Transactions_RefId_Index on Transactions (RefId) where RefId not null;"));
+	//CCASSERTZ(dbexec(Wallet_db, CREATE_INDEX_SQL "Transactions_ParamLevel_Index on Transactions (ParamLevel) where ParamLevel not null and Status = " STRINGIFY(TX_STATUS_PENDING) ";"));
 
 	// billets
 	// status = {pending, available, allocated, spent}
@@ -190,10 +216,12 @@ void DbConn::CreateTables()
 	CCASSERTZ(dbexec(Wallet_db, CREATE_INDEX_SQL "Billets_CreateTx_Index on Billets (CreateTx);"));
 	//CCASSERTZ(dbexec(Wallet_db, CREATE_INDEX_SQL "Billets_Destination_Index on Billets (DestinationId);"));
 	CCASSERTZ(dbexec(Wallet_db, CREATE_INDEX_UNIQUE_SQL "Billets_Txid_Index on Billets (Address, substr(Commitment,1," STRINGIFY(TXID_COMMITMENT_BYTES) ")) where not (Flags & " STRINGIFY(BILL_FLAG_NO_TXID) ");")); // could add commitnum to this index to allow dupe txid's
+	//CCASSERTZ(dbexec(Wallet_db, CREATE_INDEX_UNIQUE_SQL "Billets_Pending_Index on Billets (Id) where Status = " STRINGIFY(BILL_STATUS_PENDING) ";"));
+	CCASSERTZ(dbexec(Wallet_db, CREATE_INDEX_UNIQUE_SQL "Billets_Commitnum_Index on Billets (Commitnum) where Commitnum not null;"));
+	CCASSERTZ(dbexec(Wallet_db, CREATE_INDEX_UNIQUE_SQL "Billets_Unspent_Index on Billets (Amount, Id) where (Status = " STRINGIFY(BILL_STATUS_CLEARED) " or Status = " STRINGIFY(BILL_STATUS_ALLOCATED) ") and Amount > " AMOUNT_ZERO ";"));
 	CCASSERTZ(dbexec(Wallet_db, CREATE_INDEX_SQL "Billets_Amount_Index on Billets (Asset, Blockchain, Amount, DelayTime) where" /*Amount > " AMOUNT_ZERO " and*/ " Status = " STRINGIFY(BILL_STATUS_CLEARED) ";"));
-	//CCASSERTZ(dbexec(Wallet_db, CREATE_INDEX_SQL "Billets_Pending_Index on Billets (Id) where Status = " STRINGIFY(BILL_STATUS_PENDING) ";"));
-	CCASSERTZ(dbexec(Wallet_db, CREATE_INDEX_SQL "Billets_PreAllocated_Index on Billets (Id) where Status = " STRINGIFY(BILL_STATUS_PREALLOCATED) ";"));
-	CCASSERTZ(dbexec(Wallet_db, CREATE_INDEX_SQL "Billets_Allocated_Index on Billets (Id) where Status = " STRINGIFY(BILL_STATUS_ALLOCATED) ";"));
+	CCASSERTZ(dbexec(Wallet_db, CREATE_INDEX_UNIQUE_SQL "Billets_PreAllocated_Index on Billets (Id) where Status = " STRINGIFY(BILL_STATUS_PREALLOCATED) ";"));
+	CCASSERTZ(dbexec(Wallet_db, CREATE_INDEX_UNIQUE_SQL "Billets_Allocated_Index on Billets (Id) where Status = " STRINGIFY(BILL_STATUS_ALLOCATED) ";"));
 
 	// it's possible to create a Tx that spends a billet, have that Tx fail because one of the Tx inputs was already spent somewhere else,
 	// and then want to spend the billet again in another Tx. In order to handle that without losing the original Tx details,
@@ -203,9 +231,11 @@ void DbConn::CreateTables()
 	//CCASSERTZ(dbexec(Wallet_db, CREATE_INDEX_UNIQUE_SQL "Bill_Spends_Billet_Index on Billet_Spends (Billet);"));
 
 	// balances and amounts received for accounts and destinations
-	CCASSERTZ(dbexec(Wallet_db, CREATE_TABLE_SQL "Totals (Type integer not null, Reference integer, Asset integer not null, Blockchain integer not null, DelayTime integer not null, Total blob not null, primary key (Type, Reference, Asset, DelayTime desc, Blockchain)) --without rowid;")); // use rowid for any future indexes
+	CCASSERTZ(dbexec(Wallet_db, CREATE_TABLE_SQL "Totals (Type integer not null, Reference integer, Asset integer not null, Blockchain integer not null, DelayTime integer not null, Total blob not null, primary key (Type, Reference, Asset, DelayTime desc, Blockchain)) --without rowid;")); // use rowid for indexes
 
 	BOOST_LOG_TRIVIAL(debug) << "DbConn::CreateTables done";
+
+	return 0;
 }
 
 DbConn::DbConn(bool open)
@@ -221,20 +251,40 @@ DbConn::~DbConn()
 	CloseDb();
 }
 
-void DbConn::OpenDb(bool interactive)
+void DbConn::OpenDb()
 {
 	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::OpenDb dbconn " << (uintptr_t)this;
 
 	//lock_guard<boost::shared_mutex> lock(db_mutex);
 	lock_guard<mutex> lock(db_mutex);
 
+	//if (RTEST_CUZZ) sleep(1);
+
 	CCASSERTZ(Wallet_db);
 
-	OpenDbFile(g_params.wallet_file.c_str(), false, &Wallet_db, interactive);
+	OpenDbFile(g_params.wallet_file.c_str(), false, &Wallet_db);
+
+	PrepareDbConnParameters();
 
 	PrepareDbConn();
 
 	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::DbConn OpenDb done " << (uintptr_t)this;
+}
+
+static const string insert_sql = "insert into ";
+static const string replace_sql = "insert or replace into ";
+static const string _update_sql = "update ";
+static const string _select_sql = "select ";
+
+void DbConn::PrepareDbConnParameters()
+{
+	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::PrepareDbConnParameters dbconn " << (uintptr_t)this;
+
+	const string table_sql = "Parameters";
+	const string columns_sql = "Key, Subkey, Value";
+	const string values_sql = "(?1, ?2, ?3)";
+	CCASSERTZ(dblog(sqlite3_prepare_v2(Wallet_db, (replace_sql + table_sql + " (" + columns_sql + ") values " + values_sql + ";").c_str(), -1, &Parameters_insert, NULL)));
+	CCASSERTZ(dblog(sqlite3_prepare_v2(Wallet_db, "select Value from Parameters where Key = ?1 and Subkey = ?2;", -1, &Parameters_select, NULL)));
 }
 
 void DbConn::PrepareDbConn()
@@ -245,19 +295,6 @@ void DbConn::PrepareDbConn()
 	CCASSERTZ(dblog(sqlite3_prepare_v2(Wallet_db, "begin immediate;", -1, &db_begin_write, NULL)));
 	CCASSERTZ(dblog(sqlite3_prepare_v2(Wallet_db, "end;", -1, &db_commit, NULL)));
 	CCASSERTZ(dblog(sqlite3_prepare_v2(Wallet_db, "rollback;", -1, &db_rollback, NULL)));
-
-	const string insert_sql = "insert into ";
-	const string replace_sql = "insert or replace into ";
-	const string _update_sql = "update ";
-	const string _select_sql = "select ";
-
-	{
-		const string table_sql = "Parameters";
-		const string columns_sql = "Key, Subkey, Value";
-		const string values_sql = "(?1, ?2, ?3)";
-		CCASSERTZ(dblog(sqlite3_prepare_v2(Wallet_db, (replace_sql + table_sql + " (" + columns_sql + ") values " + values_sql + ";").c_str(), -1, &Parameters_insert, NULL)));
-		CCASSERTZ(dblog(sqlite3_prepare_v2(Wallet_db, "select Value from Parameters where Key = ?1 and Subkey = ?2;", -1, &Parameters_select, NULL)));
-	}
 
 	{
 		const string table_sql = "Accounts";
@@ -287,13 +324,14 @@ void DbConn::PrepareDbConn()
 
 	{
 		const string table_sql = "Transactions";
-		const string columns_sql = "Id, Parent, Type, Status, CreateTime, BtcBlockLevel, Donation, Body";
-		const string values_sql = "(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)";
+		const string columns_sql = "Id, Parent, Type, Status, RefId, ParamLevel, CreateTime, BtcBlockLevel, Donation, Body";
+		const string values_sql = "(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)";
 		const string update_sql = _update_sql + table_sql + " set (" + columns_sql + ") = " + values_sql;
 		const string select_sql = _select_sql + columns_sql + " from " + table_sql;
 		CCASSERTZ(dblog(sqlite3_prepare_v2(Wallet_db, (insert_sql + table_sql +" (" + columns_sql + ") values " + values_sql + ";").c_str(), -1, &Transactions_insert, NULL)));
 		CCASSERTZ(dblog(sqlite3_prepare_v2(Wallet_db, (update_sql + " where Id = ?1;").c_str(), -1, &Transactions_update, NULL)));
 		CCASSERTZ(dblog(sqlite3_prepare_v2(Wallet_db, (select_sql + " where Id >= ?1 and Id >= " STRINGIFY(TX_ID_MINIMUM) " order by Id limit 1;").c_str(), -1, &Transactions_select, NULL)));
+		CCASSERTZ(dblog(sqlite3_prepare_v2(Wallet_db, (select_sql + " where RefId = ?1 order by RefId limit 1;").c_str(), -1, &Transactions_select_refid, NULL)));
 		CCASSERTZ(dblog(sqlite3_prepare_v2(Wallet_db, (select_sql + " where Id <= ?1 order by Id desc limit 1;").c_str(), -1, &Transactions_id_descending_select, NULL)));
 		CCASSERTZ(dblog(sqlite3_prepare_v2(Wallet_db, (select_sql + " where BtcBlockLevel >= ?1 and Id >= ?2 and Id >= " STRINGIFY(TX_ID_MINIMUM) " order by BtcBlockLevel, Id limit 1;").c_str(), -1, &Transactions_level_select, NULL)));
 		CCASSERTZ(dblog(sqlite3_prepare_v2(Wallet_db, (select_sql + " where BtcBlockLevel <= ?1 and Id <= ?2 order by BtcBlockLevel desc, Id desc limit 1;").c_str(), -1, &Transactions_level_descending_select, NULL)));
@@ -309,6 +347,8 @@ void DbConn::PrepareDbConn()
 		CCASSERTZ(dblog(sqlite3_prepare_v2(Wallet_db, (update_sql + " where Id = ?1;").c_str(), -1, &Billets_update, NULL)));
 		CCASSERTZ(dblog(sqlite3_prepare_v2(Wallet_db, (select_sql + " where Id >= ?1 order by Id limit 1;").c_str(), -1, &Billets_select, NULL)));
 		CCASSERTZ(dblog(sqlite3_prepare_v2(Wallet_db, (select_sql + " where not (Flags & " STRINGIFY(BILL_FLAG_NO_TXID) ") and Address = ?1 and substr(Commitment,1," STRINGIFY(TXID_COMMITMENT_BYTES) ") = ?2;").c_str(), -1, &Billets_select_txid, NULL)));
+		CCASSERTZ(dblog(sqlite3_prepare_v2(Wallet_db, (select_sql + " where Commitnum = ?1;").c_str(), -1, &Billets_select_commitnum, NULL)));
+		CCASSERTZ(dblog(sqlite3_prepare_v2(Wallet_db, (select_sql + " where (Status = " STRINGIFY(BILL_STATUS_CLEARED) " or Status = " STRINGIFY(BILL_STATUS_ALLOCATED) ") and Amount > " AMOUNT_ZERO " and (Amount < ?1 or (Amount = ?1 and Id >= ?2)) order by Amount desc, Id limit 1;").c_str(), -1, &Billets_select_unspent, NULL)));
 		CCASSERTZ(dblog(sqlite3_prepare_v2(Wallet_db, (select_sql + " where Status = " STRINGIFY(BILL_STATUS_CLEARED) " and Asset = ?1 and Blockchain = ?2 and Amount >= ?3" /*and Amount > " AMOUNT_ZERO*/ " and DelayTime <= ?4 order by Amount limit 1;").c_str(), -1, &Billets_select_amount, NULL)));
 		CCASSERTZ(dblog(sqlite3_prepare_v2(Wallet_db, (select_sql + " where Status = " STRINGIFY(BILL_STATUS_CLEARED) " and Asset = ?1 and Blockchain = ?2 and Amount >= ?3" /*and Amount > " AMOUNT_ZERO*/ " and (Id >= ?4 or Amount > ?3) order by Amount, Id limit 1;").c_str(), -1, &Billets_select_amount_scan, NULL))); // has a funny query plan, so limit use of this query; currently used only by diagnostic RPC listunspent
 		CCASSERTZ(dblog(sqlite3_prepare_v2(Wallet_db, (select_sql + " where Status = " STRINGIFY(BILL_STATUS_CLEARED) " and Asset = ?1 and Blockchain = ?2" /*and Amount > " AMOUNT_ZERO*/ " and DelayTime <= ?3 order by Amount desc limit 1;").c_str(), -1, &Billets_select_amount_max, NULL)));
@@ -323,6 +363,7 @@ void DbConn::PrepareDbConn()
 		const string update_sql = _update_sql + table_sql + " set (" + columns_sql + ") = " + values_sql;
 		const string select_sql = _select_sql + columns_sql + " from " + table_sql;
 		CCASSERTZ(dblog(sqlite3_prepare_v2(Wallet_db, (insert_sql + table_sql + " (" + columns_sql + ") values " + values_sql + ";").c_str(), -1, &Billet_Spends_insert, NULL)));
+		CCASSERTZ(dblog(sqlite3_prepare_v2(Wallet_db, (select_sql + " where Billet = ?1 and SpendTx >= ?2 order by SpendTx limit 1;").c_str(), -1, &Billet_Spends_select_billet, NULL)));
 	}
 
 	{
@@ -361,30 +402,73 @@ void DbConn::InitDb()
 	sql = insert + STRINGIFY(DB_KEY_BLOCKCHAIN) ",0,X'" + buf2hex(&g_params.blockchain, sizeof(g_params.blockchain), 0) + "');";
 	//cerr << sql << endl;
 	CCASSERTZ(dbexec(Wallet_db, sql.c_str()));
+
+	bigint_t refid = 0UL;
+	sql = insert + STRINGIFY(DB_KEY_UNIQUE_REFID) ",0,X'" + buf2hex(&refid, sizeof(refid), 0) + "');";
+	CCASSERTZ(dbexec(Wallet_db, sql.c_str()));
+
+	sql = "insert or ignore into Transactions(Id, Type, Status, ParamLevel, CreateTime) values (1,0,0,0,0)";
+	CCASSERTZ(dbexec(Wallet_db, sql.c_str()));
 }
 
 #define CHECKDATA_BUFSIZE 100
 
-void DbConn::CheckDb()
+int DbConn::CheckDb(bool post_create)
 {
-	BOOST_LOG_TRIVIAL(trace) << "DbConn::CheckDb dbconn " << uintptr_t(this);
+	BOOST_LOG_TRIVIAL(trace) << "DbConn::CheckDb post_create " << post_create;
 
 	static const char db_tag[] = DB_TAG;
-	static const char db_schema[] = STRINGIFY(DB_SCHEMA);
+	static const char db_schema[] = STRINGIFY(DB_SCHEMA);	// works because sqlite3_column_blob converts an integer to a string
+	static const char schema_error[] = "Unable to read wallet schema";
 
 	char tag[CHECKDATA_BUFSIZE];
 	char schema[CHECKDATA_BUFSIZE];
 
-	auto rc = ParameterSelect(DB_KEY_SCHEMA, 0, tag, sizeof(tag), true);
-	rc |= ParameterSelect(DB_KEY_SCHEMA, 1, schema, sizeof(schema), true);
+	auto rc = ParameterSelect(DB_KEY_SCHEMA, 1, schema, sizeof(schema), true, NULL, post_create);
+	if (rc < 0 || (rc && post_create))
+		throw runtime_error(schema_error);
 
+	auto rc2 = ParameterSelect(DB_KEY_SCHEMA, 0, tag, sizeof(tag), true, NULL, post_create);
+	if (rc2 < 0 || (rc2 && post_create) || rc2 != rc)
+		throw runtime_error(schema_error);
 	if (rc)
-		throw runtime_error("Unable to read wallet schema");
+		return 0;
 
-	//cerr << "tag " << buf2hex(tag, sizeof(db_tag)) << endl;
+	if (strcmp(tag, db_tag))
+	{
+		//cerr << "tag " << buf2hex(tag, sizeof(db_tag)) << endl;
 
-	if (strcmp(tag, db_tag) || strcmp(schema, db_schema))
 		throw runtime_error("Not a valid wallet file");
+	}
+
+	if (!strcmp(schema, "3"))
+	{
+		CheckSchemaUpdateOption();
+
+		if (!post_create)
+			return 1;
+
+		cerr << "Updating wallet to schema version 4\n" << endl;
+
+		CCASSERTZ(dbexec(Wallet_db, "alter table Transactions add column RefId varchar;"));
+		CCASSERTZ(dbexec(Wallet_db, "alter table Transactions add column ParamLevel integer;"));
+		CCASSERTZ(dbexec(Wallet_db, CREATE_INDEX_UNIQUE_SQL "Transactions_RefId_Index on Transactions (RefId) where RefId not null;"));
+		//CCASSERTZ(dbexec(Wallet_db, CREATE_INDEX_SQL "Transactions_ParamLevel_Index on Transactions (ParamLevel) where ParamLevel not null and Status = " STRINGIFY(TX_STATUS_PENDING) ";"));
+
+		CCASSERTZ(dbexec(Wallet_db, "update Billets set Commitnum = null where Commitnum = 0;"));
+		CCASSERTZ(dbexec(Wallet_db, CREATE_INDEX_UNIQUE_SQL "Billets_Commitnum_Index on Billets (Commitnum) where Commitnum not null;"));
+		CCASSERTZ(dbexec(Wallet_db, CREATE_INDEX_UNIQUE_SQL "Billets_Unspent_Index on Billets (Amount, Id) where (Status = " STRINGIFY(BILL_STATUS_CLEARED) " or Status = " STRINGIFY(BILL_STATUS_ALLOCATED) ") and Amount > " AMOUNT_ZERO ";"));
+
+		CCASSERTZ(dbexec(Wallet_db, "update Parameters set Value = 4 where Key = " STRINGIFY(DB_KEY_SCHEMA) " and Subkey = 1;"));
+
+		bigint_t refid = 0UL;
+		CCASSERTZ(ParameterInsert(DB_KEY_UNIQUE_REFID, 0, &refid, sizeof(refid)));
+
+		return 1;	// retry CheckDb
+	}
+
+	if (strcmp(schema, db_schema))
+		throw runtime_error("Invalid wallet schema");
 
 	auto blockchain = g_params.blockchain;
 	blockchain = -1;
@@ -399,25 +483,34 @@ void DbConn::CheckDb()
 
 		throw runtime_error("Chosen blockchain does not match wallet file blockchain");
 	}
+
+	bigint_t refid;
+	rc = ParameterSelect(DB_KEY_UNIQUE_REFID, 0, &refid, sizeof(refid));
+	if (rc)
+		throw runtime_error("Unable to read transaction unique RefId");
+
+	string sql = "update Transactions set Id = 1 where Id = 1;";
+	CCASSERTZ(dbexec(Wallet_db, sql.c_str()));
+	auto changes = sqlite3_changes(Wallet_db);
+	if (changes != 1)
+		throw runtime_error("Unable to detect Transaction with Id = 1");
+
+	return 0;
 }
 
-void DbConn::ResetDb()
+void DbConn::CheckSchemaUpdateOption()
 {
-	BOOST_LOG_TRIVIAL(trace) << "DbConn::ResetDb dbconn " << uintptr_t(this);
+	if (!g_params.config_options.count("update-wallet"))
+	{
+		cerr <<
 
-	CCASSERTZ(dbexec(Wallet_db, "update Billets set Status = " STRINGIFY(BILL_STATUS_PENDING) " where Status = " STRINGIFY(BILL_STATUS_PREALLOCATED) ";"));
+R"(This wallet file must be updated to be used with this version of the software.  Please restart the wallet with the
+command line option --update-wallet.  It is strongly recommended that you backup the wallet file before restarting.)"
 
-	CCASSERTZ(dbexec(Wallet_db, "update Billets set Status = " STRINGIFY(BILL_STATUS_CLEARED) " where Status = " STRINGIFY(BILL_STATUS_ALLOCATED) ";"));
+		"\n" << endl;
 
-	ostringstream query;
-	query << "update Totals set Total = X'00' where Type & " << TOTAL_TYPE_PA_BITS << ";";
-	auto str = query.str();
-
-	CCASSERTZ(dbexec(Wallet_db, str.c_str()));
-
-	//cerr << str << endl;
-	//cerr << sqlite3_extended_errcode(Wallet_db) << endl;
-	//cerr << sqlite3_errmsg(Wallet_db) << endl;
+		throw runtime_error("Wallet file requires updating");
+	}
 }
 
 void DbConn::ReadWalletId()
@@ -474,6 +567,7 @@ void DbConn::CloseDb(bool done)
 	DbFinalize(Transactions_insert, explain);
 	DbFinalize(Transactions_update, explain);
 	DbFinalize(Transactions_select, explain);
+	DbFinalize(Transactions_select_refid, explain);
 	DbFinalize(Transactions_id_descending_select, explain);
 	DbFinalize(Transactions_level_select, explain);
 	DbFinalize(Transactions_level_descending_select, explain);
@@ -482,12 +576,15 @@ void DbConn::CloseDb(bool done)
 	DbFinalize(Billets_update, explain);
 	DbFinalize(Billets_select, explain);
 	DbFinalize(Billets_select_txid, explain);
+	DbFinalize(Billets_select_commitnum, explain);
+	DbFinalize(Billets_select_unspent, explain);
 	DbFinalize(Billets_select_amount, explain);
 	DbFinalize(Billets_select_amount_scan, explain);
 	DbFinalize(Billets_select_amount_max, explain);
 	DbFinalize(Billets_select_createtx, explain);
 	DbFinalize(Billets_select_spendtx, explain);
 	DbFinalize(Billet_Spends_insert, explain);
+	DbFinalize(Billet_Spends_select_billet, explain);
 
 	DbFinalize(Totals_insert, explain);
 	DbFinalize(Totals_select, explain);
@@ -506,7 +603,7 @@ void DbConn::DoDbFinish()
 {
 	if (RandTest(RTEST_DELAY_DB_RESET)) sleep(1);
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::DoDbFinish dbconn " << uintptr_t(this);
+	if (0 && TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::DoDbFinish dbconn " << uintptr_t(this);
 
 	sqlite3_reset(Parameters_insert);
 	sqlite3_reset(Parameters_select);
@@ -526,6 +623,7 @@ void DbConn::DoDbFinish()
 	sqlite3_reset(Transactions_insert);
 	sqlite3_reset(Transactions_update);
 	sqlite3_reset(Transactions_select);
+	sqlite3_reset(Transactions_select_refid);
 	sqlite3_reset(Transactions_id_descending_select);
 	sqlite3_reset(Transactions_level_select);
 	sqlite3_reset(Transactions_level_descending_select);
@@ -534,12 +632,15 @@ void DbConn::DoDbFinish()
 	sqlite3_reset(Billets_update);
 	sqlite3_reset(Billets_select);
 	sqlite3_reset(Billets_select_txid);
+	sqlite3_reset(Billets_select_commitnum);
+	sqlite3_reset(Billets_select_unspent);
 	sqlite3_reset(Billets_select_amount);
 	sqlite3_reset(Billets_select_amount_scan);
 	sqlite3_reset(Billets_select_amount_max);
 	sqlite3_reset(Billets_select_createtx);
 	sqlite3_reset(Billets_select_spendtx);
 	sqlite3_reset(Billet_Spends_insert);
+	sqlite3_reset(Billet_Spends_select_billet);
 
 	sqlite3_reset(Totals_insert);
 	sqlite3_reset(Totals_select);
@@ -549,7 +650,7 @@ void DbConn::DoDbFinishTx(int rollback)
 {
 	if (RandTest(RTEST_DELAY_DB_RESET)) sleep(1);
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::DoDbFinishTx dbconn " << uintptr_t(this) << " rollback " << rollback;
+	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(debug) << "DbConn::DoDbFinishTx dbconn " << uintptr_t(this) << " rollback " << rollback;
 
 	sqlite3_reset(db_begin_read);
 	sqlite3_reset(db_begin_write);
@@ -558,7 +659,7 @@ void DbConn::DoDbFinishTx(int rollback)
 
 	if (rollback)
 	{
-		if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(debug) << "DbConn::DoDbFinishTx dbconn " << uintptr_t(this) << " rollback";
+		if (0 && TRACE_DBCONN) BOOST_LOG_TRIVIAL(debug) << "DbConn::DoDbFinishTx dbconn " << uintptr_t(this) << " rollback";
 
 		auto rc = sqlite3_step(db_rollback);
 		if (rollback > 0)
@@ -569,11 +670,13 @@ void DbConn::DoDbFinishTx(int rollback)
 
 int DbConn::BeginRead()
 {
+	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::BeginRead starting db read transaction";
+
 	// acquire lock -- might solve intermittent sqlite errors
 	//lock_guard<boost::shared_mutex> lock(db_mutex);
 	lock_guard<mutex> lock(db_mutex);
 
-	if (0 && TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::BeginRead starting db read transaction";
+	if (RandTest(RTEST_CUZZ)) sleep(1);
 
 	if (dblog(sqlite3_step(db_begin_read), DB_STMT_STEP))
 	{
@@ -589,11 +692,13 @@ int DbConn::BeginRead()
 
 int DbConn::BeginWrite()
 {
+	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::BeginWrite starting db write transaction";
+
 	// acquire lock -- might solve intermittent sqlite errors
 	//lock_guard<boost::shared_mutex> lock(db_mutex);
 	lock_guard<mutex> lock(db_mutex);
 
-	if (0 && TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::BeginWrite starting db write transaction";
+	if (RandTest(RTEST_CUZZ)) sleep(1);
 
 	if (dblog(sqlite3_step(db_begin_write), DB_STMT_STEP))
 	{

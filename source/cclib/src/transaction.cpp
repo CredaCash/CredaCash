@@ -59,7 +59,7 @@ static void _tx_init_input(const TxPay& tx, TxIn& txin)
 
 void tx_init(TxPay& tx)
 {
-	memset(&tx, 0, sizeof(tx));
+	memset((void*)&tx, 0, sizeof(tx));
 
 	tx.tag = CC_TAG_TX_STRUCT;	// tag the structure
 

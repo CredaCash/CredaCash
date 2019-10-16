@@ -51,7 +51,7 @@ BlockAux* Block::SetupAuxBuf(SmartBuf smartobj)
 		return NULL;
 	}
 
-	memset(auxp, 0, sizeof(BlockAux));
+	memset((void*)auxp, 0, sizeof(BlockAux));
 
 	preamble.auxp[0] = auxp;
 	smartobj.SetAuxPtrCount(2);
@@ -587,3 +587,36 @@ bool Block::SignOrVerify(bool verify)
 		return false;
 	}
 }
+
+void Block::ConsoleAnnounce(const char *verb, const BlockWireHeader *wire, const BlockAux *auxp, const char *note1, const char *note2) const
+{
+	struct tm tms;
+	char ts[40];
+
+	memset(&tms, 0, sizeof(tms));
+	memset(ts, 0, sizeof(ts));
+
+	time_t timestamp = wire->timestamp.GetValue();
+	int64_t age = time(NULL) - timestamp;
+
+	gmtime_r(&timestamp, &tms);
+	strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", &tms);
+
+	auto size = ObjSize();
+
+	lock_guard<FastSpinLock> lock(g_cout_lock);
+
+	cerr << " " << verb;
+	cerr << " block timestamp " << ts;
+	cerr << " level " << wire->level.GetValue();
+	cerr << " witness " << (unsigned)wire->witness;
+	cerr << " skip " << auxp->skip;
+	cerr << " size " << (size < 10000 ? " " : "") << (size < 1000 ? " " : "") << (size < 100 ? " " : "") << size;
+	cerr << " hash " << buf2hex(&auxp->oid, 3, 0) << "..";
+	cerr << " prior " << buf2hex(&wire->prior_oid, 3, 0) << "..";
+	cerr << " age " << age;
+	cerr << note1;
+	cerr << note2;
+	cerr << endl;
+}
+

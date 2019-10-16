@@ -14,19 +14,23 @@
 #include "secrets.hpp"
 #include "billets.hpp"
 #include "transactions.hpp"
+#include "txbuildlist.hpp"
 #include "totals.hpp"
 #include "amounts.h"
 #include "btc_block.hpp"
 #include "lpcserve.hpp"
 #include "txparams.hpp"
 #include "txquery.hpp"
+#include "walletutil.h"
 #include "walletdb.hpp"
-
-#include <jsonutil.h>
 
 #define TRACE_TX	(g_params.trace_txrpc)
 
 using namespace snarkfront;
+
+#define stdparams	DbConn *dbconn, TxQuery& txquery, ostringstream& rstream
+#define stdparamsaq	stdparamsaq
+#define CP			const
 
 static RPC_Exception txrpc_invalid_destination_error(RPC_INVALID_ADDRESS_OR_KEY, "Invalid or non-wallet destination");
 
@@ -43,14 +47,16 @@ static void cc_mint_thread_proc_cleanup(unsigned threadnum, bool interactive, Db
 	if (*txquery)
 	{
 		(*txquery)->Stop();
-
 		(*txquery)->WaitForStopped();
-
 		(*txquery)->FreeConnection();
+		*txquery = NULL;
 	}
 
 	if (*dbconn)
+	{
 		delete *dbconn;
+		*dbconn = NULL;
+	}
 
 	if (interactive)
 	{
@@ -89,7 +95,7 @@ void cc_mint_threads_shutdown()
 		if (!n)
 			return;
 
-		sleep(1);
+		usleep(500*1000);
 	}
 }
 
@@ -162,7 +168,7 @@ static void cc_mint_thread_proc(unsigned threadnum, bool interactive)
 				amtint_t amounti = 0UL;
 				string balance;
 
-				rc = Total::GetTotalBalance(dbconn, amounti, TOTAL_TYPE_DA_DESTINATION | TOTAL_TYPE_RB_BALANCE, true, false);
+				rc = Total::GetTotalBalance(dbconn, false, amounti, TOTAL_TYPE_DA_DESTINATION | TOTAL_TYPE_RB_BALANCE, true, false);
 				amount_to_string(0, amounti, balance);
 
 				lock_guard<FastSpinLock> lock(g_cout_lock);
@@ -195,7 +201,7 @@ static void cc_mint_thread_proc(unsigned threadnum, bool interactive)
 	BOOST_LOG_TRIVIAL(info) << "cc_mint_thread_proc " << threadnum << " ending";
 }
 
-void cc_mint_threads(int nthreads, DbConn *dbconn, TxQuery& txquery, ostringstream& rstream)
+void cc_mint_threads(int nthreads, stdparams)
 {
 	if (TRACE_TX) BOOST_LOG_TRIVIAL(info) << "cc_mint_threads nthreads " << nthreads << " mint_thread_lo " << mint_thread_lo << " mint_thread_hi " << mint_thread_hi;
 
@@ -242,7 +248,7 @@ void cc_mint_threads(int nthreads, DbConn *dbconn, TxQuery& txquery, ostringstre
 	//rstream << "ok";
 }
 
-void cc_mint(DbConn *dbconn, TxQuery& txquery, ostringstream& rstream)
+void cc_mint(stdparams)
 {
 	if (TRACE_TX) BOOST_LOG_TRIVIAL(info) << "cc_mint";
 
@@ -254,12 +260,39 @@ void cc_mint(DbConn *dbconn, TxQuery& txquery, ostringstream& rstream)
 	rstream << tx.GetBtcTxid();
 }
 
-void cc_poll_destination(string destination, uint64_t last_receive_max, DbConn *dbconn, TxQuery& txquery, ostringstream& rstream)
+void cc_unique_id_generate(const string& prefix, unsigned random_bits, unsigned checksum_chars, stdparams)
 {
-	if (TRACE_TX) BOOST_LOG_TRIVIAL(info) << "cc_poll_destination destination " << destination << " last_receive_max " << last_receive_max;
+	if (TRACE_TX) BOOST_LOG_TRIVIAL(info) << "cc_unique_id_generate prefix " << prefix << " random_bits " << random_bits << " checksum_chars " << checksum_chars;
 
-	if (last_receive_max == 0)
-		last_receive_max = 48 * 3600;
+	auto ref_id = unique_id_generate(dbconn, prefix, random_bits, checksum_chars);
+
+	rstream << ref_id;
+}
+
+void cc_send(bool async, CP string& ref_id_req, CP string& dest, CP bigint_t& amount, CP string& comment, CP string& comment_to, bool subfee, stdparams)
+{
+	auto ref_id = ref_id_req;
+
+	if (TRACE_TX) BOOST_LOG_TRIVIAL(info) << "cc_send async " << async << " ref_id " << ref_id << " dest " << dest << " amount " << amount << " comment " << comment << " subfee " << subfee;
+
+	uint64_t dest_chain;
+	bigint_t destination;
+	auto rc = Secret::DecodeDestination(dest, dest_chain, destination);
+	if (rc) throw txrpc_invalid_address;
+
+	Transaction tx;
+
+	rc = tx.CreateTxPay(dbconn, txquery, async, ref_id, dest, dest_chain, destination, amount, comment, comment_to, subfee);
+
+	if (TRACE_TX) BOOST_LOG_TRIVIAL(info) << "cc_send ref_id " << ref_id << " dest " << dest << " amount " << amount << " result rc " << rc << " txid " << tx.GetBtcTxid();
+
+	if (!rc)
+		rstream << tx.GetBtcTxid();
+}
+
+void cc_poll_destination(CP string& destination, unsigned polling_addresses, uint64_t last_receive_max, stdparams)
+{
+	if (TRACE_TX) BOOST_LOG_TRIVIAL(info) << "cc_poll_destination destination " << destination << " polling_addresses " << polling_addresses << " last_receive_max " << last_receive_max;
 
 	bigint_t dest;
 	uint64_t dest_chain;
@@ -283,13 +316,13 @@ void cc_poll_destination(string destination, uint64_t last_receive_max, DbConn *
 		cerr << "Checking for new transactions to all addresses associated with this destination...\n" << endl;
 	}
 
-	rc = Secret::PollDestination(dbconn, txquery, secret.id, last_receive_max);
+	rc = Secret::PollDestination(dbconn, txquery, secret.id, polling_addresses, last_receive_max);
 	if (rc < 0) throw txrpc_wallet_error;
 
 	//rstream << "done";
 }
 
-void cc_poll_mint(DbConn *dbconn, TxQuery& txquery, ostringstream& rstream)
+void cc_poll_mint(stdparams)
 {
 	if (TRACE_TX) BOOST_LOG_TRIVIAL(info) << "cc_poll_mint";
 
@@ -310,7 +343,7 @@ void cc_poll_mint(DbConn *dbconn, TxQuery& txquery, ostringstream& rstream)
 	{
 		Secret address;
 		SpendSecretParams params;
-		memset(&params, 0, sizeof(params));
+		memset((void*)&params, 0, sizeof(params));
 
 		auto rc = address.CreateNewSecret(dbconn, SECRET_TYPE_SELF_ADDRESS, MINT_DESTINATION_ID, txparams.blockchain, params);
 		if (rc) break;
@@ -331,4 +364,120 @@ void cc_poll_mint(DbConn *dbconn, TxQuery& txquery, ostringstream& rstream)
 	}
 
 	//rstream << "done";
+}
+
+void cc_dump_transactions(uint64_t start, uint64_t count, bool include_billets, stdparams)
+{
+	if (TRACE_TX) BOOST_LOG_TRIVIAL(info) << "cc_dump_transactions start " << start << " count " << count << " include_billets " << include_billets;
+
+	uint64_t next_id = start;
+	if (next_id < TX_ID_MINIMUM)
+		next_id = TX_ID_MINIMUM;
+
+	uint64_t scan_count = 0;
+
+	while ((!count || scan_count < count) && next_id >= TX_ID_MINIMUM && next_id < INT64_MAX && !g_shutdown)
+	{
+		Transaction tx;
+
+		auto rc = tx.BeginAndReadTx(dbconn, next_id, true);
+		if (rc < 0) throw txrpc_wallet_db_error;
+
+		if (rc)
+			return;
+
+		next_id = tx.id + 1;
+
+		if (tx.type == TX_TYPE_MINT && (tx.status == TX_STATUS_ERROR || tx.status == TX_STATUS_PENDING))
+			continue;
+
+		++scan_count;
+
+		rstream << "\nTransaction " << tx.DebugString() << endl;
+
+		if (include_billets)
+		{
+			for (unsigned i = 0; i < tx.nin; ++i)
+				rstream << "---Input Billet " << i << " " << tx.input_bills[i].DebugString() << endl;
+
+			for (unsigned i = 0; i < tx.nout; ++i)
+				rstream << "---Output Billet " << i << " " << tx.output_bills[i].DebugString() << endl;
+		}
+	}
+}
+
+void cc_dump_billets(uint64_t start, uint64_t count, bool show_spends, stdparams)
+{
+	if (TRACE_TX) BOOST_LOG_TRIVIAL(info) << "cc_dump_billets start " << start << " count " << count << " show_spends " << show_spends;
+
+	uint64_t next_id = start;
+	if (next_id < 1)
+		next_id = 1;
+
+	uint64_t scan_count = 0;
+
+	while ((!count || scan_count < count) && next_id >= 1 && next_id < INT64_MAX && !g_shutdown)
+	{
+		Billet bill;
+
+		auto rc = dbconn->BilletSelectId(next_id, bill, true);
+		if (rc < 0) throw txrpc_wallet_db_error;
+
+		if (rc)
+			return;
+
+		next_id = bill.id + 1;
+
+		if (!bill.amount)
+			continue;
+
+		if (bill.dest_id == MINT_DESTINATION_ID && bill.status == BILL_STATUS_PENDING)
+			continue;
+
+		++scan_count;
+
+		rstream << "\nBillet " << bill.DebugString() << endl;
+
+		uint64_t tx_id = 0;
+
+		while (show_spends && tx_id < INT64_MAX)
+		{
+			bigint_t hashkey;
+
+			auto rc = dbconn->BilletSpendSelectBillet(bill.id, tx_id, hashkey);
+			if (rc < 0) throw txrpc_wallet_db_error;
+
+			if (rc)
+				break;
+
+			rstream << "---Spend Tx id " << tx_id << " hashkey " << hex << hashkey << dec << endl;
+
+			++tx_id;
+		}
+	}
+}
+
+void cc_dump_tx_build(stdparams)
+{
+	if (TRACE_TX) BOOST_LOG_TRIVIAL(info) << "cc_dump_tx_build";
+
+	g_txbuildlist.Dump(rstream);
+}
+
+void cc_billets_poll_unspent(stdparams)
+{
+	if (TRACE_TX) BOOST_LOG_TRIVIAL(info) << "cc_billets_poll_unspent";
+
+	auto rc = Billet::PollUnspent(dbconn, txquery);
+	if (g_shutdown) throw txrpc_shutdown_error;
+	if (rc) throw txrpc_wallet_db_error;
+}
+
+void cc_billets_release_allocated(bool reset_balance, stdparams)
+{
+	BOOST_LOG_TRIVIAL(warning) << "cc_billets_release_allocated reset_balance " << reset_balance;
+
+	auto rc = Billet::ResetAllocated(dbconn, reset_balance);
+	if (g_shutdown) throw txrpc_shutdown_error;
+	if (rc) throw txrpc_wallet_db_error;
 }

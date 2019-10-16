@@ -17,18 +17,21 @@ CPP_SRCS += \
 ../src/secrets.cpp \
 ../src/totals.cpp \
 ../src/transactions.cpp \
+../src/txbuildlist.cpp \
 ../src/txconn.cpp \
 ../src/txparams.cpp \
 ../src/txquery.cpp \
 ../src/txrpc.cpp \
 ../src/txrpc_btc.cpp \
 ../src/walletdb-accounts.cpp \
+../src/walletdb-billet-spends.cpp \
 ../src/walletdb-billets.cpp \
 ../src/walletdb-parameters.cpp \
 ../src/walletdb-secrets.cpp \
 ../src/walletdb-totals.cpp \
 ../src/walletdb-transactions.cpp \
-../src/walletdb.cpp 
+../src/walletdb.cpp \
+../src/walletutil.cpp 
 
 OBJS += \
 ./src/accounts.o \
@@ -44,18 +47,21 @@ OBJS += \
 ./src/secrets.o \
 ./src/totals.o \
 ./src/transactions.o \
+./src/txbuildlist.o \
 ./src/txconn.o \
 ./src/txparams.o \
 ./src/txquery.o \
 ./src/txrpc.o \
 ./src/txrpc_btc.o \
 ./src/walletdb-accounts.o \
+./src/walletdb-billet-spends.o \
 ./src/walletdb-billets.o \
 ./src/walletdb-parameters.o \
 ./src/walletdb-secrets.o \
 ./src/walletdb-totals.o \
 ./src/walletdb-transactions.o \
-./src/walletdb.o 
+./src/walletdb.o \
+./src/walletutil.o 
 
 CPP_DEPS += \
 ./src/accounts.d \
@@ -71,18 +77,21 @@ CPP_DEPS += \
 ./src/secrets.d \
 ./src/totals.d \
 ./src/transactions.d \
+./src/txbuildlist.d \
 ./src/txconn.d \
 ./src/txparams.d \
 ./src/txquery.d \
 ./src/txrpc.d \
 ./src/txrpc_btc.d \
 ./src/walletdb-accounts.d \
+./src/walletdb-billet-spends.d \
 ./src/walletdb-billets.d \
 ./src/walletdb-parameters.d \
 ./src/walletdb-secrets.d \
 ./src/walletdb-totals.d \
 ./src/walletdb-transactions.d \
-./src/walletdb.d 
+./src/walletdb.d \
+./src/walletutil.d 
 
 
 # Each subdirectory must supply rules for building sources it contributes

@@ -115,3 +115,4 @@ using namespace std;
 #include "Finally.hpp"
 
 extern volatile bool g_shutdown;
+extern void (*g_shutdown_callback)();

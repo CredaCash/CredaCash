@@ -9,7 +9,7 @@
 #pragma once
 
 #define CCAPPNAME	"CredaCash node"
-#define CCVERSION	 "1.00" //@@!
+#define CCVERSION	 "1.01 beta" //@@!
 #define CCEXENAME	"ccnode"
 #define CCAPPDIR	"CCNode-#"
 
@@ -72,7 +72,6 @@ DECLARE_EXTERN struct global_params_struct
 	int		tx_validation_threads;
 	int		block_future_tolerance;
 	int		db_checkpoint_sec;
-	bool	db_update_continuous;
 	bool	index_mint_donations;
 
 	int		trace_level;

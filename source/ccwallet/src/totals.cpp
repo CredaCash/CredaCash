@@ -9,6 +9,7 @@
 #include "ccwallet.h"
 #include "totals.hpp"
 #include "walletdb.hpp"
+#include "rpc_errors.hpp"
 
 #include <transaction.hpp>
 
@@ -23,7 +24,7 @@ Total::Total()
 
 void Total::Clear()
 {
-	memset(this, 0, (uintptr_t)&total - (uintptr_t)this);
+	memset((void*)this, 0, (uintptr_t)&total - (uintptr_t)this);
 
 	type = TOTAL_TYPE_MAX + 1;
 	total = 0UL;
@@ -31,7 +32,7 @@ void Total::Clear()
 
 void Total::Copy(const Total& other)
 {
-	memcpy(this, &other, (uintptr_t)&total - (uintptr_t)this);
+	memcpy((void*)this, &other, (uintptr_t)&total - (uintptr_t)this);
 
 	total = other.total;
 }
@@ -50,17 +51,12 @@ string Total::DebugString() const
 	return out.str();
 }
 
-bool Total::TypeIsValid(unsigned type)
-{
-	return type <= TOTAL_TYPE_MAX;
-}
-
 bool Total::IsValid() const
 {
 	return TypeIsValid(type);
 }
 
-int Total::AddBalances(DbConn *dbconn, unsigned type, uint64_t account, uint64_t destination, uint64_t asset, unsigned delaytime, uint64_t blockchain, bool add, const bigint_t& amount)
+int Total::AddBalances(DbConn *dbconn, bool rpc_throw, unsigned type, uint64_t account, uint64_t destination, uint64_t asset, unsigned delaytime, uint64_t blockchain, bool add, const bigint_t& amount)
 {
 	// call this function only within a BeginWrite
 
@@ -70,32 +66,32 @@ int Total::AddBalances(DbConn *dbconn, unsigned type, uint64_t account, uint64_t
 
 	auto type2 = type & ~TOTAL_TYPE_RB_RECEIVED;
 
-	auto rc = AddBalance(dbconn, type2 | TOTAL_TYPE_DA_DESTINATION | TOTAL_TYPE_RB_BALANCE, 0, asset, delaytime, blockchain, add, amount);
+	auto rc = AddBalance(dbconn, rpc_throw, type2 | TOTAL_TYPE_DA_DESTINATION | TOTAL_TYPE_RB_BALANCE, 0, asset, delaytime, blockchain, add, amount);
 	if (rc) return rc;
 
-	rc = AddBalance(dbconn, type2 | TOTAL_TYPE_DA_ACCOUNT | TOTAL_TYPE_RB_BALANCE, account, asset, delaytime, blockchain, add, amount);
+	rc = AddBalance(dbconn, rpc_throw, type2 | TOTAL_TYPE_DA_ACCOUNT | TOTAL_TYPE_RB_BALANCE, account, asset, delaytime, blockchain, add, amount);
 	if (rc) return rc;
 
 	if (type & TOTAL_TYPE_RB_RECEIVED)
 	{
-		rc = AddBalance(dbconn, type | TOTAL_TYPE_DA_ACCOUNT, account, asset, delaytime, blockchain, add, amount);
+		rc = AddBalance(dbconn, rpc_throw, type | TOTAL_TYPE_DA_ACCOUNT, account, asset, delaytime, blockchain, add, amount);
 		if (rc) return rc;
 
 		auto type2 = type & ~TOTAL_TYPE_TW_BITS;
 
-		rc = AddBalance(dbconn, type2 | TOTAL_TYPE_DA_DESTINATION, 0, asset, delaytime, blockchain, add, amount);
+		rc = AddBalance(dbconn, rpc_throw, type2 | TOTAL_TYPE_DA_DESTINATION, 0, asset, delaytime, blockchain, add, amount);
 		if (rc) return rc;
 
 		CCASSERT(destination);
 
-		rc = AddBalance(dbconn, type2 | TOTAL_TYPE_DA_DESTINATION, destination, asset, delaytime, blockchain, add, amount);
+		rc = AddBalance(dbconn, rpc_throw, type2 | TOTAL_TYPE_DA_DESTINATION, destination, asset, delaytime, blockchain, add, amount);
 		if (rc) return rc;
 	}
 
 	return 0;
 }
 
-int Total::AddBalance(DbConn *dbconn, unsigned type, uint64_t reference, uint64_t asset, unsigned delaytime, uint64_t blockchain, bool add, const bigint_t& amount)
+int Total::AddBalance(DbConn *dbconn, bool rpc_throw, unsigned type, uint64_t reference, uint64_t asset, unsigned delaytime, uint64_t blockchain, bool add, const bigint_t& amount)
 {
 	// call this function only within a BeginWrite
 
@@ -113,6 +109,7 @@ int Total::AddBalance(DbConn *dbconn, unsigned type, uint64_t reference, uint64_
 	total.blockchain = blockchain;
 
 	auto rc = dbconn->TotalSelectMatch(true, total);
+	if (rc < 0 && rpc_throw) throw txrpc_wallet_db_error;
 	if (rc < 0) return rc;
 
 	amtint_t vi;
@@ -120,10 +117,14 @@ int Total::AddBalance(DbConn *dbconn, unsigned type, uint64_t reference, uint64_
 
 	if (add)
 		total.total += vi;
-	else
+	else if (total.total > vi)
 		total.total -= vi;
+	else
+		total.total = 0;
 
 	rc = dbconn->TotalInsert(total);
+
+	if (rc && rpc_throw) throw txrpc_wallet_db_error;
 
 	if (!(type & (TOTAL_TYPE_DA_ACCOUNT | TOTAL_TYPE_RB_RECEIVED)))
 	{
@@ -134,22 +135,31 @@ int Total::AddBalance(DbConn *dbconn, unsigned type, uint64_t reference, uint64_
 	return rc;
 }
 
-int Total::GetTotalBalance(DbConn *dbconn, bigint_t& balance, unsigned type, bool sum_pc, bool incwatch, uint64_t reference, uint64_t asset, unsigned min_delaytime, unsigned max_delaytime, uint64_t min_blockchain, uint64_t max_blockchain, bool begin_db_read)
+int Total::GetTotalBalance(DbConn *dbconn, bool rpc_throw, bigint_t& balance, unsigned type, bool sum_pc, bool incwatch, uint64_t reference, uint64_t asset, unsigned min_delaytime, unsigned max_delaytime, uint64_t min_blockchain, uint64_t max_blockchain, bool begin_db_read)
 {
 	balance = 0UL;
 
 	amtint_t balancei;
 
-	auto rc = GetTotalBalance(dbconn, balancei, type, sum_pc, incwatch, reference, asset, min_delaytime, max_delaytime, min_blockchain, max_blockchain, begin_db_read);
+	auto rc = GetTotalBalance(dbconn, rpc_throw, balancei, type, sum_pc, incwatch, reference, asset, min_delaytime, max_delaytime, min_blockchain, max_blockchain, begin_db_read);
 	if (rc) return rc;
-	if (balancei < 0) return -1;
+
+	if (balancei < 0)
+	{
+		BOOST_LOG_TRIVIAL(warning) << "Total::GetTotalBalance balancei = " << balancei << " < 0 for type " << type << " sum_pc " << sum_pc << " incwatch " << incwatch << " reference " << reference << " asset " << asset << " min_delaytime " << min_delaytime << " max_delaytime " << max_delaytime << " min_blockchain " << min_blockchain << " max_blockchain " << max_blockchain << " begin_db_read " << begin_db_read;
+
+		balancei = 0;
+
+		//if (rpc_throw) throw txrpc_wallet_db_error;
+		//return -1;
+	}
 
 	amount_to_bigint(balancei, balance);
 
 	return 0;
 }
 
-int Total::GetTotalBalance(DbConn *dbconn, amtint_t& balance, unsigned type, bool sum_pc, bool incwatch, uint64_t reference, uint64_t asset, unsigned min_delaytime, unsigned max_delaytime, uint64_t min_blockchain, uint64_t max_blockchain, bool begin_db_read)
+int Total::GetTotalBalance(DbConn *dbconn, bool rpc_throw, amtint_t& balance, unsigned type, bool sum_pc, bool incwatch, uint64_t reference, uint64_t asset, unsigned min_delaytime, unsigned max_delaytime, uint64_t min_blockchain, uint64_t max_blockchain, bool begin_db_read)
 {
 	// sums the confirmed and pending totals across all blockchains and delaytimes
 
@@ -164,6 +174,8 @@ int Total::GetTotalBalance(DbConn *dbconn, amtint_t& balance, unsigned type, boo
 		if (rc)
 		{
 			dbconn->DoDbFinishTx(-1);
+
+			if (rpc_throw) throw txrpc_wallet_db_error;
 
 			return -1;
 		}
@@ -234,9 +246,11 @@ int Total::GetTotalBalance(DbConn *dbconn, amtint_t& balance, unsigned type, boo
 
 				while (true)
 				{
+					if (g_shutdown && rpc_throw) throw txrpc_shutdown_error;
 					if (g_shutdown) return -1;
 
 					auto rc = dbconn->TotalSelectMatch(false, total);
+					if (rc < 0 && rpc_throw) throw txrpc_wallet_db_error;
 					if (rc < 0) return rc;
 
 					if (rc || total.blockchain > max_blockchain)

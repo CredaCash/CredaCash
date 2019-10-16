@@ -120,7 +120,7 @@ int DbConn::SecretInsert(Secret& secret, bool lock_optional)
 
 	if (dbresult(rc) == SQLITE_CONSTRAINT)
 	{
-		BOOST_LOG_TRIVIAL(debug) << "DbConn::SecretInsert constraint violation";
+		BOOST_LOG_TRIVIAL(trace) << "DbConn::SecretInsert constraint violation " << secret.DebugString();
 
 		return 1;
 	}
@@ -263,7 +263,7 @@ int DbConn::SecretSelect(sqlite3_stmt *select, Secret& secret, bool expect_row, 
 	memcpy(secret.packed_params, params_blob, params_size);
 	secret.number = number;
 	secret.dest_chain = dest_chain;
-	memcpy(&secret.value, value_blob, value_size);
+	memcpy((void*)&secret.value, value_blob, value_size);
 	memcpy(secret.label, label_text, label_size);
 	secret.label[label_size] = 0;	// ensure null terminated
 	secret.create_time = create_time;

@@ -53,6 +53,10 @@ void ProcessTx::Stop()
 {
 	if (TRACE_PROCESS) BOOST_LOG_TRIVIAL(trace) << "ProcessTx::Stop";
 
+	CCASSERT(g_shutdown);
+
+	lock_guard<mutex> lock(processtx_mutex);
+
 	processtx_condition_variable.notify_all();
 
 	DbConnProcessQ::StopQueuedWork(PROCESS_Q_TYPE_TX);
@@ -551,7 +555,7 @@ int ProcessTx::TxValidate(DbConn *dbconn, TxPay& tx, SmartBuf smartobj)
 		merkle_time = wire->timestamp.GetValue();
 	}
 
-	int32_t dt = wire->timestamp.GetValue() - merkle_time;
+	int64_t dt = wire->timestamp.GetValue() - merkle_time;
 
 	BOOST_LOG_TRIVIAL(trace) << "DbConnProcessQ::TxValidate last indelible level " << wire->level.GetValue() << " timestamp " << wire->timestamp.GetValue() << " param_level " << tx.param_level << " timestamp " << merkle_time << " age " << dt;
 

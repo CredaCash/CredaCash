@@ -21,7 +21,7 @@
 
 #define ROTATE_BLOCK_SIGNING_KEYS	0		// if true, witnesses generate a new signing key with each block signed; not currently supported because there is currently no way to reset a witness's signing key which might be required to restart the witness after a server outage
 
-//#define TEST_SIM_ALL_WITNESSES		1		// must rebuild all if changed
+//#define TEST_SIM_ALL_WITNESSES		1
 
 #ifndef TEST_SIM_ALL_WITNESSES
 #define TEST_SIM_ALL_WITNESSES		0	// don't test
@@ -178,4 +178,6 @@ public:
 	uint64_t CalcSkipScore(int top_witness, SmartBuf last_indelible_block, uint16_t genstamp, bool maltest);
 
 	bool SignOrVerify(bool verify);
+
+	void ConsoleAnnounce(const char *verb, const BlockWireHeader *wire, const BlockAux *auxp, const char *note1 = "", const char *note2 = "") const;
 };

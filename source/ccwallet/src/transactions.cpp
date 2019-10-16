@@ -42,11 +42,14 @@ When another wallet spends a bill in this wallet:
 #include "secrets.hpp"
 #include "billets.hpp"
 #include "transactions.hpp"
+#include "txbuildlist.hpp"
 #include "totals.hpp"
 #include "btc_block.hpp"
 #include "rpc_errors.hpp"
 #include "txparams.hpp"
 #include "txquery.hpp"
+#include "lpcserve.hpp"
+#include "walletutil.h"
 #include "walletdb.hpp"
 
 #include <CCobjdefs.h>
@@ -57,25 +60,45 @@ When another wallet spends a bill in this wallet:
 
 #include <siphash/siphash.h>
 
-//!#define TEST_NO_ROUND_UP		1
-//!#define RTEST_TX_ERRORS		16	// when this is enabled, it's helpful to set polling_addresses = 50 and polling_table[SECRET_TYPE_POLL_ADDRESS][nothing received].first to 5 sec (instead of 60 sec)
-//!#define TEST_FAIL_ALL_TXS	1	// all tx's fail (except mints), so balance should never change--useful for testing that the donation is handled correctly on error
-//#define TEST_BIG_DIVISION		1
+//!#define TEST_NO_ROUND_UP				1
+//!#define TEST_FEWER_RETRIES			1
+//!#define RTEST_TX_ERRORS				16	// when this is enabled, it's helpful to set polling_addresses = 50 and TEST_RANDOM_POLLING = 5 to 20
+//!#define TEST_FAIL_ALL_TXS			1	// all tx's fail (except mints), so balance should never change--useful for testing that the donation is handled correctly on error
+//!#define RTEST_RELEASE_ERROR_TXID		2	// discard txid after an error
+//!#define RTEST_ALLOW_DOUBLE_SPENDS	2
+//!#define RTEST_CUZZ					16
+//#define TEST_BIG_DIVISION				1
 
 #ifndef TEST_NO_ROUND_UP
-#define TEST_NO_ROUND_UP		0	// don't test
+#define TEST_NO_ROUND_UP			0	// don't test
+#endif
+
+#ifndef TEST_FEWER_RETRIES
+#define TEST_FEWER_RETRIES			0	// don't test
 #endif
 
 #ifndef RTEST_TX_ERRORS
-#define RTEST_TX_ERRORS			0	// don't test
+#define RTEST_TX_ERRORS				0	// don't test
 #endif
 
 #ifndef TEST_FAIL_ALL_TXS
-#define TEST_FAIL_ALL_TXS		0	// don't test
+#define TEST_FAIL_ALL_TXS			0	// don't test
+#endif
+
+#ifndef RTEST_RELEASE_ERROR_TXID
+#define RTEST_RELEASE_ERROR_TXID		0	// don't test
+#endif
+
+#ifndef RTEST_ALLOW_DOUBLE_SPENDS
+#define RTEST_ALLOW_DOUBLE_SPENDS	0	// don't test
+#endif
+
+#ifndef RTEST_CUZZ
+#define RTEST_CUZZ					0	// don't test
 #endif
 
 #ifndef TEST_BIG_DIVISION
-#define TEST_BIG_DIVISION		0	// don't test
+#define TEST_BIG_DIVISION			0	// don't test
 #endif
 
 #define WALLET_TX_MINOUT	2
@@ -92,6 +115,7 @@ static const string cc_tx_internal_prefix = "CCTX_Internal_";
 #define SUBTX_AMOUNT	output_bills[0].amount
 
 static mutex billet_allocate_mutex;
+static atomic<unsigned> tx_thread_count(0);
 
 Transaction::Transaction()
 {
@@ -100,9 +124,10 @@ Transaction::Transaction()
 
 void Transaction::Clear()
 {
-	memset(this, 0, (uintptr_t)&body - (uintptr_t)this);
+	memset((void*)this, 0, (uintptr_t)&body - (uintptr_t)this);
 
 	body.clear();
+	ref_id.clear();
 
 	we_sent[0] = -1;
 	we_sent[1] = -1;
@@ -113,9 +138,6 @@ void Transaction::Clear()
 		output_bills[i].Clear();
 		output_destinations[i].Clear();
 		output_accounts[i].Clear();
-
-		adj_amounts[i] = 0UL;
-		adj_donations[i] = 0UL;
 	}
 
 	for (unsigned i = 0; i < TX_MAXIN; ++i)
@@ -128,18 +150,16 @@ void Transaction::Clear()
 
 void Transaction::Copy(const Transaction& other)
 {
-	memcpy(this, &other, (uintptr_t)(&this->body) - (uintptr_t)this);
+	memcpy((void*)this, &other, (uintptr_t)(&this->body) - (uintptr_t)this);
 
 	body = other.body;
+	ref_id = other.ref_id;
 
 	for (unsigned i = 0; i < TX_MAXOUT; ++i)
 	{
 		output_bills[i].Copy(other.output_bills[i]);
 		output_destinations[i].Copy(other.output_destinations[i]);
 		output_accounts[i].Copy(other.output_accounts[i]);
-
-		adj_amounts[i] = other.adj_amounts[i];
-		adj_donations[i] = other.adj_donations[i];
 	}
 
 	for (unsigned i = 0; i < TX_MAXIN; ++i)
@@ -160,25 +180,19 @@ string Transaction::DebugString() const
 	out << " build_type " << build_type;
 	out << " build_state " << build_state;
 	out << " parent_id " << parent_id;
+	out << " param_level " << param_level;
 	out << " create_time " << create_time;
 	out << " btc_block " << btc_block;
-	out << " donation " << hex << donation << dec;
+	out << " donation " << donation;
 	out << " nout " << nout;
 	out << " nin " << nin;
 	if (body.length())
 		out << " body " << body;
+	out << " txid " << GetBtcTxid();
+	if (ref_id.length())
+	out << " ref_id " << ref_id;
 
 	return out.str();
-}
-
-bool Transaction::TypeIsValid(unsigned type)
-{
-	return type > TX_TYPE_VOID && type < TX_TYPE_INVALID;
-}
-
-bool Transaction::StatusIsValid(unsigned status)
-{
-	return status > TX_STATUS_VOID && status < TX_STATUS_INVALID;
 }
 
 bool Transaction::IsValid() const
@@ -186,7 +200,7 @@ bool Transaction::IsValid() const
 	return TypeIsValid(type) && StatusIsValid(status);
 }
 
-string Transaction::EncodeInternalTxid()
+string Transaction::EncodeInternalTxid() const
 {
 	string outs = cc_tx_internal_prefix;
 
@@ -354,7 +368,7 @@ int Transaction::DecodeBtcTxid(const string& txid, uint64_t& dest_chain, bigint_
 	return 0;
 }
 
-string Transaction::GetBtcTxid()
+string Transaction::GetBtcTxid() const
 {
 	if (!parent_id && nout && !(output_bills[0].flags & (BILL_FLAG_NO_TXID | BILL_IS_CHANGE)))
 		return EncodeBtcTxid(output_bills[0].blockchain, output_bills[0].address, output_bills[0].commitment);
@@ -371,6 +385,7 @@ void Transaction::SetOutputsFromTx(const TxPay& tx)
 
 	type = (tx.tag_type == CC_TYPE_MINT ? TX_TYPE_MINT : TX_TYPE_SEND);
 	status = TX_STATUS_PENDING;
+	param_level = tx.param_level;
 
 	tx_amount_decode(tx.donation_fp, donation, true, tx.donation_bits, tx.exponent_bits);
 
@@ -382,7 +397,9 @@ void Transaction::SetOutputsFromTx(const TxPay& tx)
 
 int Transaction::SaveOutgoingTx(DbConn *dbconn)
 {
-	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(debug) << "Transaction::SaveOutgoingTx";
+	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(debug) << "Transaction::SaveOutgoingTx " << DebugString();
+
+	if (RandTest(RTEST_CUZZ)) ccsleep(rand() & 7);
 
 	auto rc = dbconn->BeginWrite();
 	if (rc)
@@ -394,33 +411,100 @@ int Transaction::SaveOutgoingTx(DbConn *dbconn)
 
 	Finally finally(boost::bind(&DbConn::DoDbFinishTx, dbconn, 1));		// 1 = rollback
 
+	CCASSERTZ(id);
+
 	rc = dbconn->TransactionInsert(*this);
+
+	auto tx_id = id;
+	id = 0;				// leave this zero until the tx is committed
+
 	if (rc) return -1;
 
-	for (unsigned i = 0; i < nout; ++i)
-	{
-		if (!output_bills[i].create_tx)
-			output_bills[i].create_tx = id;
-		else
-			CCASSERT(output_bills[i].create_tx == id);
+	// input billets were all marked when allocated, but some could now be deallocated or marked spent
 
-		output_bills[i].status = BILL_STATUS_PENDING;
-
-		rc =  dbconn->BilletInsert(output_bills[i]);
-		if (rc) return -1;
-	}
+	uint64_t blockchain = 0;
+	bigint_t balance_allocated = 0UL;
 
 	for (unsigned i = 0; i < nin; ++i)
 	{
-		// this isn't needed because output billets were written to db when allocated
-		//rc = dbconn->BilletInsert(input_bills[i]);
-		//if (rc) return -1;
+		Billet& bill = input_bills[i];
+		Billet check;
 
-		rc = dbconn->BilletSpendInsert(id, input_bills[i].id, &input_bills[i].hashkey);
+		CCASSERT(bill.id);
+
+		rc = dbconn->BilletSelectId(bill.id, check);
+		if (rc) return -1;
+
+		if (check.status == BILL_STATUS_SPENT)
+		{
+			BOOST_LOG_TRIVIAL(info) << "Transaction::SaveOutgoingTx billet already spent " << check.DebugString();
+
+			//cerr << "Transaction::SaveOutgoingTx billet already spent" << endl;
+
+			return 1;
+		}
+
+		if (check.status == BILL_STATUS_CLEARED)
+		{
+			if (!blockchain)
+				blockchain = check.blockchain;
+			else
+				CCASSERT(check.blockchain == blockchain);
+
+			CCASSERTZ(check.asset);
+
+			check.status = BILL_STATUS_ALLOCATED;
+
+			rc = dbconn->BilletInsert(check);
+			if (rc) return -1;
+
+			balance_allocated = balance_allocated + check.amount;
+		}
+
+		CCASSERT(check.status == BILL_STATUS_ALLOCATED);
+
+		rc = dbconn->BilletSpendInsert(tx_id, bill.id, &bill.hashkey);
+		if (rc) return rc;	// if billets were deallocated while tx was being built, the same billet could have been used twice
+	}
+
+	if (balance_allocated)
+	{
+		uint64_t asset = 0;
+		unsigned delaytime = 0;
+
+		// TBD: this will get more complicated if billets have various delaytimes or blockchains
+
+		rc = Total::AddBalances(dbconn, false, TOTAL_TYPE_ALLOCATED_BIT, 0, 0, asset, delaytime, blockchain, false, balance_allocated);
+		if (rc) return -1;
+
+		#if TEST_LOG_BALANCE
+		amtint_t balance;
+		Total::GetTotalBalance(dbconn, false, balance, TOTAL_TYPE_DA_DESTINATION | TOTAL_TYPE_RB_BALANCE, true, false, 0, 0, 0, -1, 0, -1, false);
+		BOOST_LOG_TRIVIAL(info) << "Transaction::SaveOutgoingTx new balance " << balance << " balance_allocated " << balance_allocated;
+		//cerr << "Transaction::SaveOutgoingTx new balance " << balance << " balance_allocated " << balance_allocated;
+		#endif
+	}
+
+	for (unsigned i = 0; i < nout; ++i)
+	{
+		Billet& bill = output_bills[i];
+
+		if (!bill.create_tx)
+			bill.create_tx = tx_id;
+		else
+			CCASSERT(bill.create_tx == tx_id);
+
+		bill.status = BILL_STATUS_PENDING;
+
+		CCASSERTZ(bill.id);
+
+		rc =  dbconn->BilletInsert(bill);
 		if (rc) return -1;
 	}
 
 	// commit db writes
+
+	if (RandTest(RTEST_CUZZ)) sleep(1);
 
 	rc = dbconn->Commit();
 	if (rc)
@@ -434,6 +518,8 @@ int Transaction::SaveOutgoingTx(DbConn *dbconn)
 
 	finally.Clear();
 
+	id = tx_id;
+
 	return 0;
 }
 
@@ -442,7 +528,7 @@ int Transaction::UpdatePolling(DbConn *dbconn, uint64_t next_commitnum)
 	// Updating polling times for output addresses
 	// Also sets query_commitnum and expected_commitnum
 
-	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "Transaction::UpdatePolling " << next_commitnum;
+	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "Transaction::UpdatePolling next_commitnum " << next_commitnum;
 
 	uint64_t now = time(NULL);
 
@@ -463,13 +549,14 @@ int Transaction::UpdatePolling(DbConn *dbconn, uint64_t next_commitnum)
 		Billet& bill = output_bills[i];
 		Secret secret;
 
-		auto rc = dbconn->SecretSelectSecret(&bill.address, TX_ADDRESS_BYTES, secret);
+		rc = dbconn->SecretSelectSecret(&bill.address, TX_ADDRESS_BYTES, secret);
 		if (rc) continue;
 
 		secret.next_check = now + 1 + (rand() & 1);
 
-		if (secret.type == SECRET_TYPE_SEND_ADDRESS && secret.query_commitnum == 0)
-			secret.query_commitnum = next_commitnum;		// start query at this commitnum (skip tx's from other wallets)
+		// don't do this so tx's sent by a copy of this wallet is detected:
+		//if (secret.type == SECRET_TYPE_SEND_ADDRESS && secret.query_commitnum == 0)
+		//	secret.query_commitnum = next_commitnum;		// start query at this commitnum (skip tx's from other wallets)
 
 		if (next_commitnum > secret.expected_commitnum)
 			secret.expected_commitnum = next_commitnum;		// continue fast polling until tx is seen with this commitnum
@@ -516,6 +603,65 @@ int Transaction::BeginAndReadTx(DbConn *dbconn, uint64_t id, bool or_greater)
 	return ReadTx(dbconn, id, or_greater);
 }
 
+int Transaction::BeginAndReadTxRefId(DbConn *dbconn, const string& ref_id)
+{
+	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "Transaction::BeginAndReadTxRefId ref_id " << ref_id;
+
+	//dbconn->BeginRead();	// for testing
+
+	auto rc = dbconn->BeginRead();
+	if (rc)
+	{
+		Clear();
+
+		dbconn->DoDbFinishTx(-1);
+
+		return -1;
+	}
+
+	Finally finally(boost::bind(&DbConn::DoDbFinishTx, dbconn, 1));		// 1 = rollback
+
+	return ReadTxRefId(dbconn, ref_id);
+}
+
+int Transaction::BeginAndReadTxIdDescending(DbConn *dbconn, uint64_t id)
+{
+	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "Transaction::BeginAndReadTxIdDescending id " << id;
+
+	auto rc = dbconn->BeginRead();
+	if (rc)
+	{
+		Clear();
+
+		dbconn->DoDbFinishTx(-1);
+
+		return -1;
+	}
+
+	Finally finally(boost::bind(&DbConn::DoDbFinishTx, dbconn, 1));		// 1 = rollback
+
+	return ReadTxIdDescending(dbconn, id);
+}
+
+int Transaction::BeginAndReadTxLevel(DbConn *dbconn, uint64_t level, uint64_t id)
+{
+	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "Transaction::BeginAndReadTxLevel level " << level << " id " << id;
+
+	auto rc = dbconn->BeginRead();
+	if (rc)
+	{
+		Clear();
+
+		dbconn->DoDbFinishTx(-1);
+
+		return -1;
+	}
+
+	Finally finally(boost::bind(&DbConn::DoDbFinishTx, dbconn, 1));		// 1 = rollback
+
+	return ReadTxLevel(dbconn, level, id);
+}
+
 int Transaction::ReadTx(DbConn *dbconn, uint64_t id, bool or_greater)
 {
 	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "Transaction::ReadTx id " << id << " or_greater = " << or_greater;
@@ -539,23 +685,27 @@ int Transaction::ReadTx(DbConn *dbconn, uint64_t id, bool or_greater)
 	return ReadTxBillets(dbconn);
 }
 
-int Transaction::BeginAndReadTxIdDescending(DbConn *dbconn, uint64_t id)
+int Transaction::ReadTxRefId(DbConn *dbconn, const string& ref_id)
 {
-	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "Transaction::BeginAndReadTxIdDescending id " << id;
+	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "Transaction::ReadTxRefId ref_id " << ref_id;
 
-	auto rc = dbconn->BeginRead();
-	if (rc)
+	Clear();
+
+	auto rc = dbconn->TransactionSelectRefId(ref_id.c_str(), *this);
+	if (rc > 0)
 	{
-		Clear();
+		BOOST_LOG_TRIVIAL(trace) << "Transaction::ReadTxRefId transaction id " << id << " returned " << rc;
 
-		dbconn->DoDbFinishTx(-1);
+		return 1;
+	}
+	else if (rc)
+	{
+		BOOST_LOG_TRIVIAL(error) << "Transaction::ReadTxRefId error reading transaction id " << id;
 
 		return -1;
 	}
 
-	Finally finally(boost::bind(&DbConn::DoDbFinishTx, dbconn, 1));		// 1 = rollback
-
-	return ReadTxIdDescending(dbconn, id);
+	return ReadTxBillets(dbconn);
 }
 
 int Transaction::ReadTxIdDescending(DbConn *dbconn, uint64_t id)
@@ -579,25 +729,6 @@ int Transaction::ReadTxIdDescending(DbConn *dbconn, uint64_t id)
 	}
 
 	return ReadTxBillets(dbconn);
-}
-
-int Transaction::BeginAndReadTxLevel(DbConn *dbconn, uint64_t level, uint64_t id)
-{
-	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "Transaction::BeginAndReadTxLevel level " << level << " id " << id;
-
-	auto rc = dbconn->BeginRead();
-	if (rc)
-	{
-		Clear();
-
-		dbconn->DoDbFinishTx(-1);
-
-		return -1;
-	}
-
-	Finally finally(boost::bind(&DbConn::DoDbFinishTx, dbconn, 1));		// 1 = rollback
-
-	return ReadTxLevel(dbconn, level, id);
 }
 
 int Transaction::ReadTxLevel(DbConn *dbconn, uint64_t level, uint64_t id)
@@ -647,10 +778,12 @@ int Transaction::ReadTxBillets(DbConn *dbconn)
 	{
 		// FUTURE: destination might be zero if tx was created in another wallet and only address is known by this wallet?
 
-		rc = dbconn->SecretSelectId(output_bills[i].dest_id, output_destinations[i]);
+		Billet& bill = output_bills[i];
+
+		rc = dbconn->SecretSelectId(bill.dest_id, output_destinations[i]);
 		if (rc)
 		{
-			BOOST_LOG_TRIVIAL(error) << "Transaction::ReadTxBillets error reading destination id " << output_bills[i].dest_id << " for output billet " << i << " id " << output_bills[i].id << " of transaction id " << id;
+			BOOST_LOG_TRIVIAL(error) << "Transaction::ReadTxBillets error reading destination id " << bill.dest_id << " for output billet " << i << " id " << bill.id << " of transaction id " << id;
 
 			return -1;
 		}
@@ -664,7 +797,7 @@ int Transaction::ReadTxBillets(DbConn *dbconn)
 				rc = dbconn->AccountSelectId(output_destinations[i].account_id, output_accounts[i]);
 				if (rc)
 				{
-					BOOST_LOG_TRIVIAL(error) << "Transaction::ReadTxBillets error reading account id " << output_destinations[i].account_id << " for destination id " << output_destinations[i].id << " for output billet " << i << " id " << output_bills[i].id << " of transaction id " << id;
+					BOOST_LOG_TRIVIAL(error) << "Transaction::ReadTxBillets error reading account id " << output_destinations[i].account_id << " for destination id " << output_destinations[i].id << " for output billet " << i << " id " << bill.id << " of transaction id " << id;
 
 					return -1;
 				}
@@ -676,10 +809,12 @@ int Transaction::ReadTxBillets(DbConn *dbconn)
 	{
 		// !!! TODO: destination might be zero?
 
-		rc = dbconn->SecretSelectId(input_bills[i].dest_id, input_destinations[i]);
+		Billet& bill = input_bills[i];
+
+		rc = dbconn->SecretSelectId(bill.dest_id, input_destinations[i]);
 		if (rc)
 		{
-			BOOST_LOG_TRIVIAL(error) << "Transaction::ReadTxBillets error reading destination id " << input_bills[i].dest_id << " for input billet " << i << " id " << input_bills[i].id << " of transaction id " << id;
+			BOOST_LOG_TRIVIAL(error) << "Transaction::ReadTxBillets error reading destination id " << bill.dest_id << " for input billet " << i << " id " << bill.id << " of transaction id " << id;
 
 			return -1;
 		}
@@ -693,7 +828,7 @@ int Transaction::ReadTxBillets(DbConn *dbconn)
 				rc = dbconn->AccountSelectId(input_destinations[i].account_id, input_accounts[i]);
 				if (rc)
 				{
-					BOOST_LOG_TRIVIAL(error) << "Transaction::ReadTxBillets error reading account id " << input_destinations[i].account_id << " for destination id " << input_destinations[i].id << " for input billet " << i << " id " << input_bills[i].id << " of transaction id " << id;
+					BOOST_LOG_TRIVIAL(error) << "Transaction::ReadTxBillets error reading account id " << input_destinations[i].account_id << " for destination id " << input_destinations[i].id << " for input billet " << i << " id " << bill.id << " of transaction id " << id;
 
 					return -1;
 				}
@@ -751,7 +886,7 @@ static void TestBigDiv()
 		a.randomize();
 		bigint_mask(a, 256 - i);
 
-		while (1)
+		while (true)
 		{
 			b.randomize();
 			bigint_mask(b, i);
@@ -806,18 +941,20 @@ void Transaction::SetAdjustedAmounts(bool incwatch)
 
 	for (unsigned i = 0; i < nout; ++i)
 	{
-		if (output_bills[i].asset == 0 && !output_bills[i].BillIsChange())
-		{
-			sum_sent = sum_sent + output_bills[i].amount;
+		Billet& bill = output_bills[i];
 
-			if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "Transaction::SetAdjustedAmounts output " << i << " amount " << output_bills[i].amount << " sum_sent " << sum_sent;
+		if (bill.asset == 0 && !bill.BillIsChange())
+		{
+			sum_sent = sum_sent + bill.amount;
+
+			if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "Transaction::SetAdjustedAmounts output " << i << " amount " << bill.amount << " sum_sent " << sum_sent;
 		}
 
-		if (output_bills[i].asset == 0)
+		if (bill.asset == 0)
 		{
-			sum_out = sum_out + output_bills[i].amount;
+			sum_out = sum_out + bill.amount;
 
-			if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "Transaction::SetAdjustedAmounts output " << i << " amount " << output_bills[i].amount << " sum_out " << sum_out;
+			if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "Transaction::SetAdjustedAmounts output " << i << " amount " << bill.amount << " sum_out " << sum_out;
 		}
 	}
 
@@ -850,18 +987,20 @@ void Transaction::SetAdjustedAmounts(bool incwatch)
 
 	for (unsigned i = 0; i < nout; ++i)
 	{
-		if (output_bills[i].asset == 0 && !output_bills[i].BillIsChange() && sum_sent)
+		Billet& bill = output_bills[i];
+
+		if (bill.asset == 0 && !bill.BillIsChange() && sum_sent)
 		{
-			adj_donations[i] = (net_donation * output_bills[i].amount + sum_sent/2) / sum_sent;
+			adj_donations[i] = (net_donation * bill.amount + sum_sent/2) / sum_sent;
 
 			total_donation = total_donation + adj_donations[i];
 
 			if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "Transaction::SetAdjustedAmounts output " << i << " adj_donations " << adj_donations[i] << " total_donation " << total_donation;
 		}
 
-		if (output_bills[i].asset == 0 && output_bills[i].amount && sum_out)
+		if (bill.asset == 0 && bill.amount && sum_out)
 		{
-			adj_amounts[i] = output_bills[i].amount + (excess_in * output_bills[i].amount + sum_out/2) / sum_out;
+			adj_amounts[i] = bill.amount + (excess_in * bill.amount + sum_out/2) / sum_out;
 
 			total_out = total_out + adj_amounts[i];
 
@@ -882,7 +1021,9 @@ void Transaction::SetAdjustedAmounts(bool incwatch)
 
 		for (unsigned i = 0; i < nout && total_donation < net_donation; ++i)
 		{
-			if (output_bills[i].asset == 0 && !output_bills[i].BillIsChange())
+			Billet& bill = output_bills[i];
+
+			if (bill.asset == 0 && !bill.BillIsChange())
 			{
 				adj_donations[i] = adj_donations[i] + one;
 				total_donation = total_donation + one;
@@ -907,7 +1048,9 @@ void Transaction::SetAdjustedAmounts(bool incwatch)
 
 		for (unsigned i = 0; i < nout && total_out < sum_out; ++i)
 		{
-			if (output_bills[i].asset == 0 && output_bills[i].amount)
+			Billet& bill = output_bills[i];
+
+			if (bill.asset == 0 && bill.amount)
 			{
 				adj_amounts[i] = adj_amounts[i] + one;
 				total_out = total_out + one;
@@ -935,6 +1078,7 @@ int Transaction::CreateTxMint(DbConn *dbconn, TxQuery& txquery) // throws RPC_Ex
 	QueryInputResults inputs;
 
 	auto rc = txquery.QueryInputs(NULL, 0, txparams, inputs);
+	if (g_shutdown) throw txrpc_shutdown_error;
 	if (rc) throw txrpc_server_error;
 
 	if (Implement_CCMint(txparams.blockchain))
@@ -947,7 +1091,7 @@ int Transaction::CreateTxMint(DbConn *dbconn, TxQuery& txquery) // throws RPC_Ex
 
 	Secret address;
 	SpendSecretParams params;
-	memset(&params, 0, sizeof(params));
+	memset((void*)&params, 0, sizeof(params));
 
 	rc = address.CreateNewSecret(dbconn, SECRET_TYPE_SELF_ADDRESS, MINT_DESTINATION_ID, txparams.blockchain, params);
 	if (rc) throw txrpc_wallet_error;
@@ -1016,12 +1160,12 @@ int Transaction::CreateTxMint(DbConn *dbconn, TxQuery& txquery) // throws RPC_Ex
 	// (If tx submitted first, Poll thread could detect and save billets before this thread, and that would have to be sorted out...)
 
 	rc = SaveOutgoingTx(dbconn);
-	if (rc) throw txrpc_wallet_error;
+	if (rc) throw txrpc_wallet_db_error;
 
 	//BeginAndReadTx(dbconn, id);	// testing
 	//BeginAndReadTx(dbconn, id);	// testing
 
-	if (RandTest(RTEST_TX_ERRORS))
+	if (RandTest(RTEST_TX_ERRORS) && 0)
 	{
 		BOOST_LOG_TRIVIAL(info) << "Transaction::CreateTxMint simulating error after save, before submit";
 
@@ -1121,6 +1265,8 @@ void Transaction::SetPendingBalances(DbConn *dbconn, uint64_t blockchain, const 
 	uint64_t asset = 0;
 	unsigned delaytime = 0;	// TBD: this will get more complicated if billets have various delaytimes
 
+	if (RandTest(RTEST_CUZZ)) ccsleep(rand() & 7);
+
 	auto rc = dbconn->BeginWrite();
 	if (rc)
 	{
@@ -1131,18 +1277,17 @@ void Transaction::SetPendingBalances(DbConn *dbconn, uint64_t blockchain, const 
 
 	Finally finally(boost::bind(&DbConn::DoDbFinishTx, dbconn, 1));		// 1 = rollback
 
-	rc = Total::AddBalances(dbconn, TOTAL_TYPE_ALLOCATED_BIT, 0, 0, asset, delaytime, blockchain, true, balance_allocated);
-	if (rc) throw txrpc_wallet_db_error;
-
-	rc = Total::AddBalances(dbconn, TOTAL_TYPE_PENDING_BIT, 0, 0, asset, delaytime, blockchain, true, balance_pending);
-	if (rc) throw txrpc_wallet_db_error;
+	Total::AddBalances(dbconn, true, TOTAL_TYPE_ALLOCATED_BIT, 0, 0, asset, delaytime, blockchain, true, balance_allocated);
+	Total::AddBalances(dbconn, true, TOTAL_TYPE_PENDING_BIT, 0, 0, asset, delaytime, blockchain, true, balance_pending);
 
 	#if TEST_LOG_BALANCE
 	amtint_t balance;
-	Total::GetTotalBalance(dbconn, balance, TOTAL_TYPE_DA_DESTINATION | TOTAL_TYPE_RB_BALANCE, true, false, 0, 0, 0, -1, 0, -1, false);
+	Total::GetTotalBalance(dbconn, false, balance, TOTAL_TYPE_DA_DESTINATION | TOTAL_TYPE_RB_BALANCE, true, false, 0, 0, 0, -1, 0, -1, false);
 	BOOST_LOG_TRIVIAL(info) << "Transaction::SetPendingBalances new balance " << balance << " balance_allocated " << balance_allocated << " balance_pending " << balance_pending;
 	//cerr << "SetPendingBalances new balance " << balance << " balance_allocated " << balance_allocated << " balance_pending " << balance_pending << endl;
 	#endif
+
+	if (RandTest(RTEST_CUZZ)) sleep(1);
 
 	rc = dbconn->Commit();
 	if (rc) throw txrpc_wallet_db_error;
@@ -1164,6 +1309,8 @@ int Transaction::LocateBillet(DbConn *dbconn, uint64_t blockchain, const bigint_
 	uint64_t asset = 0;
 	unsigned max_delaytime = 0;
 
+	if (RandTest(RTEST_CUZZ)) sleep(1);
+
 	auto rc = dbconn->BeginWrite();
 	if (rc)
 	{
@@ -1178,7 +1325,7 @@ int Transaction::LocateBillet(DbConn *dbconn, uint64_t blockchain, const bigint_
 
 	while (true)	// break on success
 	{
-		rc = dbconn->BilletSelectAmount(blockchain, asset, amount, max_delaytime, bill);
+		auto rc = dbconn->BilletSelectAmount(blockchain, asset, amount, max_delaytime, bill);
 		if (rc < 0) throw txrpc_wallet_db_error;
 		if (!rc) break;
 
@@ -1203,14 +1350,17 @@ int Transaction::LocateBillet(DbConn *dbconn, uint64_t blockchain, const bigint_
 		{
 			if (g_interactive)
 			{
+				string amt;
+				amount_to_string(0, total_required, amt);
+
 				lock_guard<FastSpinLock> lock(g_cout_lock);
 				cerr <<
 
 R"(The wallet appears to have sufficient balance, but there are not enough billets available to construct the
 transaction. It may be possible to manually solve this problem by sending transactions to yourself to split the wallet
-balance into more output billets.)"
+balance into more output billets (total required = )"
 
-				"\n" << endl;
+				<< amt << ").\n" << endl;
 			}
 
 			if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(debug) << "Transaction::LocateBillet need more billets to complete tx";
@@ -1228,6 +1378,8 @@ balance into more output billets.)"
 	rc = dbconn->BilletInsert(bill);
 	if (rc) throw txrpc_wallet_db_error;
 
+	if (RandTest(RTEST_CUZZ)) sleep(1);
+
 	rc = dbconn->Commit();
 	if (rc) throw txrpc_wallet_db_error;
 
@@ -1243,6 +1395,8 @@ balance into more output billets.)"
 void Transaction::ReleaseTxBillet(DbConn *dbconn, Billet& bill)
 {
 	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(debug) << "Transaction::ReleaseTxBillet";
+
+	if (RandTest(RTEST_CUZZ)) ccsleep(rand() & 7);
 
 	auto rc = dbconn->BeginWrite();
 	if (rc)
@@ -1269,6 +1423,8 @@ void Transaction::ReleaseTxBillet(DbConn *dbconn, Billet& bill)
 	rc = dbconn->BilletInsert(bill);
 	if (rc) throw txrpc_wallet_db_error;
 
+	if (RandTest(RTEST_CUZZ)) sleep(1);
+
 	rc = dbconn->Commit();
 	if (rc) throw txrpc_wallet_db_error;
 
@@ -1277,13 +1433,13 @@ void Transaction::ReleaseTxBillet(DbConn *dbconn, Billet& bill)
 	finally.Clear();
 }
 
-int Transaction::WaitNewBillet(const bigint_t& total_required, const uint64_t billet_count, const uint64_t t0, unique_lock<mutex>& lock) // throws RPC_Exception)
+int Transaction::WaitNewBillet(const bigint_t& total_required, const uint64_t billet_count, const uint32_t timeout, unique_lock<mutex>& lock, bool test_fail) // throws RPC_Exception)
 {
 	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "Transaction::WaitNewBillet";
 
 	if (lock) lock.unlock();
 
-	if (RandTest(RTEST_TX_ERRORS))
+	if (test_fail && RandTest(RTEST_TX_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "Transaction::WaitNewBillet simulating error";
 
@@ -1292,27 +1448,35 @@ int Transaction::WaitNewBillet(const bigint_t& total_required, const uint64_t bi
 		throw txrpc_simulated_error;
 	}
 
-	uint64_t dt = time(NULL) - t0;
-
-	if (dt + 2 >= (unsigned)g_params.billet_wait_time)
-	{
-		if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "Transaction::WaitNewBillet wait time expired t0 " << t0 << " dt " << dt << " billet_wait_time " << g_params.billet_wait_time << "; throwing txrpc_insufficient_funds";
-
-		throw txrpc_insufficient_funds;
-	}
-
 	if (g_interactive)
 	{
 		lock_guard<FastSpinLock> lock(g_cout_lock);
 		cerr << "Waiting for pending billets to become available...\n" << endl;
 	}
 
-	auto rc = Billet::WaitNewBillet(billet_count, g_params.billet_wait_time - dt);
+	// TODO: adjust the wait time to not exceed the transaction timeout?
+
+	auto rc = Billet::WaitNewBillet(billet_count, g_params.billet_wait_time);
+	if (g_shutdown) throw txrpc_shutdown_error;
 
 	Total::AddNoWaitAmounts(0UL, true, total_required, false);
 
+	CheckTimeout(timeout);
+
 	if (rc)
 	{
+		if (g_interactive)
+		{
+			lock_guard<FastSpinLock> lock(g_cout_lock);
+			cerr <<
+
+R"(The wallet appears to have sufficient balance, but it timed out waiting for expected billets to clear and become
+spendable. This transaction might succeed if it's resubmitted.  Note: the timeout period can be adjusted by using the
+tx-new-billet-wait-sec command line option when starting the wallet.)"
+
+			"\n" << endl;
+		}
+
 		if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "Transaction::WaitNewBillet billet wait failed; throwing txrpc_insufficient_funds";
 
 		throw txrpc_insufficient_funds;
@@ -1323,13 +1487,39 @@ int Transaction::WaitNewBillet(const bigint_t& total_required, const uint64_t bi
 	return 1;	// a billet cleared, so retry
 }
 
+void Transaction::CheckTimeout(const uint32_t timeout)
+{
+	int32_t dt = timeout - time(NULL);
+
+	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(debug) << "Transaction::CheckTimeout timeout " << timeout << " dt " << dt;
+
+	if (dt < 0)
+	{
+		if (g_interactive)
+		{
+			lock_guard<FastSpinLock> lock(g_cout_lock);
+			cerr <<
+
+R"(The wallet reached its time limit while attempting to build this transaction.  The transaction might succeed if it's
+resubmitted. Note: the time limit can be adjusted by using the tx-create-timeout command line option when starting the
+wallet.)"
+
+			"\n" << endl;
+		}
+
+		if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "Transaction::CheckTimeout timed out; throwing txrpc_tx_timeout";
+
+		throw txrpc_tx_timeout;
+	}
+}
+
 int Transaction::ComputeChange(TxParams& txparams, const bigint_t& input_total)
 {
 	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(debug) << "Transaction::ComputeChange build_type " << build_type << " nin " << nin << " input_total " << input_total << " send amount " << SUBTX_AMOUNT;
 
 	if (input_total < SUBTX_AMOUNT && build_type != TX_BUILD_CONSOLIDATE)
 	{
-		if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(info) << "Transaction::ComputeChange build_type " << build_type << " nin " << nin << " input_total " << input_total << " < send amount " << SUBTX_AMOUNT;
+		if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(debug) << "Transaction::ComputeChange build_type " << build_type << " nin " << nin << " input_total " << input_total << " < send amount " << SUBTX_AMOUNT;
 
 		return 1;
 	}
@@ -1367,14 +1557,16 @@ int Transaction::ComputeChange(TxParams& txparams, const bigint_t& input_total)
 
 		for (unsigned i = (build_type != TX_BUILD_CONSOLIDATE); i < nout; ++i)
 		{
+			Billet& bill = output_bills[i];
+
 			// TODO: ignore outvalmin and outvalmax when asset > 0
 			amount_fp = tx_amount_encode(remainder - change - donation, false, txparams.amount_bits, txparams.exponent_bits, txparams.outvalmin, txparams.outvalmax);
 
-			tx_amount_decode(amount_fp, output_bills[i].amount, false, txparams.amount_bits, txparams.exponent_bits);
+			tx_amount_decode(amount_fp, bill.amount, false, txparams.amount_bits, txparams.exponent_bits);
 
-			change = change + output_bills[i].amount;
+			change = change + bill.amount;
 
-			if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "Transaction::ComputeChange build_type " << build_type << " nout " << nout << " change billet " << i << " amount " << output_bills[i].amount << " total change " << change << " donation " << donation;
+			if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "Transaction::ComputeChange build_type " << build_type << " nout " << nout << " change billet " << i << " amount " << bill.amount << " total change " << change << " donation " << donation;
 
 			if (change + donation > remainder)
 			{
@@ -1405,6 +1597,7 @@ int Transaction::FillOutTx(DbConn *dbconn, TxQuery& txquery, TxParams& txparams,
 	QueryInputResults inputs;
 
 	auto rc = txquery.QueryInputs(commitnums, nin, txparams, inputs);
+	if (g_shutdown) throw txrpc_shutdown_error;
 	if (rc) throw txrpc_server_error;
 
 	if (Implement_CCMint(txparams.blockchain) && inputs.param_level < CC_MINT_COUNT + CC_MINT_ACCEPT_SPAN)
@@ -1429,14 +1622,15 @@ int Transaction::FillOutTx(DbConn *dbconn, TxQuery& txquery, TxParams& txparams,
 	for (unsigned i = 0; i < nout; ++i)
 	{
 		TxOut& txout = tx.outputs[i];
+		Billet& bill = output_bills[i];
 
 		// TODO: ignore outvalmin and outvalmax when asset > 0
-		txout.__amount_fp  = tx_amount_encode(output_bills[i].amount, false, txparams.amount_bits, txparams.exponent_bits, txparams.outvalmin, txparams.outvalmax);
+		txout.__amount_fp  = tx_amount_encode(bill.amount, false, txparams.amount_bits, txparams.exponent_bits, txparams.outvalmin, txparams.outvalmax);
 		tx_amount_decode(txout.__amount_fp, check, false, txparams.amount_bits, txparams.exponent_bits);
-		if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "Transaction::FillOutTx output " << i << " amount " << output_bills[i].amount << " check " << check << " amount_fp " << txout.__amount_fp << " amount_bits " << txparams.amount_bits << " exponent_bits " << txparams.exponent_bits << " outvalmin " << txparams.outvalmin << " outvalmax " << txparams.outvalmax;
-		if (output_bills[i].amount != check)
+		if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "Transaction::FillOutTx output " << i << " amount " << bill.amount << " check " << check << " amount_fp " << txout.__amount_fp << " amount_bits " << txparams.amount_bits << " exponent_bits " << txparams.exponent_bits << " outvalmin " << txparams.outvalmin << " outvalmax " << txparams.outvalmax;
+		if (bill.amount != check)
 		{
-			BOOST_LOG_TRIVIAL(warning) << "Transaction::FillOutTx output amount mismatch " << output_bills[i].amount << " != " << check;
+			BOOST_LOG_TRIVIAL(warning) << "Transaction::FillOutTx output amount mismatch " << bill.amount << " != " << check;
 
 			return 1;	// params may have changed, so retry
 		}
@@ -1503,10 +1697,10 @@ int Transaction::FillOutTx(DbConn *dbconn, TxQuery& txquery, TxParams& txparams,
 
 		Secret secret;
 		auto rc = dbconn->SecretSelectSecret(&bill.address, TX_ADDRESS_BYTES, secret);
-		if (rc) throw txrpc_wallet_error;
+		if (rc) throw txrpc_wallet_db_error;
 
 		rc = Secret::GetParentValue(dbconn, SECRET_TYPE_SPEND, secret.id, txin.params, &txin.secrets[0], sizeof(txin.secrets));
-		if (rc) throw txrpc_wallet_error;
+		if (rc) throw txrpc_wallet_db_error;
 
 		CCRandom(&bill.hashkey, TX_HASHKEY_WIRE_BYTES);
 
@@ -1549,7 +1743,7 @@ void Transaction::SetAddresses(DbConn *dbconn, uint64_t dest_chain, Secret &dest
 	{
 		Secret secret;
 		SpendSecretParams params;
-		memset(&params, 0, sizeof(params));
+		memset((void*)&params, 0, sizeof(params));
 
 		auto rc = secret.CreateNewSecret(dbconn, SECRET_TYPE_SELF_ADDRESS, SELF_DESTINATION_ID, dest_chain, params);
 		if (rc) throw txrpc_wallet_error;
@@ -1566,7 +1760,7 @@ void Transaction::SetAddresses(DbConn *dbconn, uint64_t dest_chain, Secret &dest
 
 		Secret secret;
 		SpendSecretParams params;
-		memset(&params, 0, sizeof(params));
+		memset((void*)&params, 0, sizeof(params));
 
 		auto rc = secret.CreateNewSecret(dbconn, SECRET_TYPE_SEND_ADDRESS, destination.id, dest_chain, params);
 		if (rc) throw txrpc_wallet_error;
@@ -1578,9 +1772,9 @@ void Transaction::SetAddresses(DbConn *dbconn, uint64_t dest_chain, Secret &dest
 	}
 }
 
-void Transaction::CreateTxPay(DbConn *dbconn, TxQuery& txquery, const string& encoded_dest, uint64_t dest_chain, const bigint_t& destination, const bigint_t& amount, const string& comment, const string& comment_to, const bool subfee) // throws RPC_Exception
+int Transaction::CreateTxPay(DbConn *dbconn, TxQuery& txquery, bool async, string& ref_id, const string& encoded_dest, uint64_t dest_chain, const bigint_t& destination, const bigint_t& amount, const string& comment, const string& comment_to, const bool subfee) // throws RPC_Exception
 {
-	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(debug) << "Transaction::CreateTxPay dest_chain " << hex << dest_chain << dec << " destination " << destination << " amount " << amount << " subfee " << subfee << " comment " << comment << " comment_to " << comment_to;
+	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(debug) << "Transaction::CreateTxPay async " << async << " ref_id " << ref_id << " dest_chain " << hex << dest_chain << dec << " destination " << destination << " amount " << amount << " subfee " << subfee << " comment " << comment << " comment_to " << comment_to;
 
 	/*
 		For privacy, all tx's are 1 to 4 in -> 2 out
@@ -1588,7 +1782,7 @@ void Transaction::CreateTxPay(DbConn *dbconn, TxQuery& txquery, const string& en
 		Target mix: 1 in 20%; 2 in 20%; 3 in 20-40%; 4 in 20-40%?
 			net degragmenation per tx is 0.6 to 0.8 billets
 		if there is no change, a zero value change billet is created
-		If payment is too large one output billet, then send more than one tx
+		If payment is too large for one output billet, then send more than one tx
 			for privacy, each output billet except the last is the max possible output value
 		If payment has too much dynamic range for one output billet, then send more than one tx
 		For privacy, donation is always exact
@@ -1650,6 +1844,13 @@ void Transaction::CreateTxPay(DbConn *dbconn, TxQuery& txquery, const string& en
 	rc = secret.ImportSecret(dbconn);
 	if (rc) throw txrpc_wallet_error;
 
+	if (!secret.TypeIsDestination())
+	{
+		BOOST_LOG_TRIVIAL(info) << "Transaction::CreateTxPay secret is not a valid destination; " << secret.DebugString();
+
+		throw txrpc_wallet_error;
+	}
+
 	if (!dest_chain)
 		dest_chain = txparams.blockchain;	// if the destination string didn't specify a blockchain, use the transaction server blockchain
 
@@ -1659,18 +1860,49 @@ void Transaction::CreateTxPay(DbConn *dbconn, TxQuery& txquery, const string& en
 	else if (rc)
 		throw RPC_Exception(RPC_INVALID_ADDRESS_OR_KEY, "This destination has already been used by another wallet. To preserve privacy, a new unique destination is required.");
 
-	if (!secret.TypeIsDestination())
-	{
-		BOOST_LOG_TRIVIAL(info) << "Transaction::CreateTxPay secret is not a valid destination; " << secret.DebugString();
+	if (!ref_id.length())
+		ref_id = unique_id_generate(dbconn, "R", 0, 2);
 
-		throw txrpc_wallet_error;
+	DbConn *thread_dbconn = NULL;
+	TxQuery *thread_txquery = NULL;
+	TxBuildEntry *entry = NULL;
+
+	Finally finally(boost::bind(&Transaction::CreateTxPayThreadCleanup, &thread_dbconn, &thread_txquery, &entry, false));
+
+	rc = g_txbuildlist.StartBuild(dbconn, ref_id, encoded_dest, dest_chain, destination, amount, &entry, *this);
+	if (rc)
+	{
+		if (entry)
+		{
+			if (async)
+				return 1;
+
+			if (g_interactive)
+			{
+				lock_guard<FastSpinLock> lock(g_cout_lock);
+				cerr << "Waiting for prior transaction with reference id " << ref_id << " to complete" << endl;
+			}
+
+			g_txbuildlist.WaitForCompletion(dbconn, entry, *this);
+		}
+		else if (g_interactive)
+		{
+			lock_guard<FastSpinLock> lock(g_cout_lock);
+			cerr << "Returning results of prior transaction with reference id " << ref_id << endl;
+		}
+
+		if (StatusIsNotError())
+			return 0;
+		else
+			throw RPC_Exception(RPC_TRANSACTION_FAILED, "Previously submitted transaction failed");
 	}
+
+	CCASSERT(entry);
 
 	if (g_interactive)
 	{
 		string amts;
 		amount_to_string(0, amount, amts);
-
 		lock_guard<FastSpinLock> lock(g_cout_lock);
 		cerr << "Sending " << amts << " units to destination " << encoded_dest << endl;
 		if (subfee || comment.length() || comment_to.length())
@@ -1678,36 +1910,191 @@ void Transaction::CreateTxPay(DbConn *dbconn, TxQuery& txquery, const string& en
 		cerr << endl;
 	}
 
+	if (g_shutdown)
+		throw txrpc_shutdown_error;
+
+	if (!async)
+	{
+		try
+		{
+			return DoCreateTxPay(dbconn, txquery, txparams, entry, secret);
+		}
+		catch (const RPC_Exception& e)
+		{
+			BOOST_LOG_TRIVIAL(info) << "Transaction::CreateTxPay caught exception \"" << e.what() << "\" entry " << entry->DebugString();
+
+			SaveErrorTx(dbconn, entry->ref_id);
+
+			throw;
+		}
+	}
+	else
+	{
+		thread_dbconn = new DbConn(true);
+		CCASSERT(thread_dbconn);
+
+		thread_txquery = g_lpc_service.GetConnection(false);
+		if (!thread_txquery)
+			throw RPC_Exception(RPC_MISC_ERROR, "Exceeded maximum number of transaction threads");
+
+		auto t = new thread(&Transaction::CreateTxPayThread, thread_dbconn, thread_txquery, txparams, entry, secret);
+		if (!t)
+		{
+			BOOST_LOG_TRIVIAL(info) << "Transaction::CreateTxPay error creating transaction thread";
+
+			throw txrpc_wallet_error;
+		}
+
+		finally.Clear();
+
+		return 1;
+	}
+}
+
+void Transaction::CreateTxPayThreadCleanup(DbConn **dbconn, TxQuery **txquery, TxBuildEntry **entry, bool dec_thread_count)
+{
+	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(debug) << "Transaction::CreateTxPayThreadCleanup dec_thread_count " << dec_thread_count;
+
+	if (*entry)
+	{
+		g_txbuildlist.ReleaseEntry(*entry);
+		*entry = NULL;
+	}
+
+	if (*txquery)
+	{
+		(*txquery)->Stop();
+		(*txquery)->WaitForStopped();
+		(*txquery)->FreeConnection();
+		*txquery = NULL;
+	}
+
+	if (*dbconn)
+	{
+		delete *dbconn;
+		*dbconn = NULL;
+	}
+
+	if (dec_thread_count)
+		--tx_thread_count;
+}
+
+void Transaction::Shutdown()
+{
+	while (true)
+	{
+		auto n = tx_thread_count.load();
+
+		BOOST_LOG_TRIVIAL(info) << "Transaction::Shutdown " << n << " threads running";
+
+		if (!n)
+			return;
+
+		usleep(500*1000);
+	}
+}
+
+void Transaction::CreateTxPayThread(DbConn *dbconn, TxQuery* txquery, TxParams txparams, TxBuildEntry *entry, Secret secret)
+{
+	BOOST_LOG_TRIVIAL(info) << "Transaction::CreateTxPayThread entry " << entry->DebugString();
+
+	++tx_thread_count;
+
+	Finally finally(boost::bind(&Transaction::CreateTxPayThreadCleanup, &dbconn, &txquery, &entry, true));
+
+	try
+	{
+		Transaction tx;
+
+		tx.DoCreateTxPay(dbconn, *txquery, txparams, entry, secret);
+	}
+	catch (const RPC_Exception& e)
+	{
+		BOOST_LOG_TRIVIAL(info) << "Transaction::CreateTxPayThread caught exception \"" << e.what() << "\" entry " << entry->DebugString();
+
+		//cerr << "Transaction::CreateTxPayThread caught exception: " << e.what() << endl;
+
+		SaveErrorTx(dbconn, entry->ref_id);
+	}
+}
+
+void Transaction::SaveErrorTx(DbConn *dbconn, const string& ref_id)
+{
+	if (!ref_id.length())
+		return;
+
+	// make sure some transaction is saved so ref_id will show an error
+
+	Transaction tx;
+
+	auto rc = dbconn->TransactionSelectRefId(ref_id.c_str(), tx);
+	if (!rc) return;
+
+	tx.Clear();
+
+	tx.ref_id = ref_id;
+	tx.type = TX_TYPE_SEND;
+	tx.status = TX_STATUS_ERROR;
+
+	tx.SaveOutgoingTx(dbconn);
+}
+
+int Transaction::DoCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams &txparams, TxBuildEntry *entry, Secret& secret) // throws RPC_Exception
+{
+	BOOST_LOG_TRIVIAL(info) << "Transaction::DoCreateTxPay entry " << entry->DebugString();
+
 	deque<Transaction> tx_list(1);
 
 	unique_lock<mutex> lock(billet_allocate_mutex, defer_lock);
 
-	Finally finally(boost::bind(&Transaction::CleanupSubTxs, dbconn, dest_chain, boost::ref(secret), boost::ref(tx_list), boost::ref(lock)));
+	Finally finally(boost::bind(&Transaction::CleanupSubTxs, dbconn, entry->dest_chain, ref(secret), ref(tx_list), ref(lock)));
 
-	uint64_t t0 = time(NULL);
+	uint32_t timeout = time(NULL) + g_params.tx_create_timeout;
 
 	bigint_t tx_round_up = 0UL;
 
 	for (unsigned retry = 0; ; ++retry)
 	{
-		if (retry > 2000 || g_shutdown) throw txrpc_wallet_error;
+		if (g_shutdown)
+			throw txrpc_shutdown_error;
 
 		if (RandTest(RTEST_TX_ERRORS))
 		{
-			BOOST_LOG_TRIVIAL(info) << "Transaction::CreateTxPay simulating pre tx, at shutdown check for retry " << retry;
+			BOOST_LOG_TRIVIAL(info) << "Transaction::CreateTxPay simulating error pre tx, at shutdown check for retry " << retry;
 
 			throw txrpc_simulated_error;
 		}
 
-		auto rc = TryCreateTxPay(dbconn, txquery, txparams, dest_chain, secret, amount, comment, comment_to, subfee, t0, tx_round_up, tx_list, lock);
+		if (retry > (TEST_FEWER_RETRIES ? 230 : 1400))
+		{
+			BOOST_LOG_TRIVIAL(info) << "Transaction::DoCreateTxPay reached retry limit " << retry;
+
+			throw txrpc_wallet_error;
+		}
+
+		if (retry > 200)
+		{
+			ccsleep(1);
+
+			if (g_shutdown)
+				throw txrpc_shutdown_error;
+		}
+
+		auto rc = TryCreateTxPay(dbconn, txquery, txparams, entry, secret, timeout, tx_round_up, tx_list, lock);
 		if (!rc) break;
 
-		CleanupSubTxs(dbconn, dest_chain, secret, tx_list, lock);
+		CheckTimeout(timeout);
+
+		CleanupSubTxs(dbconn, entry->dest_chain, secret, tx_list, lock);
 	}
+
+	g_txbuildlist.SetDone(entry);
 
 	finally.Clear();
 
 	*this = tx_list[0];
+
+	return 0;
 }
 
 bool Transaction::SubTxIsActive(bool need_intermediate_txs) const
@@ -1731,6 +2118,8 @@ void Transaction::CleanupSubTxs(DbConn *dbconn, uint64_t dest_chain, const Secre
 	for (auto tx = tx_list.begin(); tx != tx_list.end(); ++tx)
 		need_intermediate_txs |= tx->SubTxIsActive(true);
 
+	if (RandTest(RTEST_CUZZ)) ccsleep(rand() & 7);
+
 	auto rc = dbconn->BeginWrite();
 	if (rc)
 	{
@@ -1753,20 +2142,18 @@ void Transaction::CleanupSubTxs(DbConn *dbconn, uint64_t dest_chain, const Secre
 
 	// TBD: this will get more complicated if billets have various delaytimes or blockchains
 
-	rc = Total::AddBalances(dbconn, TOTAL_TYPE_ALLOCATED_BIT, 0, 0, asset, delaytime, dest_chain, false, balance_allocated);
-	if (rc) throw txrpc_wallet_db_error;
-
-	rc = Total::AddBalances(dbconn, TOTAL_TYPE_PENDING_BIT, 0, 0, asset, delaytime, dest_chain, false, balance_pending);
-	if (rc) throw txrpc_wallet_db_error;
-
+	Total::AddBalances(dbconn, true, TOTAL_TYPE_ALLOCATED_BIT, 0, 0, asset, delaytime, dest_chain, false, balance_allocated);
+	Total::AddBalances(dbconn, true, TOTAL_TYPE_PENDING_BIT, 0, 0, asset, delaytime, dest_chain, false, balance_pending);
 	Total::AddNoWaitAmounts(balance_pending, false, 0UL, true);
 
 	#if TEST_LOG_BALANCE
 	amtint_t balance;
-	Total::GetTotalBalance(dbconn, balance, TOTAL_TYPE_DA_DESTINATION | TOTAL_TYPE_RB_BALANCE, true, false, 0, 0, 0, -1, 0, -1, false);
+	Total::GetTotalBalance(dbconn, false, balance, TOTAL_TYPE_DA_DESTINATION | TOTAL_TYPE_RB_BALANCE, true, false, 0, 0, 0, -1, 0, -1, false);
 	BOOST_LOG_TRIVIAL(info) << "Transaction::CleanupSubTxs new balance " << balance << " balance_allocated " << balance_allocated << " balance_pending " << balance_pending;
 	//cerr << "     CleanupSubTxs new balance " << balance << " balance_allocated " << balance_allocated << " balance_pending " << balance_pending << endl;
 	#endif
+
+	if (RandTest(RTEST_CUZZ)) sleep(1);
 
 	rc = dbconn->Commit();
 	if (rc) throw txrpc_wallet_db_error;
@@ -1785,7 +2172,7 @@ void Transaction::CleanupSubTx(DbConn *dbconn, const Secret &destination, bool n
 	// for now, if tx was not successfully submitted, release all allocated billets
 	//		TODO for future: keep some or all allocated billets and try to resume
 
-	if (build_state < TX_BUILD_SUBMIT_OK)
+	if (build_state < TX_BUILD_SUBMIT_UNKNOWN)
 	{
 		for (unsigned i = 0; i < nin; ++i)
 		{
@@ -1853,6 +2240,18 @@ void Transaction::CleanupSubTx(DbConn *dbconn, const Secret &destination, bool n
 
 					bill.status = BILL_STATUS_ERROR;
 
+					if (RandTest(RTEST_RELEASE_ERROR_TXID))
+					{
+						// all output billets initially get a txid so the polling thread can find the billet if it gets a matching address query response
+						// but if the billet was not successfully submitted, the txid can be released in case the same txid is created by another wallet
+						// as currently implemented however, this would result in listtransactions briefly reporting the transaction and it's txid,
+						// and then the transaction disappearing when the txid is released
+
+						BOOST_LOG_TRIVIAL(info) << "Transaction::CleanupSubTx releasing txid for billet " << bill.DebugString();
+
+						bill.flags |= BILL_FLAG_NO_TXID;
+					}
+
 					rc = dbconn->BilletInsert(bill);
 					if (rc)
 					{
@@ -1898,7 +2297,7 @@ void Transaction::CleanupSubTx(DbConn *dbconn, const Secret &destination, bool n
 	Clear();
 }
 
-int Transaction::TryCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& txparams, uint64_t dest_chain, Secret &destination, const bigint_t& amount, const string& comment, const string& comment_to, const bool subfee, const uint64_t t0, bigint_t& tx_round_up, deque<Transaction>& tx_list, unique_lock<mutex>& lock) // throws RPC_Exception
+int Transaction::TryCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& txparams, TxBuildEntry *entry, Secret &destination, const uint32_t timeout, bigint_t& tx_round_up, deque<Transaction>& tx_list, unique_lock<mutex>& lock) // throws RPC_Exception
 {
 	/*
 		Attempt to find input billets for each output billet
@@ -1915,8 +2314,13 @@ int Transaction::TryCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& txpa
 			for billets to become available.
 		3. If not sufficient pending billets, then throw insufficient funds exception.
 
-		Return 1 tells the calling function to retry.
+		Return value non-zero tells the calling function to retry.
 	*/
+
+	bool test_fail = !RandTest(4);
+
+	for (auto tx = tx_list.begin(); tx != tx_list.end(); ++tx)
+		tx->build_type = TX_BUILD_TYPE_NULL;
 
 	// works fine and has much higher throughput without this lock:
 	// if (!lock) lock.lock();
@@ -1925,12 +2329,11 @@ int Transaction::TryCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& txpa
 	unsigned max_delaytime = 0;
 
 	bigint_t balance;
-	auto rc = Total::GetTotalBalance(dbconn, balance, TOTAL_TYPE_DA_DESTINATION | TOTAL_TYPE_RB_BALANCE, true, false, 0, asset, 0, max_delaytime, txparams.blockchain, txparams.blockchain);
-	if (rc) throw txrpc_wallet_db_error;
+	Total::GetTotalBalance(dbconn, true, balance, TOTAL_TYPE_DA_DESTINATION | TOTAL_TYPE_RB_BALANCE, true, false, 0, asset, 0, max_delaytime, txparams.blockchain, txparams.blockchain);
 
-	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(debug) << "Transaction::TryCreateTxPay dest_chain " << dest_chain << " destination id " << destination.id  << " destination type " << destination.type << " amount " << amount << " subfee " << subfee << " t0 " << t0 << " tx_round_up " << tx_round_up << " balance " << balance << " comment " << comment << " comment_to " << comment_to;
+	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(debug) << "Transaction::TryCreateTxPay timeout " << timeout << " tx_round_up " << tx_round_up << " balance " << balance << " entry " << entry->DebugString();
 
-	if (amount > balance)
+	if (entry->amount > balance)
 		throw txrpc_insufficient_funds;
 
 	bigint_t total_paid = 0UL;
@@ -1938,14 +2341,18 @@ int Transaction::TryCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& txpa
 	bool need_intermediate_txs = false;
 	uint64_t billet_count = 0;
 
-	CCASSERT(amount);
+	CCASSERT(entry->amount);
 
 	auto tx = tx_list.begin();
 
-	for (unsigned ntx = 0; total_paid < amount; ++ntx)
+	for (unsigned ntx = 0; total_paid < entry->amount; ++ntx)
 	{
 		if (tx_list.size() >= 10000)	// make this a config param?
+		{
+			BOOST_LOG_TRIVIAL(info) << "Transaction::TryCreateTxPay tx_list.size() " << tx_list.size();
+
 			throw txrpc_wallet_error;	// fail safe
+		}
 
 		if (ntx)
 		{
@@ -1955,24 +2362,27 @@ int Transaction::TryCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& txpa
 				tx = tx_list.end() - 1;
 			}
 			else
+			{
 				++tx;
+				tx->Clear();
+			}
 		}
 
-		auto amount_fp = tx_amount_encode(amount - total_paid, false, txparams.amount_bits, txparams.exponent_bits, txparams.outvalmin, txparams.outvalmax);
+		auto amount_fp = tx_amount_encode(entry->amount - total_paid, false, txparams.amount_bits, txparams.exponent_bits, txparams.outvalmin, txparams.outvalmax);
 		tx_amount_decode(amount_fp, tx->SUBTX_AMOUNT, false, txparams.amount_bits, txparams.exponent_bits);
 
 		auto last_round_up_extra = round_up_extra;
-		amount_fp = tx_amount_encode(amount - total_paid, false, txparams.amount_bits, txparams.exponent_bits, txparams.outvalmin, txparams.outvalmax, 1);
+		amount_fp = tx_amount_encode(entry->amount - total_paid, false, txparams.amount_bits, txparams.exponent_bits, txparams.outvalmin, txparams.outvalmax, 1);
 		tx_amount_decode(amount_fp, round_up_extra, false, txparams.amount_bits, txparams.exponent_bits);
 		round_up_extra = round_up_extra - tx->SUBTX_AMOUNT;
 
-		if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "Transaction::TryCreateTxPay amount " << amount  << " total_paid " << total_paid << " adding subtx " << ntx << " amount " << tx->SUBTX_AMOUNT << " round_up_extra " << round_up_extra;
+		if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "Transaction::TryCreateTxPay amount " << entry->amount  << " total_paid " << total_paid << " adding subtx " << ntx << " amount " << tx->SUBTX_AMOUNT << " round_up_extra " << round_up_extra;
 
 		bigint_t next_amount = 0UL;
 
-		if (total_paid + tx->SUBTX_AMOUNT < amount)
+		if (total_paid + tx->SUBTX_AMOUNT < entry->amount)
 		{
-			next_amount = amount - (total_paid + tx->SUBTX_AMOUNT);
+			next_amount = entry->amount - (total_paid + tx->SUBTX_AMOUNT);
 
 			amount_fp = tx_amount_encode(next_amount, false, txparams.amount_bits, txparams.exponent_bits, txparams.outvalmin, txparams.outvalmax);
 			tx_amount_decode(amount_fp, next_amount, false, txparams.amount_bits, txparams.exponent_bits);
@@ -1981,7 +2391,7 @@ int Transaction::TryCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& txpa
 			{
 				if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(debug) << "Transaction::TryCreateTxPay next_amount " << next_amount << " <= tx_round_up " << tx_round_up << " -> amount of this output will be rounded up from " << tx->SUBTX_AMOUNT;
 
-				auto amount_fp = tx_amount_encode(amount - total_paid, false, txparams.amount_bits, txparams.exponent_bits, txparams.outvalmin, txparams.outvalmax, 1);
+				auto amount_fp = tx_amount_encode(entry->amount - total_paid, false, txparams.amount_bits, txparams.exponent_bits, txparams.outvalmin, txparams.outvalmax, 1);
 				tx_amount_decode(amount_fp, tx->SUBTX_AMOUNT, false, txparams.amount_bits, txparams.exponent_bits);
 
 				round_up_extra = 0UL;
@@ -2006,9 +2416,9 @@ int Transaction::TryCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& txpa
 		while (true)
 		{
 			if (g_shutdown)
-				throw txrpc_wallet_error;
+				throw txrpc_shutdown_error;
 
-			if (RandTest(RTEST_TX_ERRORS))
+			if (test_fail && RandTest(4*RTEST_TX_ERRORS))
 			{
 				BOOST_LOG_TRIVIAL(info) << "Transaction::TryCreateTxPay simulating error mid tx, at shutdown check for subtx " << ntx << " nin " << tx->nin;
 
@@ -2039,7 +2449,7 @@ int Transaction::TryCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& txpa
 			else
 				min_amount = donation - min_amount + bigint_t(1UL);	// have to at least cover the increase in the donation
 
-			if (last_round_up_extra && req_amount > last_round_up_extra && total_paid + last_round_up_extra >= amount && !TEST_NO_ROUND_UP)
+			if (next_amount && last_round_up_extra && req_amount > last_round_up_extra && total_paid + last_round_up_extra >= entry->amount && !TEST_NO_ROUND_UP)
 			{
 				// amount required for this subtx is more than simply rounding up the last subtx, so do the latter instead
 
@@ -2061,18 +2471,18 @@ int Transaction::TryCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& txpa
 				req_amount = min_amount;
 
 			bigint_t total_required = 0UL;
-			if (total_paid + tx->SUBTX_AMOUNT < amount)
-				total_required = amount - (total_paid + tx->SUBTX_AMOUNT);
+			if (total_paid + tx->SUBTX_AMOUNT < entry->amount)
+				total_required = entry->amount - (total_paid + tx->SUBTX_AMOUNT);
 			total_required = total_required + req_amount;		// total required to finish tx
 
 			auto rc = LocateBillet(dbconn, txparams.blockchain, req_amount, min_amount, tx->input_bills[tx->nin], billet_count, total_required);
 			if (rc)
-				return WaitNewBillet(total_required, billet_count, t0, lock);
+				return WaitNewBillet(total_required, billet_count, timeout, lock, test_fail);
 
 			new_amount = tx->input_bills[tx->nin].amount;
 			++tx->nin;
 
-			if (RandTest(RTEST_TX_ERRORS))
+			if (test_fail && RandTest(4*RTEST_TX_ERRORS))
 			{
 				BOOST_LOG_TRIVIAL(info) << "Transaction::TryCreateTxPay simulating error mid tx, after LocateBillet succeeded for nin " << tx->nin;
 
@@ -2107,7 +2517,11 @@ int Transaction::TryCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& txpa
 					if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(debug) << "Transaction::TryCreateTxPay residual change " << change << " increasing output billets to " << tx->nout;
 
 					if (tx->nout > TX_MAXOUT)
+					{
+						BOOST_LOG_TRIVIAL(info) << "Transaction::TryCreateTxPay nout " << tx->nout << " > " << TX_MAXOUT;
+
 						throw txrpc_wallet_error;
+					}
 
 					// release the last added billet
 					--tx->nin;
@@ -2128,7 +2542,7 @@ int Transaction::TryCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& txpa
 		}
 
 		// recompute donation and change (might reduce donation slightly if fewer change outputs can be used)
-		rc = tx->ComputeChange(txparams, input_total);
+		auto rc = tx->ComputeChange(txparams, input_total);
 		if (!rc)
 		{
 			tx->build_type = TX_BUILD_FINAL;
@@ -2146,7 +2560,7 @@ int Transaction::TryCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& txpa
 			tx->build_type = TX_BUILD_CONSOLIDATE;
 			tx->build_state = TX_BUILD_READY;
 
-			rc = tx->ComputeChange(txparams, input_total);	// recompute with TX_BUILD_CONSOLIDATE
+			auto rc = tx->ComputeChange(txparams, input_total);	// recompute with TX_BUILD_CONSOLIDATE
 			if (rc || tx->donation >= input_total)
 			{
 				//cerr << "Transaction::TryCreateTxPay subtx " << ntx << " build_type " << tx->build_type << " nin " << tx->nin << " nout " << tx->nout << " donation " << donation << " >= input total " << input_total << endl;
@@ -2154,13 +2568,13 @@ int Transaction::TryCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& txpa
 				if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "Transaction::TryCreateTxPay subtx " << ntx << " build_type " << tx->build_type << " nin " << tx->nin << " nout " << tx->nout << " donation " << donation << " >= input total " << input_total;
 
 				// this might be the result of rounding, so wait for a new billet and retry
-				return WaitNewBillet(1UL, billet_count, t0, lock);
+				return WaitNewBillet(1UL, billet_count, timeout, lock, test_fail);
 			}
 
 			total_paid = total_paid + input_total - tx->donation;
 		}
 
-		if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "Transaction::TryCreateTxPay added subtx " << ntx << " build_type " << tx->build_type << " nin " << tx->nin << " nout " << tx->nout << " donation " << donation << " output amount " << tx->SUBTX_AMOUNT << " total_paid " << total_paid << " of total amount " << amount;
+		if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "Transaction::TryCreateTxPay added subtx " << ntx << " build_type " << tx->build_type << " nin " << tx->nin << " nout " << tx->nout << " donation " << donation << " output amount " << tx->SUBTX_AMOUNT << " total_paid " << total_paid << " of total amount " << entry->amount;
 		//cerr << "Transaction::TryCreateTxPay added subtx " << ntx << " build_type " << tx->build_type << " nin " << tx->nin << " nout " << tx->nout << " donation " << donation << " output amount " << tx->SUBTX_AMOUNT << " total_paid " << total_paid << " of total amount " << amount << endl;
 	}
 
@@ -2175,7 +2589,14 @@ int Transaction::TryCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& txpa
 			++active_subtx_count;
 
 			for (unsigned i = 0; i < tx->nin; ++i)
-				balance_allocated = balance_allocated + tx->input_bills[i].amount;
+			{
+				Billet& bill = tx->input_bills[i];
+
+				CCASSERT(bill.blockchain == entry->dest_chain);
+				CCASSERTZ(bill.asset);
+
+				balance_allocated = balance_allocated + bill.amount;
+			}
 
 			for (unsigned i = 0; i < tx->nout; ++i)
 			{
@@ -2189,9 +2610,9 @@ int Transaction::TryCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& txpa
 
 	//if (active_subtx_count != 1 || need_intermediate_txs) throw txrpc_block_height_range_err; // for testing
 
-	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(debug) << "Transaction::TryCreateTxPay output amount " << amount << " total_paid " << total_paid << " balance_allocated " << balance_allocated << " balance_pending " << balance_pending;
+	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(debug) << "Transaction::TryCreateTxPay output amount " << entry->amount << " total_paid " << total_paid << " balance_allocated " << balance_allocated << " balance_pending " << balance_pending;
 
-	SetPendingBalances(dbconn, dest_chain, balance_allocated, balance_pending);
+	SetPendingBalances(dbconn, entry->dest_chain, balance_allocated, balance_pending);
 
 	Total::AddNoWaitAmounts(balance_pending, true, 0UL, true);
 
@@ -2213,17 +2634,41 @@ int Transaction::TryCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& txpa
 	//	and when tx the is submitted, the serialnum lookup will come out of the cache
 	// But this query will slow down the creation of transactions when using a remote transaction server
 
-	for (auto tx = tx_list.begin(); tx != tx_list.end(); ++tx)
+	if (RandTest(RTEST_CUZZ)) ccsleep(rand() & 7);
+
+	if (RandTest(RTEST_ALLOW_DOUBLE_SPENDS))
 	{
-		if (tx->SubTxIsActive(need_intermediate_txs))
+		if (RandTest(4))
 		{
-			auto rc = Billet::CheckIfBilletsSpent(dbconn, txquery, &tx->input_bills[0], tx->nin, true); // spent or pending
-			if (rc > 1)
-				ccsleep(2);	// sleep a few seconds to allow input billet to make progress toward becoming spent, so it is not repeatedly reused in attempts to build a transaction
-			if (rc)
-				return rc;
+			BOOST_LOG_TRIVIAL(info) << "Transaction::TryCreateTxPay RTEST_ALLOW_DOUBLE_SPENDS skipping input spent check" << " and waiting for conflicting tx's to clear...";
+
+			ccsleep(10);	// allow conflicting tx to clear
+		}
+		else
+		{
+			BOOST_LOG_TRIVIAL(info) << "Transaction::TryCreateTxPay RTEST_ALLOW_DOUBLE_SPENDS skipping input spent check";
 		}
 	}
+	else
+	{
+		for (auto tx = tx_list.begin(); tx != tx_list.end(); ++tx)
+		{
+			if (tx->SubTxIsActive(need_intermediate_txs))
+			{
+				auto rc = Billet::CheckIfBilletsSpent(dbconn, txquery, &tx->input_bills[0], tx->nin, true); // spent or pending
+				if (rc > 1)
+				{
+					if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(debug) << "Transaction::TryCreateTxPay billet already spent; sleeping a few seconds before retrying...";
+
+					ccsleep(3);	// sleep a few seconds to allow input billet to make progress toward becoming spent, so it is not repeatedly reused in attempts to build a transaction
+				}
+				if (rc)
+					return rc;
+			}
+		}
+	}
+
+	if (RandTest(RTEST_CUZZ)) ccsleep(rand() & 7);
 
 	vector<TxPay> tx_structs(active_subtx_count);
 
@@ -2234,19 +2679,19 @@ int Transaction::TryCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& txpa
 		{
 			TxPay& ts = tx_structs[si++];
 
-			rc = tx->FillOutTx(dbconn, txquery, txparams, dest_chain, ts);
+			auto rc = tx->FillOutTx(dbconn, txquery, txparams, entry->dest_chain, ts);
 			if (rc) return rc;
 		}
 	}
 
-	if (RandTest(RTEST_TX_ERRORS))
+	if (test_fail && RandTest(RTEST_TX_ERRORS))
 	{
 		BOOST_LOG_TRIVIAL(info) << "Transaction::TryCreateTxPay simulating billet spent / amount mismatch retry";
 
 		return 1;
 	}
 
-	if (RandTest(RTEST_TX_ERRORS) || (TEST_FAIL_ALL_TXS && 0))
+	if ((test_fail && RandTest(RTEST_TX_ERRORS)) || (TEST_FAIL_ALL_TXS && 0))
 	{
 		BOOST_LOG_TRIVIAL(info) << "Transaction::TryCreateTxPay simulating error pre address computation, at shutdown check";
 
@@ -2254,7 +2699,9 @@ int Transaction::TryCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& txpa
 	}
 
 	if (g_shutdown)
-		throw txrpc_wallet_error;
+		throw txrpc_shutdown_error;
+
+	CheckTimeout(timeout);
 
 	si = 0;
 	for (auto tx = tx_list.begin(); tx != tx_list.end(); ++tx)
@@ -2263,7 +2710,7 @@ int Transaction::TryCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& txpa
 		{
 			TxPay& ts = tx_structs[si++];
 
-			tx->SetAddresses(dbconn, dest_chain, destination, ts);		// do this last to minimize chance of unused addresses
+			tx->SetAddresses(dbconn, entry->dest_chain, destination, ts);		// do this last to minimize chance of unused addresses
 		}
 	}
 
@@ -2306,9 +2753,12 @@ int Transaction::TryCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& txpa
 			tx->SetOutputsFromTx(ts);
 
 			if (si < 2 && g_shutdown)
-				throw txrpc_wallet_error;
+				throw txrpc_shutdown_error;
 
-			if (RandTest(RTEST_TX_ERRORS) || (TEST_FAIL_ALL_TXS && 0))
+			if (si < 2 && !need_intermediate_txs)
+				CheckTimeout(timeout);
+
+			if ((test_fail && RandTest(RTEST_TX_ERRORS)) || (TEST_FAIL_ALL_TXS && 0))
 			{
 				BOOST_LOG_TRIVIAL(info) << "Transaction::TryCreateTxPay simulating error after create, before save and submit for subtx " << si << " of " << active_subtx_count << " need_intermediate_txs " << need_intermediate_txs;
 
@@ -2321,69 +2771,159 @@ int Transaction::TryCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& txpa
 			if (active_subtx_count > 1 && !need_intermediate_txs)
 				tx->parent_id = (si < 2 ? 1 : parent_id);
 
-			if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "Transaction::TryCreateTxPay subtx " << si << " of " << active_subtx_count << " need_intermediate_txs " << need_intermediate_txs << " parent_id " << tx->parent_id;
+			if (si < 2 && !need_intermediate_txs)
+				tx->ref_id = entry->ref_id;
+
+			if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(debug) << "Transaction::TryCreateTxPay subtx " << si << " of " << active_subtx_count << " need_intermediate_txs " << need_intermediate_txs << " parent_id " << tx->parent_id;
 
 			rc = tx->SaveOutgoingTx(dbconn);
-			if (rc) throw txrpc_wallet_db_error;
+			if (rc < 0)
+				throw txrpc_wallet_db_error;
+			if (rc)
+			{
+				if (si < 2 || need_intermediate_txs)
+					return rc;
+
+				BOOST_LOG_TRIVIAL(warning) << "Transaction::TryCreateTxPay ref id " << entry->ref_id << " transaction only partially sent; SaveOutgoingTx error in subtx " << si << " of " << active_subtx_count << " need_intermediate_txs " << need_intermediate_txs << " parent_id " << tx->parent_id;
+
+				return 0;
+			}
 
 			tx->build_state = TX_BUILD_SAVED;
 
-			if (si < 2)
+			if (si < 2 && !need_intermediate_txs)
 				parent_id = tx->id;
 
-			if (RandTest(RTEST_TX_ERRORS) || (TEST_FAIL_ALL_TXS && 0))
-			{
-				BOOST_LOG_TRIVIAL(info) << "Transaction::TryCreateTxPay simulating error after save, before submit for subtx " << si << " of " << active_subtx_count << " need_intermediate_txs " << need_intermediate_txs;
-
-				throw txrpc_simulated_error;
-			}
-
 			// Submit tx to network
-			// !!! TODO: add random delay between SubmitTx's?
+			// !!! TODO: add random delay between SubmitTx's for increased privacy?
 
-			uint64_t next_commitnum;
+			uint64_t next_commitnum = 0;
 
-			if (RandTest(RTEST_TX_ERRORS) || TEST_FAIL_ALL_TXS)
+			if ((test_fail && RandTest(RTEST_TX_ERRORS)) || TEST_FAIL_ALL_TXS)
 			{
 				BOOST_LOG_TRIVIAL(info) << "Transaction::TryCreateTxPay simulating SubmitTx that actually failed for subtx " << si << " of " << active_subtx_count << " need_intermediate_txs " << need_intermediate_txs;
 
-				tx->build_state = TX_BUILD_SUBMIT_ERR;
 				throw txrpc_simulated_error;
 			}
 
-			rc = txquery.SubmitTx(ts, next_commitnum);
-			if (rc)
+			if (RandTest(RTEST_TX_ERRORS+8*0))
 			{
-				BOOST_LOG_TRIVIAL(warning) << "Transaction::TryCreateTxPay SubmitTx did not successfully complete. The network may or may not have received the transaction. If the network did receive the transaction, the wallet will detect it in the blockchain and will then mark the transaction input billets as spent and deduct them from the wallet balance.  In the meantime, before the transaction has cleared, the wallet might attempt to respend the same inputs which would result in a conflicting transaction.  Because this is not currently detected and handled by the wallet, this may result in one or more input billets from the second transaction being deducted from the wallet even though they are not actually spent. This is most likely to occur during high-speed load testing, and can throw off the wallet balance tracking.";
-			}
-			else if (RandTest(RTEST_TX_ERRORS) && 0) // will throw off balance if enabled
-			{
-				// note: this test causes input billets to be deallocated then used in another tx
-				// resulting in conflicting tx's, only one of which will clear, which throws off the balance tracking
+				BOOST_LOG_TRIVIAL(warning) << "Transaction::TryCreateTxPay ref id " << entry->ref_id << " simulating a tx (that may need to be abandoned) that was not submitted but return code was ambiguous for subtx " << si << " of " << active_subtx_count << " need_intermediate_txs " << need_intermediate_txs;
 
-				BOOST_LOG_TRIVIAL(info) << "Transaction::TryCreateTxPay simulating SubmitTx that appeared to fail but actually succeeded for subtx " << si << " of " << active_subtx_count << " need_intermediate_txs " << need_intermediate_txs;
+				rc = 1;
+			}
+			else
+				rc = txquery.SubmitTx(ts, next_commitnum);
+
+			if (!rc && RandTest(RTEST_TX_ERRORS) && 0)
+			{
+				// this should never happen, and when simulated, will result in an warning in the log when the tx clears
+				// if this tx is to a self destination, manual polling will be required to clear the tx
+
+				BOOST_LOG_TRIVIAL(warning) << "Transaction::TryCreateTxPay ref id " << entry->ref_id << " simulating SubmitTx that appeared to fail but actually succeeded (and may require manual polling) for subtx " << si << " of " << active_subtx_count << " need_intermediate_txs " << need_intermediate_txs;
 
 				rc = -1;
 			}
 
-			// !!! TODO: distinguish between hard and soft errors?
-			//		hard error: tx could not be sent (no connection made), or an error message that definitely indicates tx was rejected
-			//		soft error: everything else (for example, tx sent but no response), which indicates tx might have been accepted
-			// !!! TODO: If error is "INVALID:already spent" then requery for hashkey to see if this tx succeeded
-			// !!! TODO: on soft error, leave input billets allocated for some period, then check if they are spent before deallocating them
+			/*
 
-			if (rc > 0)
+			SubmitTx possible return values:
+
+				0 = submitted
+				-1 = maybe
+					!WasPossiblySent() -> not submitted
+					WasPossiblySent() = maybe submitted
+						serialnum cleared -> submitted ok
+						serialnum not cleared -> maybe submitted
+				1 = submitted with error returned
+					serialnum unknown -> maybe submitted
+					serialnum cleared -> submitted ok
+					serialnum not cleared -> submit failed
+			*/
+
+			//if (rc && (si < 2 || need_intermediate_txs))
+			//	throw txrpc_simulated_error;				// for testing--filters out server errors and tx rejected errors
+
+			if (!rc)
 			{
-				tx->build_state = TX_BUILD_SUBMIT_INVALID;
-				throw txrpc_tx_rejected;
+				tx->build_state = TX_BUILD_SUBMIT_OK;
 			}
-			if (rc < 0)
+			else if (rc < 0)
 			{
-				tx->build_state = TX_BUILD_SUBMIT_ERR;
-				throw txrpc_server_error;
+				if (need_intermediate_txs)
+					throw txrpc_server_error;
+
+				if (txquery.WasPossiblySent())
+				{
+					// for now TX_BUILD_SUBMIT_UNKNOWN is handled the same as TX_BUILD_SUBMIT_OK, so don't query any further
+
+					BOOST_LOG_TRIVIAL(warning) << "Transaction::TryCreateTxPay ref id " << entry->ref_id << " SubmitTx sent a transaction but did not get a response from the server. The wallet will consider this transaction to have been sent, but if it is never received by the network, it will need to be abandoned.";
+
+					tx->build_state = TX_BUILD_SUBMIT_UNKNOWN;
+				}
+				else
+				{
+					if (si < 2)
+						throw txrpc_server_error;	// report tx error only if tx was definitely not sent
+
+					BOOST_LOG_TRIVIAL(warning) << "Transaction::TryCreateTxPay ref id " << entry->ref_id << " transaction only partially sent; SubmitTx error in subtx " << si << " of " << active_subtx_count << " need_intermediate_txs " << need_intermediate_txs << " parent_id " << tx->parent_id;
+
+					continue;
+				}
+			}
+			else
+			{
+				// query hashkey to see if this tx cleared
+
+				uint16_t status;
+				bigint_t hashkey;
+
+				auto rc2 = txquery.QuerySerialnums(entry->dest_chain, &tx->input_bills[0].serialnum, 1, &status, &hashkey);
+
+				if (!rc2 && RandTest(RTEST_TX_ERRORS+2*0))
+				{
+					BOOST_LOG_TRIVIAL(warning) << "Transaction::TryCreateTxPay ref id " << entry->ref_id << " simulating failed QuerySerialnums after apparently failed SubmitTx for subtx " << si << " of " << active_subtx_count << " need_intermediate_txs " << need_intermediate_txs;
+
+					rc2 = -1;
+				}
+
+				if (rc2 && need_intermediate_txs)
+				{
+					throw txrpc_server_error;
+				}
+				else if (rc2)
+				{
+					BOOST_LOG_TRIVIAL(warning) << "Transaction::TryCreateTxPay ref id " << entry->ref_id << " SubmitTx sent a transaction and got an ambiguous response from the server. The wallet will consider this transaction to have been sent, but if it is never received by the network, it will need to be abandoned.";
+
+					tx->build_state = TX_BUILD_SUBMIT_UNKNOWN;
+				}
+				else if (status == SERIALNUM_STATUS_SPENT && !memcpy(&hashkey, &tx->input_bills[0].hashkey, sizeof(hashkey)))
+				{
+					// consider this submit ok because input billet was spent using same hashkey
+
+					tx->build_state = TX_BUILD_SUBMIT_OK;
+				}
+				else
+				{
+					// tx was invalid, so this submit failed
+					// TODO: if rc > 1, query all inputs to see if one of them was spent in a different tx, and if so, make this tx status conflicted and auto retry?
+
+					tx->build_state = TX_BUILD_SUBMIT_INVALID;
+
+					if (si < 2 || need_intermediate_txs)
+						throw txrpc_tx_rejected;
+
+					BOOST_LOG_TRIVIAL(warning) << "Transaction::TryCreateTxPay ref id " << entry->ref_id << " transaction only partially sent; SubmitTx and QuerySerialnums error in subtx " << si << " of " << active_subtx_count << " need_intermediate_txs " << need_intermediate_txs << " parent_id " << tx->parent_id;
+
+					continue;
+				}
 			}
 
-			tx->build_state = TX_BUILD_SUBMIT_OK;
+
+			if (tx->build_state == TX_BUILD_SUBMIT_UNKNOWN)
+				CCASSERTZ(need_intermediate_txs);
+			else
+				CCASSERT(tx->build_state == TX_BUILD_SUBMIT_OK);
 
 			rc = tx->UpdatePolling(dbconn, next_commitnum);
 			(void)rc;
@@ -2469,7 +3009,7 @@ int Transaction::CreateTxFromAddressQueryResult(DbConn *dbconn, TxQuery& txquery
 	bigint_t amount;
 	tx_amount_decode(result.amount_fp, amount, false, result.amount_bits, result.exponent_bits);
 
-	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(debug) << "Transaction::CreateTxFromAddressQueryResult amount " << amount << " destination id " << address.dest_id << " paynum " << address.number << " address " << address.value;
+	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(debug) << "Transaction::CreateTxFromAddressQueryResult amount " << amount << " destination id " << address.dest_id << " paynum " << address.number << " address " << address.value << " duplicate_txid " << duplicate_txid;
 
 	// TODO?: add feature to ignore incoming amounts that are very small, for better performance and to avoid DoS attack
 
@@ -2502,52 +3042,57 @@ int Transaction::CreateTxFromAddressQueryResult(DbConn *dbconn, TxQuery& txquery
 	if (duplicate_txid)
 		txout.flags |= BILL_FLAG_NO_TXID;
 
-	return txout.SetStatusCleared(dbconn, result.commitnum);
+	rc = txout.SetStatusCleared(dbconn, result.commitnum);
+	if (rc) return rc;
+
+	return CheckConflicts(dbconn);
 }
 
-int Transaction::UpdateStatus(DbConn *dbconn, uint64_t tx_id, uint64_t bill_id, uint64_t commitnum)
+int Transaction::UpdateStatus(DbConn *dbconn, uint64_t bill_id, uint64_t commitnum)
 {
 	// must be called from inside a BeginWrite
 
-	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(debug) << "Transaction::UpdateStatus tx id " << tx_id << " bill id " << bill_id << " commitnum " << commitnum;
+	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(debug) << "Transaction::UpdateStatus bill id " << bill_id << " commitnum " << commitnum << " tx " << DebugString();
 
-	Transaction tx;
-
-	auto rc = tx.ReadTx(dbconn, tx_id);
-	if (rc) return rc;
+	if (status != TX_STATUS_PENDING && status != TX_STATUS_ABANDONED)
+		if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(debug) << "Transaction::UpdateStatus billet cleared in transaction id " << id << " with status " << status << "; bill id " << bill_id << " commitnum " << commitnum;
 
 	bool all_cleared = true;
 	bool none_cleared = true;
 	unsigned bill_index = -1;
 
-	for (unsigned i = 0; i < tx.nout; ++i)
+	for (unsigned i = 0; i < nout; ++i)
 	{
-		if (tx.output_bills[i].id == bill_id)
+		Billet& bill = output_bills[i];
+
+		if (bill.id == bill_id)
 		{
 			bill_index = i;
 
-			auto rc = tx.output_bills[i].SetStatusCleared(dbconn, commitnum);
+			auto rc = bill.SetStatusCleared(dbconn, commitnum);
 			if (rc) return rc;
 		}
-		else if (tx.output_bills[i].BillIsPending())
+		else if (bill.BillIsPending())
 			all_cleared = false;
 		else
 			none_cleared = false;
 	}
 
-	CCASSERT(bill_index < tx.nout);
+	CCASSERT(bill_index < nout);
 
 	if (none_cleared)
 	{
 		// move remaining addresses to front of the polling queue
 
-		for (unsigned i = 0; i < tx.nout; ++i)
+		for (unsigned i = 0; i < nout; ++i)
 		{
-			if (tx.output_bills[i].BillIsPending())
+			Billet& bill = output_bills[i];
+
+			if (bill.BillIsPending())
 			{
 				Secret secret;
 
-				rc = dbconn->SecretSelectSecret(&tx.output_bills[i].address, TX_ADDRESS_BYTES, secret);
+				auto rc = dbconn->SecretSelectSecret(&bill.address, TX_ADDRESS_BYTES, secret);
 				if (rc) continue;
 
 				CCASSERT(secret.TypeIsAddress());
@@ -2563,23 +3108,205 @@ int Transaction::UpdateStatus(DbConn *dbconn, uint64_t tx_id, uint64_t bill_id, 
 	if (!all_cleared)
 		return 0;
 
-	for (unsigned i = 0; i < tx.nin; ++i)
+	for (unsigned i = 0; i < nin; ++i)
 	{
-		Billet& bill = tx.input_bills[i];
+		Billet& bill = input_bills[i];
 
 		// mark all input serialnum's as spent
-		// !!! TBD: could query serialnum's first just to be sure they are spent
+		// !!! TBD: could query one of the serialnum's first just to be sure this transaction was spent
+		//	(this function is inside a BeginWrite and would need first drop the write lock before running a query)
 
 		if (bill.status != BILL_STATUS_SPENT)
 		{
-			auto rc = bill.SetStatusSpent(dbconn);
+			auto rc = bill.SetStatusSpent(dbconn, bill.hashkey);
 			if (rc) return rc;
 		}
 	}
 
-	tx.btc_block = g_btc_block.GetCurrentBlock();
+	if (status != TX_STATUS_PENDING && status != TX_STATUS_ABANDONED)
+		BOOST_LOG_TRIVIAL(warning) << "Transaction::UpdateStatus transaction id " << id << " cleared after status " << status;
 
-	tx.status = TX_STATUS_CLEARED;
+	btc_block = g_btc_block.GetCurrentBlock();
 
-	return dbconn->TransactionInsert(tx);
+	status = TX_STATUS_CLEARED;
+
+	auto rc = dbconn->TransactionInsert(*this);
+	if (rc) return rc;
+
+	return CheckConflicts(dbconn);
+}
+
+int Transaction::CheckConflicts(DbConn *dbconn)
+{
+	// must be called from inside a BeginWrite
+
+	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(debug) << "Transaction::CheckConflicts " << DebugString();
+
+	for (unsigned i = 0; i < nin; ++i)
+	{
+		Billet& bill = input_bills[i];
+
+		uint64_t tx_id = 0;
+
+		while (true)
+		{
+			bigint_t hashkey;
+
+			auto rc = dbconn->BilletSpendSelectBillet(bill.id, tx_id, hashkey);
+			if (rc < 0) return rc;
+
+			if (rc)
+				break;
+
+			if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "Transaction::CheckConflicts tx id " << id << " bill id " << bill.id << " returned tx_id " << tx_id;
+
+			if (tx_id != id)
+			{
+				rc = Transaction::SetConflicted(dbconn, tx_id);
+				if (rc) return rc;
+			}
+
+			++tx_id;
+		}
+	}
+
+	return 0;
+}
+
+int Transaction::SetConflicted(DbConn *dbconn, uint64_t tx_id)
+{
+	// must be called from inside a BeginWrite
+
+	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(debug) << "Transaction::SetConflicted tx_id " << tx_id;
+
+	Transaction tx;
+
+	auto rc = tx.ReadTx(dbconn, tx_id);
+	if (rc) return rc;
+
+	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(debug) << "Transaction::SetConflicted " << tx.DebugString();
+
+	if (!tx.TxCouldClear())
+		return 0;
+
+	uint64_t blockchain = 0;
+	bigint_t balance_allocated = 0UL;
+	bigint_t balance_pending = 0UL;
+
+	for (unsigned i = 0; i < tx.nin; ++i)
+	{
+		Billet& bill = tx.input_bills[i];
+
+		CCASSERT(bill.status != BILL_STATUS_PREALLOCATED);
+
+		if (bill.status != BILL_STATUS_ALLOCATED)
+			continue;
+
+		// check all spend transactions to see if input should be released
+
+		bool release_input = false;
+		uint64_t tx_id = 0;
+
+		while (tx_id < INT64_MAX)
+		{
+			bigint_t _hashkey;
+
+			auto rc = dbconn->BilletSpendSelectBillet(bill.id, tx_id, _hashkey);
+			if (rc < 0) return rc;
+
+			if (rc)
+				break;
+
+			if (tx_id != tx.id)
+			{
+				Transaction tx2;
+
+				rc = tx2.ReadTx(dbconn, tx_id);
+				if (rc) return rc;
+
+				if (tx2.TxCouldClear())
+				{
+					if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "Transaction::SetConflicted tx_id " << tx.id << " input still pending in tx_id " << tx_id << " billet " << bill.DebugString();
+
+					release_input = false;
+					break;
+				}
+			}
+
+			++tx_id;
+		}
+
+		if (release_input)
+		{
+			if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "Transaction::SetConflicted tx_id " << tx.id << " releasing input billet " << bill.DebugString();
+
+			if (!blockchain)
+				blockchain = bill.blockchain;
+			else
+				CCASSERT(bill.blockchain == blockchain);
+
+			balance_allocated = balance_allocated + bill.amount;
+
+			bill.status = BILL_STATUS_CLEARED;
+
+			rc = dbconn->BilletInsert(bill);
+			if (rc) return rc;
+		}
+	}
+
+	for (unsigned i = 0; i < tx.nout; ++i)
+	{
+		Billet& bill = tx.output_bills[i];
+
+		if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "Transaction::SetConflicted tx_id " << tx.id << " output billet " << bill.DebugString();
+
+		if (bill.status != BILL_STATUS_PENDING)
+			continue;
+
+		if ((bill.flags & BILL_RECV_MASK) && (bill.flags & BILL_FLAG_TRUSTED))
+		{
+			if (!blockchain)
+				blockchain = bill.blockchain;
+			else
+				CCASSERT(bill.blockchain == blockchain);
+
+			CCASSERTZ(bill.asset);
+
+			balance_pending = balance_pending + bill.amount;
+		}
+
+		bill.status = BILL_STATUS_ABANDONED;
+
+		rc = dbconn->BilletInsert(bill);
+		if (rc) return rc;
+	}
+
+	tx.status = TX_STATUS_CONFLICTED;
+
+	rc = dbconn->TransactionInsert(tx);
+	if (rc) return rc;
+
+	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(debug) << "Transaction::SetConflicted balance_allocated " << balance_allocated << " balance_pending " << balance_pending;
+
+	uint64_t asset = 0;
+	unsigned delaytime = 0;
+
+	// TBD: this will get more complicated if billets have various delaytimes or blockchains
+
+	rc = Total::AddBalances(dbconn, false, TOTAL_TYPE_ALLOCATED_BIT, 0, 0, asset, delaytime, blockchain, false, balance_allocated);
+	if (rc) return rc;
+
+	rc = Total::AddBalances(dbconn, false, TOTAL_TYPE_PENDING_BIT, 0, 0, asset, delaytime, blockchain, false, balance_pending);
+	if (rc) return rc;
+
+	Total::AddNoWaitAmounts(balance_pending, false, 0UL, true);
+
+	#if TEST_LOG_BALANCE
+	amtint_t balance;
+	Total::GetTotalBalance(dbconn, false, balance, TOTAL_TYPE_DA_DESTINATION | TOTAL_TYPE_RB_BALANCE, true, false, 0, 0, 0, -1, 0, -1, false);
+	BOOST_LOG_TRIVIAL(info) << "Transaction::SetConflicted new balance " << balance << " balance_allocated " << balance_allocated << " balance_pending " << balance_pending;
+	//cerr << "Transaction::SetConflicted new balance " << balance << " balance_allocated " << balance_allocated << " balance_pending " << balance_pending << endl;
+	#endif
+
+	return 0;
 }

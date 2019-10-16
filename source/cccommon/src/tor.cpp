@@ -113,6 +113,12 @@ void tor_start(const wstring& process_dir, const wstring& tor_exe, const wstring
 				CREATE_NO_WINDOW | DEBUG_PROCESS, NULL, process_dir.c_str(), &si, &pi))
 		{
 			BOOST_LOG_TRIVIAL(error) << "Unable to start Tor; error = " << GetLastError();
+
+			{
+				lock_guard<FastSpinLock> lock(g_cout_lock);
+				cerr << "ERROR: Unable to start Tor" << endl;
+			}
+
 			ccsleep(20);
 			continue;
 		}
@@ -198,6 +204,12 @@ void tor_start(const wstring& process_dir, const wstring& tor_exe, const wstring
 		if (rc)
 		{
 			BOOST_LOG_TRIVIAL(error) << "Unable to start Tor; error = " << rc;
+
+			{
+				lock_guard<FastSpinLock> lock(g_cout_lock);
+				cerr << "ERROR: Unable to start Tor" << endl;
+			}
+
 			ccsleep(20);
 			continue;
 		}

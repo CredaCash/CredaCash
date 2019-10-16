@@ -346,7 +346,7 @@ bool Connection::CheckOpCount(AutoCount& pending_op_counter)
 		return false;	// continue execution
 	}
 
-	if (!pending_op_counter && RandTest(2*!!RTEST_DELAY_CONN_RELEASE))
+	if (!pending_op_counter && RandTest(RTEST_DELAY_CONN_RELEASE ? 2 : 0))
 		return true;
 
 	return false;
@@ -373,7 +373,7 @@ bool Connection::CancelTimer()
 
 	lock_guard<FastSpinLock> lock(m_conn_lock);
 
-	if ((g_shutdown || m_stopping.load()) && RandTest(2*!!RTEST_DELAY_CONN_RELEASE))
+	if ((g_shutdown || m_stopping.load()) && RandTest(RTEST_DELAY_CONN_RELEASE ? 2 : 0))
 		return true;
 
 	boost::system::error_code e;
@@ -722,14 +722,14 @@ void Connection::HandleStop()
 {
 	if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " Connection::HandleStop closing connection";
 
-	if (RandTest(2*!!RTEST_DELAY_CONN_RELEASE)) ccsleep((rand() & 3) + 1);
+	if (RandTest(RTEST_DELAY_CONN_RELEASE ? 2 : 0)) sleep((rand() & 3) + 1);
 
 	CCASSERT(m_stopping.load() > 0);
 
 	{
 		lock_guard<FastSpinLock> lock(m_conn_lock);
 
-		if (RTEST_DELAY_CONN_RELEASE) ccsleep(rand() & 1);	// test delay both before and after acquiring m_conn_lock
+		if (RTEST_DELAY_CONN_RELEASE) sleep(rand() & 1);	// test delay both before and after acquiring m_conn_lock
 
 		CCASSERTZ(m_ops_pending.load());
 

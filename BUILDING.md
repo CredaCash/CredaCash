@@ -6,7 +6,7 @@ Windows executables are available at [CredaCash.com](https://CredaCash.com/softw
 
 ## Supported Platforms
 
-The CredaCash software is intended to be cross-platform, and has been built and run under 64-bit versions of Windows and Linux (specifically, Windows 7 x64, Debian Stretch v9.8 amd64, the most recent Amazon Linux 2 AMI 64-bit x86 for Amazon EC2, and the official Ubuntu v18.04 arm64 distribution for the ODROID-C2 single board ARM computer).  Compatibility with other platforms is unknown.
+The CredaCash software is intended to be cross-platform, and has been built and run under 64-bit versions of Windows and Linux (specifically, Windows 7 x64, Debian Buster v10.1 amd64, and the most recent Amazon Linux 2 AMI 64-bit x86 for Amazon EC2, and earlier versions of the CredaCash software have been tested with Debian Stretch v9.8 amd64 and with the official Ubuntu v18.04 arm64 distribution for the ODROID-C2 single board ARM computer).  Compatibility with other platforms is unknown.
 
 ## Dependencies
 
@@ -20,8 +20,8 @@ Required to fetch the source dependencies:
 
 Required to build:
 
-- GNU g++ v4.8 or higher.  The software has been specifically tested with v4.9.4, v6.4.0 and v7.3.1.  The earlier version works just as well as the more recent versions.  Under Linux, the default version provided with your distribution is recommended.
-- Boost library, roughly version v1.54 or higher.  The software has been specifically tested with v1.62 and v1.70.  Under Linux, the version provided with your distribution is recommended, if it is compatible.
+- GNU g++ v4.8 or higher.  The software has been specifically tested with v4.9.4, v6.4.0, v7.3.1 and v8.3.0.  The earlier version works just as well as the more recent versions.  Under Linux, the default version provided with your distribution is recommended.
+- Boost library, roughly version v1.54 or higher.  The software has been specifically tested with v1.62, v1.67 and v1.70.  Under Linux, the version provided with your distribution is recommended, if it is compatible.
 - GNU gmplib, any recent version.  Under Linux, the version provided with your distribution is recommended, if it is compatible.
 
 Required to run:
@@ -34,7 +34,7 @@ Required to run the test scripts:
 
 ## Linux
 
-The following instructions are specifically for Debian Stretch v9.8.  They may be adaptable to other Linux distributions.
+The following instructions are specifically for Debian 10.  They may be adaptable to other Linux distributions.
 
 1. Install the following packages:
 
@@ -49,7 +49,7 @@ The following instructions are specifically for Debian Stretch v9.8.  They may b
 
 2. Tor v0.3.2 or higher is required to run CredaCash.  The Tor source code is available at the [Tor Distribution site](https://dist.torproject.org/), and build instruction for Linux can be found at the [Tor website](https://2019.www.torproject.org/docs/tor-doc-unix.html.en). 
 
-	For Debian Stretch, Tor v0.3.2+ is also available in the backports repository.  If the backports repository has not yet been enabled, it can be enabled with:
+	For Debian 10, simply install the tor package.  For earlier Debian versions, Tor v0.3.2+ is available in the backports repository.  If the backports repository has not yet been enabled, it can be enabled with:
 
 	``sudo sh -c "echo 'deb http://deb.debian.org/debian stretch-backports main' >> /etc/apt/sources.list.d/stretch-backports.list"``
 
@@ -99,7 +99,7 @@ The following instructions are specifically for Debian Stretch v9.8.  They may b
 
 	This should build the network node server (ccnode.exe), wallet server (ccwallet.exe) and transaction library (cctx64.dll) and place them into the current directory.
 
-##### Boost
+#### Boost
 
 If the build is not successful due to incompatibilities with Boost, Boost can be built from source as static libraries under Linux as follows:
 
@@ -268,7 +268,7 @@ Windows executables are available at [CredaCash.com](https://CredaCash.com/softw
 
  	``make``
 
-##### Boost
+#### Boost
 
 1. Download the latest stable version of the Boost library source code from [boost.org](https://www.boost.org/)
 

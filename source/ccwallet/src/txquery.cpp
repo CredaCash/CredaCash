@@ -23,10 +23,10 @@
 #define TXCONN_READ_MAX		20000	//@@!
 #define TXCONN_WRITE_MAX	8000	//@@!
 
-//!#define TEST_CUZZ		1
+//!#define RTEST_CUZZ		32
 
-#ifndef TEST_CUZZ
-#define TEST_CUZZ		0	// don't test
+#ifndef RTEST_CUZZ
+#define RTEST_CUZZ		0	// don't test
 #endif
 
 // unsigned conn_nreadbuf, unsigned conn_nwritebuf, unsigned sock_nreadbuf, unsigned sock_nwritebuf, unsigned headersize, bool noclose, bool bregister
@@ -108,14 +108,14 @@ const string& TxQuery::GetHost()
 
 int TxQuery::TryQuery(PowType powtype, bool is_retry, vector<char> *pquery)
 {
-	if (TRACE_TXQUERY) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " TxQuery::TryQuery  powtype " << powtype << " is_retry " << is_retry << " conn state " << m_conn_state;
+	if (TRACE_TXQUERY) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " TxQuery::TryQuery powtype " << powtype << " is_retry " << is_retry << " conn state " << m_conn_state;
 
 	// get or update params if needed
 
 	TxParams txparams;
 	int rc = 0;
 
-	if (TEST_CUZZ) ccsleep(rand() & 3);
+	if (RandTest(RTEST_CUZZ)) ccsleep(rand() & 3);
 
 	if (powtype && is_retry)
 		rc = g_txparams.UpdateParams(txparams, *this);
@@ -124,7 +124,7 @@ int TxQuery::TryQuery(PowType powtype, bool is_retry, vector<char> *pquery)
 	else
 		txparams.clock_diff = 0;
 
-	if (TEST_CUZZ) ccsleep(rand() & 3);
+	if (RandTest(RTEST_CUZZ)) ccsleep(rand() & 3);
 
 	if (rc)
 	{
@@ -149,15 +149,16 @@ int TxQuery::TryQuery(PowType powtype, bool is_retry, vector<char> *pquery)
 		CCASSERTZ(rc);
 	}
 
-	if (TEST_CUZZ) ccsleep(rand() & 3);
+	if (RandTest(RTEST_CUZZ)) ccsleep(rand() & 3);
 
-	WaitForStopped(true);
+	WaitForStopped(g_interactive);
 
 	if (g_shutdown) return -1;
 
-	if (TEST_CUZZ) ccsleep(rand() & 3);
+	if (RandTest(RTEST_CUZZ)) ccsleep(rand() & 3);
 
 	m_result_code = -1;
+	m_data_written = false;
 
 	m_pquery = pquery;
 
@@ -196,15 +197,18 @@ int TxQuery::TryQuery(PowType powtype, bool is_retry, vector<char> *pquery)
 		return -1;	// FUTURE: need a way to submit query to already open connection
 	}
 
-	WaitForReadComplete(read_count_start, true);
+	WaitForReadComplete(read_count_start, g_interactive);
 
 	if (TRACE_TXQUERY) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " TxQuery::TryQuery result " << m_result_code << " read_count_start " << read_count_start << " m_read_count " <<m_read_count << " g_shutdown " << g_shutdown;
 
 	Stop();	// !!! for now
 
+	if (m_data_written && powtype)
+		m_possibly_sent = true;
+
 	if (g_shutdown) return -1;
 
-	if (TEST_CUZZ) ccsleep(rand() & 7);
+	if (RandTest(RTEST_CUZZ)) ccsleep(rand() & 7);
 
 	if (m_result_code)
 			ClearHost();
@@ -298,6 +302,7 @@ int TxQuery::SubmitTx(const TxPay& tx, uint64_t& next_commitnum)
 
 	int result_code = -1;
 	next_commitnum = 0;
+	m_possibly_sent = false;
 
 	string fn;
 	char output[128];
@@ -692,7 +697,7 @@ int TxQuery::QuerySerialnums(uint64_t blockchain, const bigint_t *serialnums, un
 
 	memset(statuses, 0, sizeof(*statuses) * nserials);
 	if (hashkeys)
-		memset(hashkeys, 0, sizeof(*hashkeys) * nserials);
+		memset((void*)hashkeys, 0, sizeof(*hashkeys) * nserials);
 
 	auto rc = tx_query_serialnum_create(string(), blockchain, serialnums, nserials, m_writebuf.data(), m_writebuf.size());
 	CCASSERTZ(rc);
@@ -762,7 +767,7 @@ int TxQuery::QuerySerialnums(uint64_t blockchain, const bigint_t *serialnums, un
 				goto missing_key;
 			auto status = value.asString();
 			if (status == "unspent")
-				statuses[i] = SERIALNUM_STATUS_AVAILABLE;
+				statuses[i] = SERIALNUM_STATUS_UNSPENT;
 			else if (status == "pending")
 				statuses[i] = SERIALNUM_STATUS_PENDING;
 			else if (status == "indelible")
@@ -826,7 +831,7 @@ int TxQuery::QueryInputs(const uint64_t *commitnum, const unsigned ncommits, TxP
 
 	int result_code = -1;
 
-	memset(&inputs, 0, sizeof(inputs));
+	memset((void*)&inputs, 0, sizeof(inputs));
 
 	auto rc = tx_query_inputs_create(string(), txparams.blockchain, commitnum, ncommits, m_writebuf.data(), m_writebuf.size());
 	CCASSERTZ(rc);
@@ -1202,7 +1207,7 @@ int TxQuery::QueryAddress(uint64_t blockchain, const bigint_t& address, const ui
 	{
 		if (g_shutdown) return -1;
 
-		memset(&results, 0, sizeof(results));
+		memset((void*)&results, 0, sizeof(results));
 
 		Json::Value root;
 

@@ -43,10 +43,9 @@ void WalDB::WalStartCheckpoint(bool full)
 
 		if (dt >= (unsigned)g_params.db_checkpoint_sec)
 			full_checkpoint_pending = true;
+		else
+			return;	// might work better when db is saved on an sdcard
 	}
-
-	if (!g_params.db_update_continuous && !full_checkpoint_pending)
-		return;	// might work better when db is saved on an sdcard
 
 	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "WalDB::WalStartCheckpoint " << dbname << " calling notify_one full " << full_checkpoint_pending;
 
@@ -67,7 +66,7 @@ void WalDB::WalWaitForStartCheckpoint()
 
 	if (TEST_FREERUN_CHECKPOINTS)
 	{
-		ccsleep(1);
+		sleep(1);
 		usleep(rand() & (1024*1024-1));
 
 		return;

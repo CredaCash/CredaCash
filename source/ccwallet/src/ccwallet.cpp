@@ -10,12 +10,15 @@
 
 #include "ccwallet.h"
 #include "interactive.h"
-#include "walletdb.hpp"
 #include "btc_block.hpp"
+#include "accounts.hpp"
 #include "secrets.hpp"
 #include "billets.hpp"
+#include "transactions.hpp"
+#include "txbuildlist.hpp"
 #include "polling.hpp"
 #include "txrpc.h"
+#include "walletdb.hpp"
 
 #include <CCproof.h>
 #include <transaction.hpp>
@@ -30,7 +33,7 @@
 #include <boost/program_options/parsers.hpp>
 #include <boost/program_options/errors.hpp>
 
-#define TRANSACT_HOSTS		"transact_tor_hosts.lis"
+#define TRANSACT_HOSTS		"transact_tor_hosts-#.lis"
 
 #define DEFAULT_TRACE_LEVEL	3
 #define TRACE_SHUTDOWN		1
@@ -75,9 +78,12 @@ static void do_show_config()
 		cout << "   new Tor circuit for each query = " << yesno(g_params.transact_tor_single_query) << endl;
 		cout << "   path to file of transaction server hostnames = " << w2s(g_params.transact_tor_hosts_file) << endl;
 	}
+
 	cout << "   transaction query retries = " << g_params.tx_query_retries << endl;
 	cout << "   transaction submit retries = " << g_params.tx_submit_retries << endl;
 	cout << "   new billet wait seconds = " << g_params.billet_wait_time << endl;
+	cout << "   transaction create timeout seconds = " << g_params.tx_create_timeout << endl;
+	cout << "   max asynchronous transactions = " << g_params.tx_threads_max << endl;
 	cout << "   cleared confirmations = " << g_params.cleared_confirmations << endl;
 	cout << "   polled addresses per destination = " << g_params.polling_addresses << endl;
 	cout << "   polling threads = " << g_params.polling_threads << endl;
@@ -126,6 +132,12 @@ static void check_config_values()
 	if (g_params.billet_wait_time < 0)
 		throw range_error("New billet wait time not in valid range");
 
+	if (g_params.tx_create_timeout < 0)
+		throw range_error("Transaction create timeout not in valid range");
+
+	if (g_params.tx_threads_max < 0)
+		throw range_error("Maximum asynchronous transaction threads is not in valid range");
+
 	if (g_params.cleared_confirmations < 1 || g_params.cleared_confirmations > 2000)
 		throw range_error("tx-cleared-confirmations value not in valid range");
 
@@ -153,6 +165,7 @@ static int process_options(int argc, char **argv)
 		("dry-run", "Exit after parsing configuration.")
 		("create-wallet", "Create wallet data file if it does not exist.")
 		("reset-wallet", "Free all allocated billets.")
+		("update-wallet", "Update wallet for this version of the software.")
 		//("create-master-secret", "Create master secret if it does not exist.")	// create-wallet does this
 		("interactive", "Run the wallet in interactive mode after executing the command line.")
 		;
@@ -161,13 +174,12 @@ static int process_options(int argc, char **argv)
 	advanced_options.add_options()
 		("config", po::wvalue<wstring>(), "Path to file with additional configuration options.")
 		("blockchain", po::value<uint64_t>(&g_params.blockchain)->default_value(MAINNET_BLOCKCHAIN), "Numeric identifier for blockchain; from " STRINGIFY(TESTNET_BLOCKCHAIN_LO) " to " STRINGIFY(TESTNET_BLOCKCHAIN_HI) " is a test network.")
-		("datadir", po::wvalue<wstring>(&g_params.app_data_dir), "Path to program data directory (default: \""
+		("datadir", po::wvalue<wstring>(&g_params.app_data_dir), "Path to program data directory; a \"#\" character in this path will be replaced by the blockchain number (default: \""
 #if _WIN32
-				"%LOCALAPPDATA%\\CredaCash\\" CCAPPDIR "\""
+				"%LOCALAPPDATA%\\CredaCash\\" CCAPPDIR "\").")
 #else
-				"~/." CCAPPDIR "\""
+				"~/." CCAPPDIR "\").")
 #endif
-				", where \"#\" is the blockchain number).")
 		("wallet-file", po::value<string>(&g_params.wallet_file)->default_value("CCWallet"), "Wallet filename.")
 		("secret-generation-ms", po::value<int>(&g_params.secret_gen_time)->default_value(4000), "Number of millseconds to expend generating a new secret.")
 		("secret-generation-memory", po::value<int>(&g_params.secret_gen_memory)->default_value(10), "Memory (MB) used to generate a new secret.")
@@ -183,12 +195,14 @@ static int process_options(int argc, char **argv)
 			" (default: baseport).")
 		("transact-tor", po::value<bool>(&g_params.transact_tor)->default_value(false), "Connect to transaction support server via Tor.")
 		("transact-tor-single-query", po::value<bool>(&g_params.transact_tor_single_query)->default_value(false), "Create a new Tor circuit for each transaction server query (slower but more private).")
-		("transact-tor-hosts-file", po::wvalue<wstring>(&g_params.transact_tor_hosts_file), "Path to file with transaction server Tor hostnames (default: \"" TRANSACT_HOSTS "\" in same directory as this program).")
+		("transact-tor-hosts-file", po::wvalue<wstring>(&g_params.transact_tor_hosts_file), "Path to file with transaction server Tor hostnames; a \"#\" character in this path will be replaced by the blockchain number (default: \"" TRANSACT_HOSTS "\" in same directory as this program).")
 
 		("tx-query-retries", po::value<int>(&g_params.tx_query_retries)->default_value(2), "Number of times to retry a query to the transaction server before aborting.")
 		("tx-submit-retries", po::value<int>(&g_params.tx_submit_retries)->default_value(4), "Number of times to retry submitting a transaction to the network before aborting.")
 
-		("tx-new-billet-wait-sec", po::value<int>(&g_params.billet_wait_time)->default_value(90), "Maximum seconds to wait for an expected incoming billet when required to complete a transaction.")
+		("tx-new-billet-wait-sec", po::value<int>(&g_params.billet_wait_time)->default_value(300), "Maximum seconds to wait for an expected incoming billet when required to complete a transaction.")
+		("tx-create-timeout", po::value<int>(&g_params.tx_create_timeout)->default_value(86400), "Maximum seconds allowed to create and submit a transaction (0 = unlimited).")
+		("tx-async-max", po::value<int>(&g_params.tx_threads_max)->default_value(20), "Maximum number of asynchronous transactions.")
 		("tx-cleared-confirmations", po::value<int>(&g_params.cleared_confirmations)->default_value(6), "Number of emulated confirmations for a cleared transaction.")
 
 		("tx-polling-addresses", po::value<int>(&g_params.polling_addresses)->default_value(6), "Number of addresses to poll per receive destination.")
@@ -306,9 +320,15 @@ static int process_options(int argc, char **argv)
 		g_params.tor_config = g_params.process_dir + WIDE(PATH_DELIMITER) + s2w(TOR_CONFIG);
 
 	if (!g_params.transact_tor_hosts_file.length())
-		g_params.transact_tor_hosts_file = g_params.process_dir + WIDE(PATH_DELIMITER) + s2w(TRANSACT_HOSTS);
+	{
+		string def = TRANSACT_HOSTS;
+		expand_number(def, g_params.blockchain);
+		g_params.transact_tor_hosts_file = g_params.process_dir + WIDE(PATH_DELIMITER) + s2w(def);
+	}
+	else
+		expand_number_wide(g_params.transact_tor_hosts_file, g_params.blockchain);
 
-	g_lpc_service.max_outconns = 1 + g_params.polling_threads + CC_MINT_MAX_THREADS;
+	g_lpc_service.max_outconns = 1 + g_params.polling_threads + g_params.tx_threads_max;
 
 	// polling_table[secret type][last_receive>0][list elements][period/endtime]
 		//#define SECRET_TYPE_SEND_ADDRESS			13	// + paynum if known
@@ -350,7 +370,7 @@ static int process_options(int argc, char **argv)
 
 	// SECRET_TYPE_POLL_ADDRESS nothing received
 	a++; r = 0;
-	g_params.polling_table[a][r].push_back(make_pair(1 * 60,			20 * 60));  //@@!
+	g_params.polling_table[a][r].push_back(make_pair(1 * 60,			20 * 60));
 	g_params.polling_table[a][r].push_back(make_pair(5 * 60,	2 * 24*60*60));
 
 	// SECRET_TYPE_POLL_ADDRESS with payment (copy SECRET_TYPE_RECV_ADDRESS)
@@ -458,6 +478,13 @@ static int set_rpc_auth_string()
 	return 0;
 }
 
+static void shutdown_callback()
+{
+	Billet::Shutdown();
+
+	g_txbuildlist.Shutdown();
+}
+
 #if 0 // not used
 	for (unsigned i = 2048; i > 512; --i)
 	{
@@ -477,6 +504,8 @@ int _dowildcard = 0;	// disable wildcard globbing
 int main(int argc, char **argv)
 {
 	cerr << endl;
+
+	g_shutdown_callback = shutdown_callback;
 
 	set_handlers();
 
@@ -538,7 +567,7 @@ int main(int argc, char **argv)
 
 		dbconn = new DbConn(false);
 
-		dbconn->Startup(create_wallet, reset_wallet);
+		dbconn->Startup(create_wallet);
 
 		dbconn->ReadWalletId();
 
@@ -560,6 +589,13 @@ int main(int argc, char **argv)
 			}
 
 			dbconn->TransactionInitDb();
+		}
+
+		if (reset_wallet)
+		{
+			auto rc = Billet::ResetAllocated(dbconn, true);
+
+			if (rc) goto do_fatal;
 		}
 
 	}
@@ -649,7 +685,7 @@ int main(int argc, char **argv)
 
 		{
 			lock_guard<FastSpinLock> lock(g_cout_lock);
-			cerr << "Shutting down..." << endl;
+			cerr << "\nShutting down..." << endl;
 		}
 
 			if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 1...";
@@ -673,57 +709,61 @@ do_fatal:
 
 		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 5...";
 
-	Billet::Shutdown();
+	shutdown_callback();
 
 		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 6...";
 
 	cc_mint_threads_shutdown();
 
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 7...";
+
+	Transaction::Shutdown();
+
 	if (txquery_interactive)
 	{
-			if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 7...";
+			if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 8...";
 
 		txquery_interactive->Stop();
 
-			if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 8...";
+			if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 9...";
 
 		txquery_interactive->WaitForStopped();
 
-			if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 9...";
+			if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 10...";
 
 		txquery_interactive->FreeConnection();
 	}
 
-		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 10...";
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 11...";
 
 	g_rpc_service.StartShutdown();
 
-		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 11...";
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 12...";
 
 	g_lpc_service.StartShutdown();
 
-		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 12...";
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 14...";
 
 	g_rpc_service.WaitForShutdown();
 
-		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 14...";
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 15...";
 
 	g_lpc_service.WaitForShutdown();
 
 	if (dbconn)
 	{
-			if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 15...";
+			if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 16...";
 
 		dbconn->CloseDb(1);	// 1 = done
 
 		delete dbconn;
 	}
 
-		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 16...";
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 17...";
 
 	dblog(sqlite3_shutdown());
 
-		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 17...";
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 18...";
 
 	tor_thread.join();
 

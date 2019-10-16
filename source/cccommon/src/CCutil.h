@@ -16,7 +16,8 @@
 extern FastSpinLock g_cout_lock;
 extern const char* g_hex_digits;
 
-#define RandTest(x) ((x) && ((x <= 1) || !(rand() % ((x) ? (x) : 1))))
+// note: RandTest(0) = 0, else RandTest(x <= 1) = 1, else RandTest(x) = !(rand() % x)
+#define RandTest(x) ((x) != 0 && ((x) <= 1 || !(rand() % ((x) > 1 ? (x) : 1))))
 
 #define STRINGIFY_QUOTER(x) #x
 #define STRINGIFY(x) STRINGIFY_QUOTER(x)

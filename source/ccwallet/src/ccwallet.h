@@ -9,7 +9,7 @@
 #pragma once
 
 #define CCAPPNAME	"CredaCash RPC Wallet"
-#define CCVERSION	 "1.00" //@@!
+#define CCVERSION	 "1.01 beta" //@@!
 #define CCEXENAME	"ccwallet"
 #define CCAPPDIR	"CCWallet-#"
 
@@ -63,6 +63,8 @@ DECLARE_EXTERN struct global_params_struct
 	int tx_submit_retries;
 
 	int billet_wait_time;
+	int tx_create_timeout;
+	int tx_threads_max;
 	int cleared_confirmations;
 
 	int polling_addresses;

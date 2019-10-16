@@ -114,8 +114,16 @@ static void try_one_rpc(const string& json, const string& method, Json::Value& p
 		"stop - shutdown the wallet (leaves the network node server running)\\n"
 		"ping - queries the transaction server and returns the ping time in seconds\\n"
 		"cc.time - returns the wallet's current time\\n"
-		"cc.poll_destination \\\"destination\\\" ( last_received_max ) - check destination for incoming payments\\n"
 		"cc.mint - mint currency (if allowed by blockchain)\\n"
+		"cc.unique_id_generate (prefix random_bits checksum_chars) - generate a unique id\\n"
+		"cc.send \\\"reference_id\\\" \\\"destination\\\" asset amount\\n"
+		"cc.send_async \\\"reference_id\\\" \\\"destination\\\" asset amount\\n"
+		"cc.poll_destination \\\"destination\\\" (polling_addresses last_received_max ) - check destination for incoming payments\\n"
+		"cc.billets_poll_unspent - Diagnostic - poll and update unspent billets\\n"
+		"cc.billets_release_allocated ( reset_balance ) - Diagnostic - release all billets allocated to transactions\\n"
+		"cc.dump_transactions (start count include_billets) - Diagnostic - dump transactions in internal format\\n"
+		"cc.dump_billets (start count show_spends) - Diagnostic - dump billets in internal format\\n"
+		"cc.dump_tx_build - Diagnostic - dump transaction build threads in internal format\\n"
 		"\\n"
 		"==Bitcoin Compatibility Commands==\\n"
 		"getbestblockhash\\n"
@@ -393,7 +401,7 @@ static void try_one_rpc(const string& json, const string& method, Json::Value& p
 	else if (method == "setban")														// implemented trivially
 	{
 		if (params.size() < 2 || params.size() > 4)
-			throw RPC_Exception(RPC_MISC_ERROR, method + " \\\"ip(/netmask)\\\" \\\"add|remove\\\" (bantime) (absolute)");
+			throw RPC_Exception(RPC_MISC_ERROR, method + " \\\"ip(/netmask)\\\" \\\"add|remove\\\" (bantime absolute)");
 
 		if (params.size() > 2 && !params[2].isIntegral())
 			throw RPC_Exception(RPC_MISC_ERROR, not_int_err);
@@ -733,21 +741,20 @@ static void try_one_rpc(const string& json, const string& method, Json::Value& p
 	}
 	else if (method == "sendtoaddress")
 	{
-		bigint_t amount;
-
 		if (params.size() < 2 || params.size() > 5)
 			throw RPC_Exception(RPC_MISC_ERROR, method + " \\\"destination\\\" amount ( \\\"comment\\\" \\\"comment-to\\\" subtractfeefromamount )");
 
+		bigint_t amount;
 		parse_amount(json, params[1], false, amount);
 
 		if (params.size() > 4 && !params[4].isBool())
 			throw RPC_Exception(RPC_MISC_ERROR, not_bool_err);
 
-		btc_sendtoaddress(params[0].asString(), amount,
-							params.size() > 2 ? params[2].asString() : string(),
-							params.size() > 3 ? params[3].asString() : string(),
-							params.size() > 4 ? params[4].asBool() : false,
-							dbconn, txquery, rstream);
+		cc_send(false, "", params[0].asString(), amount,
+				params.size() > 2 ? params[2].asString() : string(),
+				params.size() > 3 ? params[3].asString() : string(),
+				params.size() > 4 ? params[4].asBool() : false,
+				dbconn, txquery, rstream);
 	}
 	else if (method == "setaccount" && INCLUDE_DEPRECATED)
 	{
@@ -833,18 +840,54 @@ static void try_one_rpc(const string& json, const string& method, Json::Value& p
 		else
 			throw RPC_Exception(RPC_MISC_ERROR, method);
 	}
-	else if (method == "cc.poll_destination")
+	else if (method == "cc.unique_id_generate")
 	{
-		if (params.size() < 1 || params.size() > 2)
-			throw RPC_Exception(RPC_MISC_ERROR, method + " destination (last_received_max)");
+		if ( /* params.size() < 0 || */ params.size() > 3)
+			throw RPC_Exception(RPC_MISC_ERROR, method + " (prefix random_bits checksum_chars)");
 
 		if (params.size() > 1 && !params[1].isConvertibleTo(Json::uintValue))
 			throw RPC_Exception(RPC_MISC_ERROR, not_int_err);
 
-		//if (params.size() > 1 && params[1].asInt() < 0)
+		if (params.size() > 2 && !params[2].isConvertibleTo(Json::uintValue))
+			throw RPC_Exception(RPC_MISC_ERROR, not_int_err);
+
+		cc_unique_id_generate(params.size() > 0 ? params[0].asString() : "R", params.size() > 1 ? params[1].asUInt() : 0,  params.size() > 2 ? params[2].asUInt() : 2, dbconn, txquery, rstream);
+	}
+	else if (method == "cc.send" || method == "cc.send_async")
+	{
+		if (params.size() != 4)
+			throw RPC_Exception(RPC_MISC_ERROR, method + " \\\"reference_id\\\" \\\"destination\\\" asset amount");
+
+		if (!params[2].isConvertibleTo(Json::uintValue))
+			throw RPC_Exception(RPC_MISC_ERROR, not_int_err);
+
+		if (params[2].asUInt64())
+			throw RPC_Exception(RPC_INVALID_PARAMETER, "asset must be 0");
+
+		bigint_t amount;
+		parse_amount(json, params[3], false, amount);
+
+		cc_send(method == "cc.send_async", params[0].asString(), params[1].asString(), amount,
+				params.size() > 4 ? params[4].asString() : string(),
+				params.size() > 5 ? params[5].asString() : string(),
+				params.size() > 6 ? params[6].asBool() : false,
+				dbconn, txquery, rstream);
+	}
+	else if (method == "cc.poll_destination")
+	{
+		if (params.size() < 1 || params.size() > 3)
+			throw RPC_Exception(RPC_MISC_ERROR, method + " destination (polling_addresses last_received_max)");
+
+		if (params.size() > 1 && !params[1].isConvertibleTo(Json::uintValue))
+			throw RPC_Exception(RPC_MISC_ERROR, not_int_err);
+
+		if (params.size() > 2 && !params[2].isConvertibleTo(Json::uintValue))
+			throw RPC_Exception(RPC_MISC_ERROR, not_int_err);
+
+		//if (params.size() > 3 && params[3].asInt() < 0)
 		//	throw RPC_Exception(RPC_INVALID_PARAMETER, negative_from_err);
 
-		cc_poll_destination(params[0].asString(), params.size() > 1 ? params[1].asUInt64() : 0, dbconn, txquery, rstream);
+		cc_poll_destination(params[0].asString(), params.size() > 1 ? params[1].asUInt() : 0, params.size() > 2 ? params[2].asUInt64() : 0, dbconn, txquery, rstream);
 	}
 	else if (method == "cc.poll_mint")
 	{
@@ -852,6 +895,62 @@ static void try_one_rpc(const string& json, const string& method, Json::Value& p
 			throw RPC_Exception(RPC_MISC_ERROR, method);
 
 		cc_poll_mint(dbconn, txquery, rstream);
+	}
+	else if (method == "cc.billets_poll_unspent")
+	{
+		if (params.size() != 0)
+			throw RPC_Exception(RPC_MISC_ERROR, method);
+
+		cc_billets_poll_unspent(dbconn, txquery, rstream);
+	}
+	else if (method == "cc.billets_release_allocated")
+	{
+		if ( /* params.size() < 0 || */ params.size() > 1)
+			throw RPC_Exception(RPC_MISC_ERROR, method + " ( reset_balance )");
+
+		if (params.size() > 0 && !params[0].isBool())
+			throw RPC_Exception(RPC_MISC_ERROR, not_bool_err);
+
+		cc_billets_release_allocated(params.size() > 0 ? params[0].asBool() : true, dbconn, txquery, rstream);
+	}
+	else if (method == "cc.dump_transactions")
+	{
+		if ( /* params.size() < 0 || */ params.size() > 3)
+			throw RPC_Exception(RPC_MISC_ERROR, method + " (start count include_billets)");
+
+		if (params.size() > 0 && !params[0].isConvertibleTo(Json::uintValue))
+			throw RPC_Exception(RPC_MISC_ERROR, not_int_err);
+
+		if (params.size() > 1 && !params[1].isConvertibleTo(Json::uintValue))
+			throw RPC_Exception(RPC_MISC_ERROR, not_int_err);
+
+		if (params.size() > 2 && !params[2].isBool())
+			throw RPC_Exception(RPC_MISC_ERROR, not_bool_err);
+
+		cc_dump_transactions(params.size() > 0 ? params[0].asUInt64() : 0, params.size() > 1 ? params[1].asUInt64() : 0, params.size() > 2 ? params[2].asBool() : false, dbconn, txquery, rstream);
+	}
+	else if (method == "cc.dump_billets")
+	{
+		if ( /* params.size() < 0 || */ params.size() > 3)
+			throw RPC_Exception(RPC_MISC_ERROR, method + " (start count show_spends)");
+
+		if (params.size() > 0 && !params[0].isConvertibleTo(Json::uintValue))
+			throw RPC_Exception(RPC_MISC_ERROR, not_int_err);
+
+		if (params.size() > 1 && !params[1].isConvertibleTo(Json::uintValue))
+			throw RPC_Exception(RPC_MISC_ERROR, not_int_err);
+
+		if (params.size() > 2 && !params[2].isBool())
+			throw RPC_Exception(RPC_MISC_ERROR, not_bool_err);
+
+		cc_dump_billets(params.size() > 0 ? params[0].asUInt64() : 0, params.size() > 1 ? params[1].asUInt64() : 0, params.size() > 2 ? params[2].asBool() : false, dbconn, txquery, rstream);
+	}
+	else if (method == "cc.dump_tx_build")
+	{
+		if (params.size() != 0)
+			throw RPC_Exception(RPC_MISC_ERROR, method);
+
+		cc_dump_tx_build(dbconn, txquery, rstream);
 	}
 	else
 	{
@@ -984,7 +1083,7 @@ int do_json_rpc(const string& json, DbConn *dbconn, TxQuery& txquery, ostringstr
 
 	for (unsigned i = 0; i < n; ++i)
 	{
-		rc = do_one_rpc(json, (root.isArray() ? root[i] : root), dbconn, txquery, response);
+		auto rc = do_one_rpc(json, (root.isArray() ? root[i] : root), dbconn, txquery, response);
 
 		if (rc)
 		{

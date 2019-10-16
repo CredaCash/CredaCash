@@ -63,14 +63,18 @@ public:
 	void Copy(const Total& other);
 	string DebugString() const;
 
-	static bool TypeIsValid(unsigned type);
+	static bool TypeIsValid(unsigned type)
+	{
+		return type <= TOTAL_TYPE_MAX;
+	}
+
 	bool IsValid() const;
 
-	static int AddBalances(DbConn *dbconn, unsigned type, uint64_t account, uint64_t destination, uint64_t asset, unsigned delaytime, uint64_t blockchain, bool add, const snarkfront::bigint_t& amount);
-	static int AddBalance(DbConn *dbconn, unsigned type, uint64_t reference, uint64_t asset, unsigned delaytime, uint64_t blockchain, bool add, const snarkfront::bigint_t& amount);
+	static int AddBalances(DbConn *dbconn, bool rpc_throw, unsigned type, uint64_t account, uint64_t destination, uint64_t asset, unsigned delaytime, uint64_t blockchain, bool add, const snarkfront::bigint_t& amount);
+	static int AddBalance(DbConn *dbconn, bool rpc_throw, unsigned type, uint64_t reference, uint64_t asset, unsigned delaytime, uint64_t blockchain, bool add, const snarkfront::bigint_t& amount);
 
-	static int GetTotalBalance(DbConn *dbconn, snarkfront::bigint_t& balance, unsigned type, bool sum_pc, bool incwatch, uint64_t reference = 0, uint64_t asset = 0, unsigned min_delaytime = 0, unsigned max_delaytime = -1, uint64_t min_blockchain = 0, uint64_t max_blockchain = -1, bool begin_db_read = true);
-	static int GetTotalBalance(DbConn *dbconn, amtint_t& balance, unsigned type, bool sum_pc, bool incwatch, uint64_t reference = 0, uint64_t asset = 0, unsigned min_delaytime = 0, unsigned max_delaytime = -1, uint64_t min_blockchain = 0, uint64_t max_blockchain = -1, bool begin_db_read = true);
+	static int GetTotalBalance(DbConn *dbconn, bool rpc_throw, snarkfront::bigint_t& balance, unsigned type, bool sum_pc, bool incwatch, uint64_t reference = 0, uint64_t asset = 0, unsigned min_delaytime = 0, unsigned max_delaytime = -1, uint64_t min_blockchain = 0, uint64_t max_blockchain = -1, bool begin_db_read = true);
+	static int GetTotalBalance(DbConn *dbconn, bool rpc_throw, amtint_t& balance, unsigned type, bool sum_pc, bool incwatch, uint64_t reference = 0, uint64_t asset = 0, unsigned min_delaytime = 0, unsigned max_delaytime = -1, uint64_t min_blockchain = 0, uint64_t max_blockchain = -1, bool begin_db_read = true);
 
 	static snarkfront::bigint_t GetNoWaitNetRequired();
 	static int AddNoWaitAmounts(const snarkfront::bigint_t& pending, bool add_pending, const snarkfront::bigint_t& required, bool add_required);

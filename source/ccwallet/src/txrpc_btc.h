@@ -62,5 +62,4 @@ void btc_listtransactions(const string& acct, int count, int from, bool incwatch
 void btc_listunspent(int minconf, int maxconf, const Json::Value& addrs, DbConn *dbconn, TxQuery& txquery, ostringstream& rstream);
 void btc_move(const string& fromacct, const string& toacct, const snarkfront::bigint_t& amount, const string& comment, DbConn *dbconn, TxQuery& txquery, ostringstream& rstream, bool &add_quotes);
 void btc_sendfrom(const string& fromacct, const string& toaddr, const snarkfront::bigint_t& amount, const string& comment, const string& comment_to, DbConn *dbconn, TxQuery& txquery, ostringstream& rstream);
-void btc_sendtoaddress(const string& addr, const snarkfront::bigint_t& amount, const string& comment, const string& comment_to, bool subfee, DbConn *dbconn, TxQuery& txquery, ostringstream& rstream);
 void btc_setaccount(const string& addr, const string& acct, DbConn *dbconn, TxQuery& txquery, ostringstream& rstream);

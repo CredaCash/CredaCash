@@ -206,7 +206,7 @@ int ProcessBlock::BlockValidate(DbConn *dbconn, SmartBuf smartobj, TxPay& txbuf)
 		return -1;
 	}
 
-	int32_t future = wire->timestamp.GetValue() - time(NULL);
+	int64_t future = wire->timestamp.GetValue() - time(NULL);
 	if (TEST_FUTURE_BLOCKS && !IsWitness()) future += 60;
 
 	if (future > g_params.block_future_tolerance)
@@ -501,14 +501,7 @@ void ProcessBlock::ThreadProc()
 
 			ValidObjsBlockInsert(dbconn, smartobj, txbuf);
 
-			if (1)
-			{
-				int32_t age = time(NULL) - wire->timestamp.GetValue();
-				auto days = age / 86400;
-				auto sec = age - days * 86400;
-				lock_guard<FastSpinLock> lock(g_cout_lock);
-				cerr << " received block level " << wire->level.GetValue() << " witness " << (unsigned)wire->witness << " skip " << auxp->skip << " size " << (block->ObjSize() < 10000 ? " " : "") << (block->ObjSize() < 1000 ? " " : "") << (block->ObjSize() < 100 ? " " : "") << block->ObjSize() << " hash " << buf2hex(&auxp->oid, 3, 0) << ".. prior " << buf2hex(&wire->prior_oid, 3, 0) << ".. age " << days << "d " << sec << endl;
-			}
+			block->ConsoleAnnounce("received", wire, auxp);
 
 			break;
 		}

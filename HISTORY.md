@@ -4,6 +4,10 @@
 
 ## Release History
 
+### 2019-10-15 v1.1 Beta
+
+Beta release to enhance wallet robustness.
+
 ### 2019-08-15 v1.0
 
 First release to support fully-operational network.

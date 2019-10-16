@@ -90,7 +90,7 @@ bool Commitments::UpdateCommitTree(DbConn *dbconn, SmartBuf newobj, uint64_t tim
 		m_next_tree_update_commitnum = m_next_commitnum.load();
 		uint64_t row_end = m_next_tree_update_commitnum - 1;
 
-		memcpy(&nullhash, &auxp->block_hash, TX_MERKLE_BYTES);
+		memcpy((void*)&nullhash, &auxp->block_hash, TX_MERKLE_BYTES);
 		nullhash = nullhash * bigint_t(1UL);	// modulo prime
 
 		// stash row_end in db

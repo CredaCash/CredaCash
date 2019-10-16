@@ -45,10 +45,12 @@ using namespace snarkfront;
 const RPC_Exception txrpc_server_error((RPCErrorCode)(-32000), "Server error");
 const RPC_Exception txrpc_wallet_error(RPCErrorCode(-32001), "Wallet internal error");
 const RPC_Exception txrpc_wallet_db_error(RPCErrorCode(-32001), "Wallet database error");
+const RPC_Exception txrpc_simulated_error(RPC_WALLET_SIMULATED_ERROR, "Simulated (test) error");
+const RPC_Exception txrpc_shutdown_error(RPC_CLIENT_NOT_CONNECTED, "Shutting down");
+
 const RPC_Exception txrpc_not_implemented_error(RPC_INVALID_PARAMS, "Method not implemented");
 const RPC_Exception txrpc_invalid_txid_error(RPC_INVALID_ADDRESS_OR_KEY, "Invalid or non-wallet transaction id");
 const RPC_Exception txrpc_accounts_not_implemented_error(RPC_WALLET_INSUFFICIENT_FUNDS, "Accounts not implemented");
-const RPC_Exception txrpc_simulated_error(RPC_WALLET_SIMULATED_ERROR, "Simulated (test) error");
 
 const RPC_Exception txrpc_block_height_range_err(RPC_INVALID_PARAMETER, "Block height out of range");
 const RPC_Exception txrpc_block_not_found_err(RPC_INVALID_ADDRESS_OR_KEY, "Block not found");
@@ -56,6 +58,9 @@ const RPC_Exception txrpc_tx_not_in_block(RPC_INVALID_ADDRESS_OR_KEY, "Transacti
 const RPC_Exception txrpc_invalid_address(RPC_INVALID_ADDRESS_OR_KEY, "Invalid address");
 const RPC_Exception txrpc_insufficient_funds(RPC_WALLET_INSUFFICIENT_FUNDS, "Insufficient funds");
 const RPC_Exception txrpc_tx_rejected(RPC_VERIFY_REJECTED, "Transaction not allowed or invalid");
+
+const RPC_Exception txrpc_tx_timeout(RPC_TRANSACTION_TIMEOUT, "Time limit expired while building transaction");
+const RPC_Exception txrpc_tx_mismatch(RPC_TRANSACTION_MISMATCH, "Transaction destination or amount does not match prior transaction with same reference id");
 
 static int master_secret_hash(DbConn *dbconn, bigint_t& masterhash)
 {
@@ -230,7 +235,7 @@ void btc_getblockheader(CP string& blockhash, stdparams)									// NOT_implemen
 	throw txrpc_not_implemented_error;
 }
 
-void btc_getchaintips(stdparams)											// implemented
+void btc_getchaintips(stdparams)												// implemented
 {
 	if (TRACE_TX) BOOST_LOG_TRIVIAL(info) << "btc_getchaintips";
 
@@ -303,8 +308,8 @@ void btc_getinfo(stdparams)													// implemented
 	string balance, fee;
 
 	amtint_t amounti = 0UL;
-	auto rc = Total::GetTotalBalance(dbconn, amounti, TOTAL_TYPE_DA_DESTINATION | TOTAL_TYPE_RB_BALANCE, true, false);
-	if (rc) throw txrpc_wallet_db_error;
+	Total::GetTotalBalance(dbconn, true, amounti, TOTAL_TYPE_DA_DESTINATION | TOTAL_TYPE_RB_BALANCE, true, false);
+
 	amount_to_string(0, amounti, balance);
 
 	if (param_rc)
@@ -481,7 +486,7 @@ actual transaction will varying depending on the type of transaction, the number
 	add_quotes = false;
 }
 
-void btc_validateaddress(CP string& addr, stdparams)						// implemented
+void btc_validateaddress(CP string& addr, stdparams)							// implemented
 {
 	if (TRACE_TX) BOOST_LOG_TRIVIAL(info) << "btc_validateaddress " << addr;
 
@@ -558,7 +563,7 @@ void btc_validateaddress(CP string& addr, stdparams)						// implemented
 	"}";
 }
 
-void btc_abandontransaction(CP string& txid, stdparams)									// NOT_implemented
+void btc_abandontransaction(CP string& txid, stdparams)						// NOT_implemented
 {
 	if (TRACE_TX) BOOST_LOG_TRIVIAL(info) << "btc_abandontransaction " << txid;
 
@@ -709,7 +714,7 @@ void btc_getaddressesbyaccount(CP string& acct, stdparams)								// NOT_impleme
 	throw txrpc_not_implemented_error;
 }
 
-void btc_getbalance(CP string& acct, bool incwatch, stdparamsaq)			// implemented
+void btc_getbalance(CP string& acct, bool incwatch, stdparamsaq)				// implemented
 {
 	if (TRACE_TX) BOOST_LOG_TRIVIAL(info) << "btc_getbalance " << acct << " incwatch " << incwatch;
 
@@ -731,11 +736,7 @@ void btc_getbalance(CP string& acct, bool incwatch, stdparamsaq)			// implemente
 	// TODO: implement accounts
 
 	if (acct == "" || acct == "*")	// !!! Note: when accounts are implemented, "" is not the same as "*".
-	{
-		auto rc = Total::GetTotalBalance(dbconn, amounti, TOTAL_TYPE_DA_DESTINATION | TOTAL_TYPE_RB_BALANCE, true, incwatch);
-
-		if (rc) throw txrpc_wallet_error;
-	}
+		Total::GetTotalBalance(dbconn, true, amounti, TOTAL_TYPE_DA_DESTINATION | TOTAL_TYPE_RB_BALANCE, true, incwatch);
 
 	amount_to_string(0, amounti, balance);
 
@@ -766,13 +767,26 @@ void btc_getnewaddress(CP string& acct, stdparams)							// implemented
 
 	Secret destination;
 	SpendSecretParams params;
-	memset(&params, 0, sizeof(params));
 
-	rc = destination.CreateNewSecret(dbconn, SECRET_TYPE_SPENDABLE_DESTINATION, MAIN_PRE_DESTINATION_ID, g_params.blockchain, params);
-	if (rc) throw txrpc_wallet_error;
+	while (true)
+	{
+		memset((void*)&params, 0, sizeof(params));
 
-	rc = destination.CreatePollingAddresses(dbconn, g_params.blockchain, params);
-	(void)rc;
+		rc = destination.CreateNewSecret(dbconn, SECRET_TYPE_SPENDABLE_DESTINATION, MAIN_PRE_DESTINATION_ID, g_params.blockchain, params);
+		if (rc) throw txrpc_wallet_error;
+
+		auto conflict = destination.CheckForConflict(dbconn, txquery, g_params.blockchain);
+		if (conflict < 0)
+			throw txrpc_wallet_error;
+
+		rc = destination.CreatePollingAddresses(dbconn, g_params.blockchain, params);
+		(void)rc;
+
+		//cerr << "btc_getnewaddress conflict " << conflict << endl;
+
+		if (!conflict)
+			break;
+	}
 
 	if (g_interactive)
 	{
@@ -790,7 +804,7 @@ unique destination for each counterparty who wishes to send you transactions.)"
 	rstream << destination.EncodeDestination();
 }
 
-void btc_getreceivedbyaccount(CP string& acct, stdparamsaq)				// implemented
+void btc_getreceivedbyaccount(CP string& acct, stdparamsaq)					// implemented
 {
 	if (TRACE_TX) BOOST_LOG_TRIVIAL(info) << "btc_getreceivedbyaccount " << acct;
 
@@ -812,15 +826,9 @@ void btc_getreceivedbyaccount(CP string& acct, stdparamsaq)				// implemented
 	// Note: CredaCash extends this function to support acct == "*" which gives the amount received by all addresses
 
 	if (acct == "*")
-	{
-		auto rc = Total::GetTotalBalance(dbconn, amounti, TOTAL_TYPE_DA_DESTINATION | TOTAL_TYPE_RB_RECEIVED, false, false);
-		if (rc) throw txrpc_wallet_error;
-	}
+		Total::GetTotalBalance(dbconn, true, amounti, TOTAL_TYPE_DA_DESTINATION | TOTAL_TYPE_RB_RECEIVED, false, false);
 	else if (acct == "")
-	{
-		auto rc = Total::GetTotalBalance(dbconn, amounti, TOTAL_TYPE_DA_ACCOUNT | TOTAL_TYPE_RB_RECEIVED, false, false);
-		if (rc) throw txrpc_wallet_error;
-	}
+		Total::GetTotalBalance(dbconn, true, amounti, TOTAL_TYPE_DA_ACCOUNT | TOTAL_TYPE_RB_RECEIVED, false, false);
 
 	amount_to_string(0, amounti, balance);
 
@@ -830,7 +838,7 @@ void btc_getreceivedbyaccount(CP string& acct, stdparamsaq)				// implemented
 	add_quotes = false;
 }
 
-void btc_getreceivedbyaddress(CP string& addr, stdparamsaq)				// implemented
+void btc_getreceivedbyaddress(CP string& addr, stdparamsaq)					// implemented
 {
 	if (TRACE_TX) BOOST_LOG_TRIVIAL(info) << "btc_getreceivedbyaddress " << addr;
 
@@ -861,8 +869,7 @@ void btc_getreceivedbyaddress(CP string& addr, stdparamsaq)				// implemented
 	amtint_t amounti;
 	string balance;
 
-	rc = Total::GetTotalBalance(dbconn, amounti, TOTAL_TYPE_DA_DESTINATION | TOTAL_TYPE_RB_RECEIVED, false, false, secret.id);
-	if (rc) throw txrpc_wallet_error;
+	Total::GetTotalBalance(dbconn, true, amounti, TOTAL_TYPE_DA_DESTINATION | TOTAL_TYPE_RB_RECEIVED, false, false, secret.id);
 
 	amount_to_string(0, amounti, balance);
 
@@ -925,7 +932,7 @@ static void _btc_list_tx(Transaction& tx, unsigned index, uint64_t btc_block, bo
 	if (tx.status != TX_STATUS_CONFLICTED)
 		rstream << "[]";
 	else
-		rstream << "[0]";	// !!! TODO: compute conflicts
+		rstream << "[0]";	// !!! TODO: report conflicts !!!!!
 
 	rstream
 		<<	",\"time\":" << tx.create_time
@@ -1084,7 +1091,7 @@ void btc_gettransaction(CP string& txid, bool incwatch, stdparams)			// implemen
 	auto btc_block = g_btc_block.FinishCurrentBlock();
 
 	rc = tx.BeginAndReadTx(dbconn, bill.create_tx);
-	if (rc) throw txrpc_wallet_error;
+	if (rc) throw txrpc_wallet_db_error;
 
 	unsigned index = tx.nout;
 	for (index = 0; index < tx.nout; ++index)
@@ -1099,7 +1106,7 @@ void btc_gettransaction(CP string& txid, bool incwatch, stdparams)			// implemen
 		if (tx.output_bills[index].status >= BILL_STATUS_SENT && tx.output_bills[i].status < BILL_STATUS_SENT)
 		{
 			Secret secret;
-			auto rc = dbconn->SecretSelectSecret(&tx.output_bills[i].address, TX_ADDRESS_BYTES, secret);
+			rc = dbconn->SecretSelectSecret(&tx.output_bills[i].address, TX_ADDRESS_BYTES, secret);
 			if (!rc)
 			{
 				secret.PollAddress(dbconn, txquery);
@@ -1114,7 +1121,7 @@ void btc_gettransaction(CP string& txid, bool incwatch, stdparams)			// implemen
 		btc_block = g_btc_block.FinishCurrentBlock();
 
 		rc = tx.BeginAndReadTx(dbconn, bill.create_tx);
-		if (rc) throw txrpc_wallet_error;
+		if (rc) throw txrpc_wallet_db_error;
 	}
 
 	CCASSERT(index < tx.nout);
@@ -1179,7 +1186,7 @@ void btc_gettransaction(CP string& txid, bool incwatch, stdparams)			// implemen
 			"}";
 }
 
-void btc_getunconfirmedbalance(stdparamsaq)								// implemented trivially
+void btc_getunconfirmedbalance(stdparamsaq)									// implemented trivially
 {
 	if (TRACE_TX) BOOST_LOG_TRIVIAL(info) << "btc_getunconfirmedbalance";
 
@@ -1214,8 +1221,8 @@ void btc_getwalletinfo(stdparams)											// implemented
 	string balance, fee;
 
 	amtint_t amounti = 0UL;
-	rc = Total::GetTotalBalance(dbconn, amounti, TOTAL_TYPE_DA_DESTINATION | TOTAL_TYPE_RB_BALANCE, true, false);
-	if (rc) throw txrpc_wallet_error;
+	Total::GetTotalBalance(dbconn, true, amounti, TOTAL_TYPE_DA_DESTINATION | TOTAL_TYPE_RB_BALANCE, true, false);
+
 	amount_to_string(0, amounti, balance);
 
 	if (param_rc)
@@ -1240,7 +1247,7 @@ void btc_getwalletinfo(stdparams)											// implemented
 	"}";
 }
 
-void btc_listaccounts(bool incwatch, stdparams)							// implemented (for default account only)
+void btc_listaccounts(bool incwatch, stdparams)								// implemented (for default account only)
 {
 	if (TRACE_TX) BOOST_LOG_TRIVIAL(info) << "btc_listaccounts incwatch " << incwatch;
 
@@ -1249,8 +1256,8 @@ void btc_listaccounts(bool incwatch, stdparams)							// implemented (for defaul
 	amtint_t amounti = 0UL;
 	string balance;
 
-	auto rc = Total::GetTotalBalance(dbconn, amounti, TOTAL_TYPE_DA_ACCOUNT | TOTAL_TYPE_RB_BALANCE, true, incwatch);
-	if (rc) throw txrpc_wallet_error;
+	Total::GetTotalBalance(dbconn, true, amounti, TOTAL_TYPE_DA_ACCOUNT | TOTAL_TYPE_RB_BALANCE, true, incwatch);
+
 	amount_to_string(0, amounti, balance);
 
 	g_btc_block.FinishCurrentBlock();
@@ -1270,7 +1277,7 @@ void btc_listaddressgroupings(stdparams)												// NOT_implemented
 	throw txrpc_not_implemented_error;
 }
 
-void btc_listreceivedbyaccount(bool incempty, bool incwatch, stdparams)	// implemented
+void btc_listreceivedbyaccount(bool incempty, bool incwatch, stdparams)		// implemented
 {
 	if (TRACE_TX) BOOST_LOG_TRIVIAL(info) << "btc_listreceivedbyaccount incempty " << incempty << " incwatch " << incwatch;
 
@@ -1281,14 +1288,12 @@ void btc_listreceivedbyaccount(bool incempty, bool incwatch, stdparams)	// imple
 	amtint_t amounti;
 	string balance;
 
-	auto rc = Total::GetTotalBalance(dbconn, amounti, TOTAL_TYPE_DA_ACCOUNT | TOTAL_TYPE_RB_RECEIVED, false, false);
-	if (rc) throw txrpc_wallet_error;
+	Total::GetTotalBalance(dbconn, true, amounti, TOTAL_TYPE_DA_ACCOUNT | TOTAL_TYPE_RB_RECEIVED, false, false);
 
 	if (incwatch)
 	{
 		amtint_t amount2;
-		rc = Total::GetTotalBalance(dbconn, amount2, TOTAL_TYPE_DA_ACCOUNT | TOTAL_TYPE_RB_RECEIVED | TOTAL_TYPE_TW_BITS, false, true);
-		if (rc) throw txrpc_wallet_error;
+		Total::GetTotalBalance(dbconn, true, amount2, TOTAL_TYPE_DA_ACCOUNT | TOTAL_TYPE_RB_RECEIVED | TOTAL_TYPE_TW_BITS, false, true);
 
 		amounti += amount2;
 	}
@@ -1345,7 +1350,7 @@ void btc_listreceivedbyaddress(bool incempty, bool incwatch, string addr, stdpar
 	throw txrpc_not_implemented_error;
 }
 
-void btc_listsinceblock(CP string& blockhash, bool incwatch, stdparams)	// implemented
+void btc_listsinceblock(CP string& blockhash, bool incwatch, stdparams)		// implemented
 {
 	if (TRACE_TX) BOOST_LOG_TRIVIAL(info) << "btc_listsinceblock " << blockhash << " incwatch " << incwatch;
 
@@ -1369,6 +1374,8 @@ void btc_listsinceblock(CP string& blockhash, bool incwatch, stdparams)	// imple
 
 	auto btc_block = g_btc_block.FinishCurrentBlock();
 
+	//cerr << "first_level " << first_level << " btc_block " << btc_block << endl;
+
 	if (first_level > btc_block + 1)
 		throw txrpc_block_not_found_err;
 
@@ -1382,11 +1389,15 @@ void btc_listsinceblock(CP string& blockhash, bool incwatch, stdparams)	// imple
 	bool needs_comma[2] = {false, false};
 	Transaction tx;
 
-	while (true)
+	while (next_id < INT64_MAX)
 	{
 		auto rc = tx.BeginAndReadTxLevel(dbconn, next_level, next_id);
-		if (rc < 0 || g_shutdown)
-			throw txrpc_wallet_error;
+
+		if (g_shutdown)
+			throw txrpc_shutdown_error;
+
+		if (rc < 0)
+			throw txrpc_wallet_db_error;
 
 		if (rc && next_id == TX_ID_MINIMUM)
 			break;
@@ -1489,10 +1500,14 @@ void btc_listtransactions(CP string& acct, int count, int from, bool incwatch, s
 	while (scan_count < limit && next_id >= TX_ID_MINIMUM)
 	{
 		auto rc = tx.BeginAndReadTxIdDescending(dbconn, next_id);
+
+		if (g_shutdown)
+			throw txrpc_shutdown_error;
+
 		if (rc > 0)
 			break;
-		if (rc || g_shutdown)
-			throw txrpc_wallet_error;
+		if (rc)
+			throw txrpc_wallet_db_error;
 
 		next_id = tx.id - 1;
 
@@ -1522,13 +1537,17 @@ void btc_listtransactions(CP string& acct, int count, int from, bool incwatch, s
 
 	//ccsleep(15);	// for testing
 
-	while (ufrom < scan_count)
+	while (ufrom < scan_count && next_id < INT64_MAX)
 	{
 		auto rc = tx.BeginAndReadTx(dbconn, next_id, true);
+
+		if (g_shutdown)
+			throw txrpc_shutdown_error;
+
 		if (rc > 0)
 			break;
-		if (rc || g_shutdown)
-			throw txrpc_wallet_error;
+		if (rc)
+			throw txrpc_wallet_db_error;
 
 		next_id = tx.id + 1;
 
@@ -1584,48 +1603,36 @@ void btc_listunspent(int minconf, int maxconf, CP Json::Value& addrs, stdparams)
 {
 	if (TRACE_TX) BOOST_LOG_TRIVIAL(info) << "btc_listunspent minconf " << minconf << " maxconf " << maxconf;
 
-	if (g_interactive)
-	{
-		lock_guard<FastSpinLock> lock(g_cout_lock);
-		cerr <<
-
-R"(This method is for diagnotic purposes only since billets are fungible in CredaCash and the wallet decides which
-billets to use when creating a new transaction. Before this method returns a list of the unspent billets stored in
-this wallet, the billet serial numbers are queried to ensure they have not already been spent by another copy of this
-wallet, or by a transaction that was not properly recorded in this wallet.)"
-
-		"\n" << endl;
-	}
-
-	TxParams txparams;
-
-	auto rc = g_txparams.GetParams(txparams, txquery);
-	if (rc) throw txrpc_server_error;
-
 	auto btc_block = g_btc_block.FinishCurrentBlock();
 
-	uint64_t asset = 0;
+	bigint_t amount = 0UL;
 	uint64_t next_id = 0;
-	bigint_t next_amount = 0UL;
 	bigint_t total = 0UL;
 	bool needs_comma = false;
 	Billet bill;
 
 	rstream << "[";
 
-	while (true)
+	while (next_id < INT64_MAX)
 	{
-		auto rc = dbconn->BilletSelectAmountScan(txparams.blockchain, asset, next_amount, next_id, bill);
+		auto rc = dbconn->BilletSelectUnspent(amount, next_id, bill);
+
+		if (g_shutdown)
+			throw txrpc_shutdown_error;
+
 		if (rc > 0)
 			break;
-		if (rc || g_shutdown)
-			throw txrpc_wallet_error;
+		if (rc)
+			throw txrpc_wallet_db_error;
 
-		next_amount = bill.amount;
+		amount = bill.amount;
 		next_id = bill.id + 1;
 
-		rc = Billet::CheckIfBilletsSpent(dbconn, txquery, &bill, 1);
-		if (rc) continue;
+		if (bill.status == BILL_STATUS_ALLOCATED)
+			continue;
+
+		CCASSERT(bill.amount);
+		CCASSERT(bill.status == BILL_STATUS_CLEARED);
 
 		Transaction tx;
 		rc = tx.BeginAndReadTx(dbconn, bill.create_tx);
@@ -1638,7 +1645,8 @@ wallet, or by a transaction that was not properly recorded in this wallet.)"
 		rc = dbconn->SecretSelectId(bill.dest_id, destination);
 		if (rc) throw txrpc_wallet_db_error;
 
-		total = total + bill.amount;
+		if (!bill.asset)
+			total = total + bill.amount;
 
 		string amount;
 		amount_to_string(bill.asset, bill.amount, amount);
@@ -1701,35 +1709,6 @@ void btc_sendfrom(CP string& fromacct, CP string& toaddr, CP bigint_t& amount, C
 	}
 
 	throw txrpc_not_implemented_error;
-}
-
-void btc_sendtoaddress(CP string& addr, CP bigint_t& amount, CP string& comment, CP string& comment_to, bool subfee, stdparams)	// implemented
-{
-	if (TRACE_TX) BOOST_LOG_TRIVIAL(info) << "btc_sendtoaddress " << addr << " amount " << amount << " comment " << comment << " subfee " << subfee;
-
-	if (0 && TEST_STUB_BTC)
-	{
-		if (addr.length() < 10)
-			throw txrpc_invalid_address;
-
-		if (amount > bigint_t(10UL))
-			throw txrpc_insufficient_funds;
-
-		rstream << string(64,'0');
-	}
-
-	uint64_t dest_chain;
-	bigint_t destination;
-	auto rc = Secret::DecodeDestination(addr, dest_chain, destination);
-	if (rc) throw txrpc_invalid_address;
-
-	Transaction tx;
-
-	tx.Transaction::CreateTxPay(dbconn, txquery, addr, dest_chain, destination, amount, comment, comment_to, subfee);
-
-	if (TRACE_TX) BOOST_LOG_TRIVIAL(info) << "btc_sendtoaddress " << addr << " amount " << amount << " result " << tx.GetBtcTxid();
-
-	rstream << tx.GetBtcTxid();
 }
 
 void btc_setaccount(CP string& addr, CP string& acct, stdparams)						// NOT_implemented

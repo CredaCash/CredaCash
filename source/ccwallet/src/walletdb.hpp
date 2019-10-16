@@ -12,6 +12,7 @@
 #define DB_KEY_WALLET_ID		1
 #define DB_KEY_BLOCKCHAIN		2
 #define DB_KEY_CHANGE_DEST		3
+#define DB_KEY_UNIQUE_REFID		4
 
 #include <CCbigint.hpp>
 
@@ -71,6 +72,7 @@ class DbConn
 	sqlite3_stmt *Transactions_insert;
 	sqlite3_stmt *Transactions_update;
 	sqlite3_stmt *Transactions_select;
+	sqlite3_stmt *Transactions_select_refid;
 	sqlite3_stmt *Transactions_id_descending_select;
 	sqlite3_stmt *Transactions_level_select;
 	sqlite3_stmt *Transactions_level_descending_select;
@@ -79,12 +81,15 @@ class DbConn
 	sqlite3_stmt *Billets_update;
 	sqlite3_stmt *Billets_select;
 	sqlite3_stmt *Billets_select_txid;
+	sqlite3_stmt *Billets_select_commitnum;
+	sqlite3_stmt *Billets_select_unspent;
 	sqlite3_stmt *Billets_select_amount;
 	sqlite3_stmt *Billets_select_amount_scan;
 	sqlite3_stmt *Billets_select_amount_max;
 	sqlite3_stmt *Billets_select_createtx;
 	sqlite3_stmt *Billets_select_spendtx;
 	sqlite3_stmt *Billet_Spends_insert;
+	sqlite3_stmt *Billet_Spends_select_billet;
 
 	sqlite3_stmt *Totals_insert;
 	sqlite3_stmt *Totals_select;
@@ -94,19 +99,22 @@ class DbConn
 	int TransactionSelect(sqlite3_stmt *select, Transaction& tx, bool expect_row = false, uint64_t required_id = 0);
 	int BilletSelect(sqlite3_stmt *select, bool has_hashkey, Billet& bill, bool expect_row = false, uint64_t required_id = 0);
 	int BilletSelectMulti(sqlite3_stmt *select, bool has_hashkeys, unsigned &nbills, Billet *bills, const unsigned maxbills, bool expect_row = false);
+	int BilletSpendSelect(sqlite3_stmt *select, uint64_t &tx_id, uint64_t &bill_id, snarkfront::bigint_t &hashkey, bool expect_row, uint64_t required_id);
 	int TotalSelect(sqlite3_stmt *select, Total& total);
+
+	static void CheckSchemaUpdateOption();
 
 public:
 	DbConn(bool open = true);
 	~DbConn();
 
-	void Startup(bool createdb, bool resetdb);
-	void CreateTables();
+	void Startup(bool createdb);
+	int CreateTables();
 	void InitDb();
-	void CheckDb();
+	int CheckDb(bool post_create);
 	void ReadWalletId();
-	void ResetDb();
-	void OpenDb(bool interactive = false);
+	void OpenDb();
+	void PrepareDbConnParameters();
 	void PrepareDbConn();
 	void CloseDb(bool done = false);
 
@@ -132,7 +140,7 @@ public:
 	void DoDbFinishTx(int rollback = false);
 
 	int ParameterInsert(int key, int subkey, void *value, unsigned valsize, bool lock_optional = false);
-	int ParameterSelect(int key, int subkey, void *value, unsigned bufsize, bool add_terminator = false, unsigned *retsize = NULL);
+	int ParameterSelect(int key, int subkey, void *value, unsigned bufsize, bool add_terminator = false, unsigned *retsize = NULL, bool expect_row = true);
 
 	int AccountInsert(Account& account, bool lock_optional = false);
 	int AccountSelectId(uint64_t id, Account& account, bool or_greater = false);
@@ -147,6 +155,7 @@ public:
 	void TransactionInitDb();
 	int TransactionInsert(Transaction& tx, bool lock_optional = false);
 	int TransactionSelectId(uint64_t id, Transaction& tx, bool or_greater = false);
+	int TransactionSelectRefId(const char* ref_id, Transaction& tx);
 	int TransactionSelectIdDescending(uint64_t id, Transaction& tx);
 	int TransactionSelectLevel(uint64_t level, uint64_t id, Transaction& tx);
 	int TransactionSelectLevelDescending(uint64_t level, uint64_t id, Transaction& tx);
@@ -154,12 +163,17 @@ public:
 	int BilletInsert(Billet& bill, bool lock_optional = false);
 	int BilletSelectId(uint64_t id, Billet& bill, bool or_greater = false);
 	int BilletSelectTxid(const void *address, const void *commitment, Billet& bill);
+	int BilletSelectCommitnum(uint64_t commitnum, Billet& bill);
+	int BilletSelectUnspent(const snarkfront::bigint_t& amount, uint64_t id, Billet& bill);
 	int BilletSelectAmount(uint64_t blockchain, uint64_t asset, const snarkfront::bigint_t& amount, unsigned delaytime, Billet& bill);
 	int BilletSelectAmountScan(uint64_t blockchain, uint64_t asset, const snarkfront::bigint_t& amount, uint64_t id, Billet& bill);
 	int BilletSelectAmountMax(uint64_t blockchain, uint64_t asset, unsigned delaytime, Billet& bill);
 	int BilletSelectCreateTx(uint64_t id, unsigned &nbills, Billet *bills, const unsigned maxbills);
 	int BilletSelectSpendTx(uint64_t id, unsigned &nbills, Billet *bills, const unsigned maxbills);
+	int BilletsResetAllocated(bool zero_balance);
+
 	int BilletSpendInsert(uint64_t id, uint64_t bill_id, const void *hashkey);
+	int BilletSpendSelectBillet(uint64_t bill_id, uint64_t &tx_id, snarkfront::bigint_t &hashkey);
 
 	int TotalInsert(const Total& total, bool lock_optional = false);
 	int TotalSelectMatch(bool exact, Total& total);

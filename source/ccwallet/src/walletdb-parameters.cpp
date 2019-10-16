@@ -52,7 +52,7 @@ int DbConn::ParameterInsert(int key, int subkey, void *value, unsigned valsize, 
 	return 0;
 }
 
-int DbConn::ParameterSelect(int key, int subkey, void *value, unsigned bufsize, bool add_terminator, unsigned *retsize)
+int DbConn::ParameterSelect(int key, int subkey, void *value, unsigned bufsize, bool add_terminator, unsigned *retsize, bool expect_row)
 {
 	//boost::shared_lock<boost::shared_mutex> lock(db_mutex);
 	Finally finally(boost::bind(&DbConn::DoDbFinish, this));
@@ -80,7 +80,7 @@ int DbConn::ParameterSelect(int key, int subkey, void *value, unsigned bufsize, 
 
 	if (dbresult(rc) == SQLITE_DONE)
 	{
-		BOOST_LOG_TRIVIAL(warning) << "DbConn::ParameterSelect select " << key << " subkey " << subkey << " returned SQLITE_DONE";
+		if (expect_row) BOOST_LOG_TRIVIAL(warning) << "DbConn::ParameterSelect select " << key << " subkey " << subkey << " returned SQLITE_DONE";
 
 		return 1;
 	}

@@ -69,7 +69,7 @@ void BlockChain::Init()
 	SET_PROOF_PARAM(proof_params.donation_per_output, "20000000000000000000000000");
 	SET_PROOF_PARAM(proof_params.donation_per_input,  "10000000000000000000000000");
 
-	#if 0
+	#if 0 // for testing
 	SET_PROOF_PARAM(proof_params.minimum_donation,		"0");
 	SET_PROOF_PARAM(proof_params.donation_per_tx,		"0");
 	SET_PROOF_PARAM(proof_params.donation_per_byte,		"0");
@@ -77,9 +77,13 @@ void BlockChain::Init()
 	SET_PROOF_PARAM(proof_params.donation_per_input,	"0");
 	#endif
 
-	proof_params.outvalmin = 23; //@@!
+	proof_params.outvalmin = 23;
 	proof_params.outvalmax = 23;
 	proof_params.invalmax = 23;
+
+	#if 0 // for testing
+	proof_params.outvalmin = 0;
+	#endif
 
 	SmartBuf genesis_block;
 
@@ -923,7 +927,7 @@ bool BlockChain::SetNewlyIndelibleBlock(DbConn *dbconn, SmartBuf smartobj, TxPay
 		rc = dbconn->ParameterInsert(DB_KEY_DONATION_TOTALS, i, &total, sizeof(total));
 		if (rc)
 		{
-			const char *msg = "FATAL ERROR BlockChain::SetNewlyIndelibleBlock error in ParametersInsert donation total";
+			const char *msg = "FATAL ERROR BlockChain::SetNewlyIndelibleBlock error in ParameterInsert donation total";
 
 			g_blockchain.SetFatalError(msg);
 
@@ -938,7 +942,7 @@ bool BlockChain::SetNewlyIndelibleBlock(DbConn *dbconn, SmartBuf smartobj, TxPay
 	rc = dbconn->ParameterInsert(DB_KEY_BLOCK_AUX, level & 63, auxp, (uintptr_t)&auxp->blockchain_params + sizeof(auxp->blockchain_params) - (uintptr_t)auxp);
 	if (rc)
 	{
-		const char *msg = "FATAL ERROR BlockChain::SetNewlyIndelibleBlock error in ParametersInsert block aux";
+		const char *msg = "FATAL ERROR BlockChain::SetNewlyIndelibleBlock error in ParameterInsert block aux";
 
 		g_blockchain.SetFatalError(msg);
 

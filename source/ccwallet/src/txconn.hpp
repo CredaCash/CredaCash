@@ -23,6 +23,7 @@ public:
 	}
 
 	vector<char> *m_pquery;
+	bool m_data_written;
 	int m_result_code;
 
 private:

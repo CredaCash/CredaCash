@@ -67,7 +67,11 @@ public:
 	void Copy(const Billet& other);
 	string DebugString() const;
 
-	static bool StatusIsValid(unsigned status);
+	static bool StatusIsValid(unsigned status)
+	{
+		return status > BILL_STATUS_VOID && status < BILL_STATUS_INVALID;
+	}
+
 	bool IsValid() const;
 
 	bool BillIsChange() const
@@ -83,12 +87,19 @@ public:
 	static unsigned FlagsFromDestinationType(unsigned type);
 
 	static bool HasSerialnum(unsigned status, unsigned flags);
-	bool HasSerialnum() const;
+
+	bool HasSerialnum() const
+	{
+		return HasSerialnum(status, flags);
+	}
 
 	void SetFromTxOut(const TxPay& tx, const TxOut& txout);
 
+	static int PollUnspent(DbConn *dbconn, TxQuery& txquery);
+	static int ResetAllocated(DbConn *dbconn, bool reset_balance);
+
 	int SetStatusCleared(DbConn *dbconn, uint64_t _commitnum);
-	int SetStatusSpent(DbConn *dbconn);
+	int SetStatusSpent(DbConn *dbconn, const snarkfront::bigint_t& spend_hashkey);
 
 	static int CheckIfBilletsSpent(DbConn *dbconn, TxQuery& txquery, Billet *billets, unsigned nbills, bool or_pending = false);
 

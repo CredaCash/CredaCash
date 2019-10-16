@@ -80,7 +80,11 @@ public:
 	void Copy(const Secret& other);
 	string DebugString() const;
 
-	static bool TypeIsValid(unsigned type);
+	static bool TypeIsValid(unsigned type)
+	{
+		return type > SECRET_TYPE_VOID && type < SECRET_TYPE_INVALID;
+	}
+
 	bool IsValid() const;
 
 	static bool TypeIsAddress(unsigned type)
@@ -200,12 +204,12 @@ public:
 	int UpdatePollingTimes(uint64_t now = 0, bool checked_now = false);
 	int PollAddress(DbConn *dbconn, TxQuery& txquery, bool update_times = true);
 
-	static int PollDestination(DbConn *dbconn, TxQuery& txquery, uint64_t dest_id, uint64_t last_receive_max);
+	static int PollDestination(DbConn *dbconn, TxQuery& txquery, uint64_t dest_id, unsigned polling_addresses, uint64_t last_receive_max);
 
 private:
 	int CreateIntermediateSecret(DbConn *dbconn, unsigned _type, unsigned target_type, Secret& parent, SpendSecretParams& params);
 	int CreateNextSecretNumber(DbConn *dbconn, unsigned _type, unsigned target_type, uint64_t _parent_id, SpendSecretParams& params);
 
 	int UpdatePollingAddresses(DbConn *dbconn, const Secret &destination);
-	int SetPollingAddresses(DbConn *dbconn, const Secret &destination, bool is_new = false);
+	int SetPollingAddresses(DbConn *dbconn, const Secret &destination, unsigned polling_addresses = 0, bool update_current = false, bool is_new = false);
 };

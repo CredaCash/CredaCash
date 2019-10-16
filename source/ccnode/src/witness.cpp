@@ -193,7 +193,7 @@ Witness::Witness()
 	block_time_ms(10000),
 	block_min_work_ms(1000),
 	block_max_time(20),
-	test_block_random_ms(-1),
+	test_block_random_ms(0),
 	test_mal(0)
 {
 	memset(&m_highest_witnessed_level, 0, sizeof(m_highest_witnessed_level));
@@ -640,9 +640,9 @@ bool Witness::AttemptNewBlock()
 
 				if (!is_ccmint)
 				{
-					if (WITNESS_RANDOM_TEST_TIME < 0)
+					if (WITNESS_RANDOM_TEST_TIME <= 0)
 						min_time += (skip + 1) * WITNESS_TIME_SPACING;
-					else if (WITNESS_RANDOM_TEST_TIME > 0)
+					else
 						min_time += rand() % (WITNESS_RANDOM_TEST_TIME * 2);	// double the input value so it is an average time
 
 					if (ccticks_elapsed(now, min_time) > 60*60*CCTICKS_PER_SEC)
@@ -662,12 +662,12 @@ bool Witness::AttemptNewBlock()
 			}
 			else
 			{
-				if (ccticks_elapsed(m_block_start_time, min_time) <= MIN_BLOCK_WORK_TIME && WITNESS_RANDOM_TEST_TIME < 0)
+				if (ccticks_elapsed(m_block_start_time, min_time) <= MIN_BLOCK_WORK_TIME && WITNESS_RANDOM_TEST_TIME <= 0)
 					min_time = m_block_start_time + MIN_BLOCK_WORK_TIME;
 
 				max_time = min_time;
 				auto delibletxs = g_blockchain.ChainHasDelibleTxs(priorobj, last_indelible_level);
-				if (!delibletxs && WITNESS_RANDOM_TEST_TIME < 0)
+				if (!delibletxs && WITNESS_RANDOM_TEST_TIME <= 0)
 					max_time += WITNESS_NO_WORK_TIME_SPACING - WITNESS_TIME_SPACING;
 			}
 
@@ -750,16 +750,7 @@ bool Witness::AttemptNewBlock()
 	if (!m_test_is_double_spend && !m_test_ignore_order)
 		m_highest_witnessed_level[TEST_SIM_ALL_WITNESSES * witness_index] = wire->level.GetValue();
 
-	if (1)
-	{
-		lock_guard<FastSpinLock> lock(g_cout_lock);
-		cerr << "  created block level " << wire->level.GetValue() << " witness " << (unsigned)wire->witness << " skip " << auxp->skip << " size " << (block->ObjSize() < 10000 ? " " : "") << (block->ObjSize() < 1000 ? " " : "") << (block->ObjSize() < 100 ? " " : "") << block->ObjSize() << " hash " << buf2hex(&auxp->oid, 3, 0) << ".. prior " << buf2hex(&wire->prior_oid, 3, 0) << "..";
-		if (m_test_is_double_spend)
-			cerr << " double-spend";
-		if (m_test_ignore_order)
-			cerr << " bad-order";
-		cerr << endl;
-	}
+	block->ConsoleAnnounce(" created", wire, auxp, (m_test_is_double_spend ? " double-spend" : ""), (m_test_ignore_order ? " bad-order" : ""));
 
 	relay_request_wire_params_t req_params;
 	memset(&req_params, 0, sizeof(req_params));
@@ -980,7 +971,7 @@ Witness::BuildNewBlockStatus Witness::BuildNewBlock(uint32_t& min_time, uint32_t
 			if (!m_newblock_bufpos)
 			{
 				auto now = ccticks();
-				if (ccticks_elapsed(now, min_time) <= MIN_BLOCK_WORK_TIME && WITNESS_RANDOM_TEST_TIME < 0)
+				if (ccticks_elapsed(now, min_time) <= MIN_BLOCK_WORK_TIME && WITNESS_RANDOM_TEST_TIME <= 0)
 				{
 					min_time = now + MIN_BLOCK_WORK_TIME;
 					if (ccticks_elapsed(min_time, max_time) <= 0)
@@ -1096,7 +1087,7 @@ SmartBuf Witness::FinishNewBlock(SmartBuf priorobj)
 
 	auto level = priorwire->level.GetValue() + 1;
 	auto timestamp = time(NULL);
-	int32_t delta = timestamp - priorwire->timestamp.GetValue();
+	int64_t delta = timestamp - priorwire->timestamp.GetValue();
 	if (delta < 0)
 		timestamp = priorwire->timestamp.GetValue();
 	if (IsMalTest() && level % 100 < 10)

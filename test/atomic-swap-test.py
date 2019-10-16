@@ -62,7 +62,7 @@ import collections
 
 from cclib import *
 
-cclib.server_hostname = 'yof6li2bbjj6vcy4mliftk3svimiqyp37xc4ytlsioa5347ovis6iqad.onion'		# hostname of the Tx server @@!
+cclib.server_hostname = 'lbua2etw6sgkmtqtmtoubhkthragv7gh6lraephmqor6vmlmw5rkvpad.onion'		# hostname of the Tx server @@!
 
 # note: output search string: ===|<<< tx|<<< [^C][A-Z]
 

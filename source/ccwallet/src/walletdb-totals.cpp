@@ -52,7 +52,7 @@ int DbConn::TotalInsert(const Total& total, bool lock_optional)
 
 	if (dbresult(rc) == SQLITE_CONSTRAINT)
 	{
-		BOOST_LOG_TRIVIAL(info) << "DbConn::TotalInsert constraint violation";
+		BOOST_LOG_TRIVIAL(warning) << "DbConn::TotalInsert constraint violation " << total.DebugString();
 
 		return 1;
 	}
@@ -148,10 +148,10 @@ int DbConn::TotalSelect(sqlite3_stmt *select, Total& total)
 	total.blockchain = blockchain;
 	packed_total = 0UL;
 	if (total_blob)
-		memcpy(&packed_total, total_blob, total_size);
+		memcpy((void*)&packed_total, total_blob, total_size);
 	amount_from_bigint(packed_total, total.total);
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::TotalSelect returning " << total.DebugString();
+	if (total.total && TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::TotalSelect returning " << total.DebugString();
 
 	return 0;
 }
@@ -163,7 +163,7 @@ int DbConn::TotalSelectMatch(bool exact, Total& total)
 
 	total.total = 0UL;
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::TotalSelectMatch exact " << exact << " " << total.DebugString();
+	if (0 && TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::TotalSelectMatch exact " << exact << " " << total.DebugString();
 
 	auto match_total = total;
 
@@ -188,7 +188,8 @@ int DbConn::TotalSelectMatch(bool exact, Total& total)
 			rc = 1;
 	}
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::TotalSelectMatch exact " << exact << " returning " << rc << " " << total.DebugString();
+	if (rc < 0) BOOST_LOG_TRIVIAL(error) << "DbConn::TotalSelectMatch exact " << exact << " returning " << rc << " " << total.DebugString();
+	else if (!rc && TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::TotalSelectMatch exact " << exact << " returning " << rc << " " << total.DebugString();
 
 	return rc;
 }

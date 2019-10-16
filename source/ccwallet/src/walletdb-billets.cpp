@@ -10,6 +10,7 @@
 #include "walletdb.hpp"
 #include "billets.hpp"
 #include "amounts.h"
+#include "totals.hpp"
 
 #include <dblog.h>
 #include <CCparams.h>
@@ -17,6 +18,33 @@
 #define TRACE_DBCONN	(g_params.trace_db)
 
 using namespace snarkfront;
+
+int DbConn::BilletsResetAllocated(bool zero_balance)
+{
+	BOOST_LOG_TRIVIAL(trace) << "BilletsResetAllocated zero_balance " << zero_balance;
+
+	auto rc = dbexec(Wallet_db, "update Billets set Status = " STRINGIFY(BILL_STATUS_PENDING) " where Status = " STRINGIFY(BILL_STATUS_PREALLOCATED) ";");
+	if (rc) return rc;
+
+	rc = dbexec(Wallet_db, "update Billets set Status = " STRINGIFY(BILL_STATUS_CLEARED) " where Status = " STRINGIFY(BILL_STATUS_ALLOCATED) ";");
+	if (rc) return rc;
+
+	ostringstream query;
+	query << "update Totals set Total = X'00' where ";
+	if (zero_balance)
+		query << "Type = 0 or ";
+	query << "(Type & " << TOTAL_TYPE_PA_BITS << ");";
+	auto str = query.str();
+
+	rc = dbexec(Wallet_db, str.c_str());
+	if (rc) return rc;
+
+	//cerr << str << endl;
+	//cerr << sqlite3_extended_errcode(Wallet_db) << endl;
+	//cerr << sqlite3_errmsg(Wallet_db) << endl;
+
+	return 0;
+}
 
 int DbConn::BilletInsert(Billet& bill, bool lock_optional)
 {
@@ -60,7 +88,14 @@ int DbConn::BilletInsert(Billet& bill, bool lock_optional)
 	if (dblog(sqlite3_bind_int(insert_update, 12, bill.delaytime))) return -1;
 	if (dblog(sqlite3_bind_blob(insert_update, 13, &bill.commit_iv, TX_COMMIT_IV_BYTES, SQLITE_STATIC))) return -1;
 	if (dblog(sqlite3_bind_blob(insert_update, 14, &bill.commitment, TX_COMMITMENT_BYTES, SQLITE_STATIC))) return -1;
-	if (dblog(sqlite3_bind_int64(insert_update, 15, bill.commitnum))) return -1;
+	if (bill.commitnum)
+	{
+		if (dblog(sqlite3_bind_int64(insert_update, 15, bill.commitnum))) return -1;
+	}
+	else
+	{
+		if (dblog(sqlite3_bind_null(insert_update, 15))) return -1;
+	}
 	if (bill.HasSerialnum())
 	{
 		if (dblog(sqlite3_bind_blob(insert_update, 16, &bill.serialnum, TX_SERIALNUM_BYTES, SQLITE_STATIC))) return -1;
@@ -81,7 +116,7 @@ int DbConn::BilletInsert(Billet& bill, bool lock_optional)
 
 	if (dbresult(rc) == SQLITE_CONSTRAINT)
 	{
-		BOOST_LOG_TRIVIAL(info) << "DbConn::BilletInsert constraint violation";
+		BOOST_LOG_TRIVIAL(warning) << "DbConn::BilletInsert constraint violation " << bill.DebugString();
 
 		return 1;
 	}
@@ -284,19 +319,19 @@ int DbConn::BilletSelect(sqlite3_stmt *select, bool has_hashkey, Billet& bill, b
 	bill.create_tx = create_tx;
 	bill.dest_id = dest_id;
 	bill.blockchain = blockchain;
-	memcpy(&bill.address, address_blob, TX_ADDRESS_BYTES);
+	memcpy((void*)&bill.address, address_blob, TX_ADDRESS_BYTES);
 	bill.pool = pool;
 	bill.asset = asset;
 	bill.amount_fp = amount_fp;
 	unpack_unsigned_amount(amount_blob, bill.amount);
 	bill.delaytime = delaytime;
-	memcpy(&bill.commit_iv, commit_iv_blob, TX_COMMIT_IV_BYTES);
-	memcpy(&bill.commitment, commitment_blob, TX_COMMITMENT_BYTES);
+	memcpy((void*)&bill.commit_iv, commit_iv_blob, TX_COMMIT_IV_BYTES);
+	memcpy((void*)&bill.commitment, commitment_blob, TX_COMMITMENT_BYTES);
 	bill.commitnum = commitnum;
 	if (serialnum_blob)
-		memcpy(&bill.serialnum, serialnum_blob, TX_SERIALNUM_BYTES);
+		memcpy((void*)&bill.serialnum, serialnum_blob, TX_SERIALNUM_BYTES);
 	if (hashkey_blob)
-		memcpy(&bill.hashkey, hashkey_blob, TX_HASHKEY_BYTES);
+		memcpy((void*)&bill.hashkey, hashkey_blob, TX_HASHKEY_BYTES);
 
 	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(debug) << "DbConn::BilletSelect returning " << bill.DebugString();
 
@@ -313,7 +348,7 @@ int DbConn::BilletSelectMulti(sqlite3_stmt *select, bool has_hashkeys, unsigned 
 	{
 		bills[nbills].Clear();
 
-		auto rc = BilletSelect(select, has_hashkeys, bills[nbills], expect_row && !nbills);
+		auto rc = BilletSelect(select, has_hashkeys, bills[nbills]);
 		if (rc < 0) return rc;
 
 		if (rc)
@@ -365,6 +400,44 @@ int DbConn::BilletSelectTxid(const void *address, const void *commitment, Billet
 	if (dblog(sqlite3_bind_blob(Billets_select_txid, 2, commitment, TXID_COMMITMENT_BYTES, SQLITE_STATIC))) return -1;
 
 	return BilletSelect(Billets_select_txid, false, bill);
+}
+
+int DbConn::BilletSelectCommitnum(uint64_t commitnum, Billet& bill)
+{
+	//boost::shared_lock<boost::shared_mutex> lock(db_mutex);
+	Finally finally(boost::bind(&DbConn::DoDbFinish, this));
+
+	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::BilletSelectCommitnum commitnum " << commitnum;
+
+	bill.Clear();
+
+	// Commitnum
+	if (dblog(sqlite3_bind_int64(Billets_select_commitnum, 1, commitnum))) return -1;
+
+	return BilletSelect(Billets_select_commitnum, false, bill);
+}
+
+int DbConn::BilletSelectUnspent(const bigint_t& amount, uint64_t id, Billet& bill)
+{
+	//boost::shared_lock<boost::shared_mutex> lock(db_mutex);
+	Finally finally(boost::bind(&DbConn::DoDbFinish, this));
+
+	bill.Clear();
+
+	packed_unsigned_amount_t packed_amount;
+
+	if (amount)
+		CCASSERTZ(pack_unsigned_amount(amount, packed_amount));
+	else
+		memset((void*)&packed_amount, -1, AMOUNT_UNSIGNED_PACKED_BYTES);
+
+	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::BilletSelectUnspent amount " << amount << " id " << id << " packed_amount " << buf2hex(&packed_amount, AMOUNT_UNSIGNED_PACKED_BYTES, 0);
+
+	// <= Amount, >= Id
+	if (dblog(sqlite3_bind_blob(Billets_select_unspent, 1, &packed_amount, AMOUNT_UNSIGNED_PACKED_BYTES, SQLITE_STATIC))) return -1;
+	if (dblog(sqlite3_bind_int64(Billets_select_unspent, 2, id))) return -1;
+
+	return BilletSelect(Billets_select_unspent, false, bill);
 }
 
 int DbConn::BilletSelectAmount(uint64_t blockchain, uint64_t asset, const bigint_t& amount, unsigned delaytime, Billet& bill)
@@ -456,45 +529,4 @@ int DbConn::BilletSelectSpendTx(uint64_t id, unsigned &nbills, Billet *bills, co
 	if (dblog(sqlite3_bind_int(Billets_select_spendtx, 2, maxbills + 1))) return -1;
 
 	return BilletSelectMulti(Billets_select_spendtx, true, nbills, bills, maxbills);
-}
-
-int DbConn::BilletSpendInsert(uint64_t id, uint64_t bill_id, const void *hashkey)
-{
-	//lock_guard<boost::shared_mutex> lock(db_mutex);
-	Finally finally(boost::bind(&DbConn::DoDbFinish, this));
-
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::BilletSpendInsert tx " << id << " bill " << bill_id << " hashkey " << buf2hex(hashkey, TX_HASHKEY_BYTES);
-
-	CCASSERT(id);
-	CCASSERT(bill_id);
-	CCASSERT(hashkey);
-
-	// SpendTx, Billet, Hashkey
-	if (dblog(sqlite3_bind_int64(Billet_Spends_insert, 1, id))) return -1;
-	if (dblog(sqlite3_bind_int64(Billet_Spends_insert, 2, bill_id))) return -1;
-	if (dblog(sqlite3_bind_blob(Billet_Spends_insert, 3, hashkey, TX_HASHKEY_BYTES, SQLITE_STATIC))) return -1;
-
-	if (RandTest(RTEST_DB_ERRORS))
-	{
-		BOOST_LOG_TRIVIAL(info) << "DbConn::BilletSpendInsert simulating database error pre-insert";
-
-		return -1;
-	}
-
-	auto rc = sqlite3_step(Billet_Spends_insert);
-
-	if (dblog(rc, DB_STMT_STEP)) return -1;
-
-	auto changes = sqlite3_changes(Wallet_db);
-
-	if (changes != 1)
-	{
-		BOOST_LOG_TRIVIAL(error) << "DbConn::BilletSpendInsert sqlite3_changes " << changes << " after insert tx " << id << " bill " << bill_id << " hashkey " << buf2hex(hashkey, TX_HASHKEY_BYTES);
-
-		return -1;
-	}
-
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(debug) << "DbConn::BilletSpendInsert inserted tx " << id << " bill " << bill_id << " hashkey " << buf2hex(hashkey, TX_HASHKEY_BYTES);
-
-	return 0;
 }

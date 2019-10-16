@@ -22,7 +22,7 @@ using namespace snarkfront;
 
 TxParams::TxParams()
 {
-	memset(this, 0, sizeof(*this));
+	memset((void*)this, 0, sizeof(*this));
 }
 
 unsigned TxParams::ComputeTxSize(unsigned nout, unsigned nin) const
@@ -71,7 +71,7 @@ void TxParams::ComputeDonation(unsigned nout, unsigned nin, bigint_t& donation) 
 
 TxParamQuery::TxParamQuery()
 {
-	memset(&m_params, 0, sizeof(m_params));
+	memset((void*)&m_params, 0, sizeof(m_params));
 }
 
 // sets param struct from global cached values

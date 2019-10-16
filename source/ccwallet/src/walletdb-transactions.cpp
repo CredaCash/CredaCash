@@ -40,7 +40,7 @@ int DbConn::TransactionInsert(Transaction& tx, bool lock_optional)
 
 	sqlite3_stmt *insert_update = NULL;
 
-	// Id, Parent, Type, Status, CreateTime, BtcBlockLevel, Donation, Body
+	// Id, Parent, Type, Status, RefId, ParamLevel, CreateTime, BtcBlockLevel, Donation, Body
 	if (tx.id)
 	{
 		insert_update = Transactions_update;
@@ -56,16 +56,25 @@ int DbConn::TransactionInsert(Transaction& tx, bool lock_optional)
 	if (dblog(sqlite3_bind_int64(insert_update, 2, tx.parent_id))) return -1;
 	if (dblog(sqlite3_bind_int(insert_update, 3, tx.type))) return -1;
 	if (dblog(sqlite3_bind_int(insert_update, 4, tx.status))) return -1;
-	if (dblog(sqlite3_bind_int64(insert_update, 5, tx.create_time))) return -1;
-	if (dblog(sqlite3_bind_int64(insert_update, 6, tx.btc_block))) return -1;
-	if (dblog(sqlite3_bind_blob(insert_update, 7, &tx.donation, TX_AMOUNT_DECODED_BYTES, SQLITE_STATIC))) return -1;
-	if (tx.body.size())
+	if (tx.ref_id.length())
 	{
-		if (dblog(sqlite3_bind_text(insert_update, 8, tx.body.c_str(), tx.body.size(), SQLITE_STATIC))) return -1;
+		if (dblog(sqlite3_bind_text(insert_update, 5, tx.ref_id.c_str(), tx.ref_id.size(), SQLITE_STATIC))) return -1;
 	}
 	else
 	{
-		if (dblog(sqlite3_bind_null(insert_update, 8))) return -1;
+		if (dblog(sqlite3_bind_null(insert_update, 5))) return -1;
+	}
+	if (dblog(sqlite3_bind_int64(insert_update, 6, tx.param_level))) return -1;
+	if (dblog(sqlite3_bind_int64(insert_update, 7, tx.create_time))) return -1;
+	if (dblog(sqlite3_bind_int64(insert_update, 8, tx.btc_block))) return -1;
+	if (dblog(sqlite3_bind_blob(insert_update, 9, &tx.donation, TX_AMOUNT_DECODED_BYTES, SQLITE_STATIC))) return -1;
+	if (tx.body.size())
+	{
+		if (dblog(sqlite3_bind_text(insert_update, 10, tx.body.c_str(), tx.body.size(), SQLITE_STATIC))) return -1;
+	}
+	else
+	{
+		if (dblog(sqlite3_bind_null(insert_update, 10))) return -1;
 	}
 
 	if (RandTest(RTEST_DB_ERRORS))
@@ -79,7 +88,7 @@ int DbConn::TransactionInsert(Transaction& tx, bool lock_optional)
 
 	if (dbresult(rc) == SQLITE_CONSTRAINT)
 	{
-		BOOST_LOG_TRIVIAL(info) << "DbConn::TransactionInsert constraint violation";
+		BOOST_LOG_TRIVIAL(warning) << "DbConn::TransactionInsert constraint violation " << tx.DebugString();
 
 		return 1;
 	}
@@ -131,14 +140,14 @@ int DbConn::TransactionSelect(sqlite3_stmt *select, Transaction& tx, bool expect
 		return -1;
 	}
 
-	if (sqlite3_data_count(select) != 8)
+	if (sqlite3_data_count(select) != 10)
 	{
 		BOOST_LOG_TRIVIAL(error) << "DbConn::TransactionSelect select returned " << sqlite3_data_count(select) << " columns";
 
 		return -1;
 	}
 
-	// Id, Parent, Type, Status, CreateTime, BtcBlockLevel, Donation, Body
+	// Id, Parent, Type, Status, RefId, ParamLevel, CreateTime, BtcBlockLevel, Donation, Body
 	uint64_t id = sqlite3_column_int64(select, 0);
 
 	if (required_id && required_id != id)
@@ -152,10 +161,12 @@ int DbConn::TransactionSelect(sqlite3_stmt *select, Transaction& tx, bool expect
 	uint64_t parent_id = sqlite3_column_int64(select, 1);
 	unsigned type = sqlite3_column_int(select, 2);
 	unsigned status = sqlite3_column_int(select, 3);
-	uint64_t create_time = sqlite3_column_int64(select, 4);
-	uint64_t btc_block = sqlite3_column_int64(select, 5);
-	auto donation_blob = sqlite3_column_blob(select, 6);
-	auto body = sqlite3_column_text(select, 7);
+	auto ref_id = sqlite3_column_text(select, 4);
+	uint64_t param_level = sqlite3_column_int64(select, 5);
+	uint64_t create_time = sqlite3_column_int64(select, 6);
+	uint64_t btc_block = sqlite3_column_int64(select, 7);
+	auto donation_blob = sqlite3_column_blob(select, 8);
+	auto body = sqlite3_column_text(select, 9);
 
 	if (id < TX_ID_MINIMUM)
 	{
@@ -179,7 +190,7 @@ int DbConn::TransactionSelect(sqlite3_stmt *select, Transaction& tx, bool expect
 		return -1;
 	}
 
-	unsigned donation_size = sqlite3_column_bytes(select, 6);
+	unsigned donation_size = sqlite3_column_bytes(select, 8);
 	if (donation_size != TX_AMOUNT_DECODED_BYTES)
 	{
 		BOOST_LOG_TRIVIAL(error) << "DbConn::TransactionSelect select returned donation size " << donation_size << " != " << TX_AMOUNT_DECODED_BYTES;
@@ -200,9 +211,14 @@ int DbConn::TransactionSelect(sqlite3_stmt *select, Transaction& tx, bool expect
 	tx.parent_id = parent_id;
 	tx.type = type;
 	tx.status = status;
+	if (ref_id)
+		tx.ref_id = (char*)ref_id;
+	else
+		tx.ref_id.clear();
+	tx.param_level = param_level;
 	tx.create_time = create_time;
 	tx.btc_block = btc_block;
-	memcpy(&tx.donation, donation_blob, TX_AMOUNT_DECODED_BYTES);
+	memcpy((void*)&tx.donation, donation_blob, TX_AMOUNT_DECODED_BYTES);
 	if (body)
 		tx.body = (char*)body;
 	else
@@ -228,6 +244,23 @@ int DbConn::TransactionSelectId(uint64_t id, Transaction& tx, bool or_greater)
 	if (dblog(sqlite3_bind_int64(Transactions_select, 1, id))) return -1;
 
 	return TransactionSelect(Transactions_select, tx, !or_greater, !or_greater * id);
+}
+
+int DbConn::TransactionSelectRefId(const char* ref_id, Transaction& tx)
+{
+	//boost::shared_lock<boost::shared_mutex> lock(db_mutex);
+	Finally finally(boost::bind(&DbConn::DoDbFinish, this));
+
+	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::TransactionSelectRefId ref_id " << ref_id;
+
+	CCASSERT(ref_id);
+
+	tx.Clear();
+
+	// RefId
+	if (dblog(sqlite3_bind_text(Transactions_select_refid, 1, ref_id, -1, SQLITE_STATIC))) return -1;
+
+	return TransactionSelect(Transactions_select_refid, tx);
 }
 
 int DbConn::TransactionSelectIdDescending(uint64_t id, Transaction& tx)

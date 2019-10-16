@@ -437,8 +437,8 @@ CCRESULT compute_secret(const string& fn, Json::Value& root, char *output, const
 	SpendSecretParams params;
 	SpendSecrets secrets;
 
-	memset(&params, 0, sizeof(params));
-	memset(&secrets, 0, sizeof(secrets));
+	memset((void*)&params, 0, sizeof(params));
+	memset((void*)&secrets, 0, sizeof(secrets));
 
 	auto rc = tx_secrets_from_json(fn, root, false, params, secrets, false, output, outsize);
 	if (rc) return rc;
@@ -506,8 +506,8 @@ CCRESULT compute_serialnum_json(const string& fn, Json::Value& root, char *outpu
 	SpendSecretParams params;
 	SpendSecrets secrets;
 
-	memset(&params, 0, sizeof(params));
-	memset(&secrets, 0, sizeof(secrets));
+	memset((void*)&params, 0, sizeof(params));
+	memset((void*)&secrets, 0, sizeof(secrets));
 
 	auto rc = tx_secrets_from_json(fn, root, false, params, secrets, false, output, outsize);
 	if (rc) return rc;
@@ -567,8 +567,8 @@ CCRESULT payspec_from_json(const string& fn, Json::Value& root, char *output, co
 		SpendSecretParams params;
 		SpendSecrets secrets;
 
-		memset(&params, 0, sizeof(params));
-		memset(&secrets, 0, sizeof(secrets));
+		memset((void*)&params, 0, sizeof(params));
+		memset((void*)&secrets, 0, sizeof(secrets));
 
 		auto rc = tx_secrets_from_json(fn, root, true, params, secrets, false, output, outsize);
 		if (rc) return rc;
@@ -863,7 +863,7 @@ static CCRESULT generate_test_input(const string& fn, Json::Value& root, test_in
 	string key;
 	Json::Value value;
 
-	memset(&params, 0, sizeof(params));
+	memset((void*)&params, 0, sizeof(params));
 
 	key = "destination";
 	if (!root.removeMember(key, &value))

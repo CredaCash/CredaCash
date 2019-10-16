@@ -10,6 +10,7 @@
 #include "osutil.h"
 
 volatile bool g_shutdown;
+void (*g_shutdown_callback)() = NULL;
 
 static mutex shutdown_mutex;
 static condition_variable shutdown_condition_variable;
@@ -110,6 +111,9 @@ void start_shutdown()
 	g_shutdown = true;
 
 	shutdown_condition_variable.notify_all();
+
+	if (g_shutdown_callback)
+		g_shutdown_callback();
 
 #ifdef _WIN32
 	inject_return_into_console();

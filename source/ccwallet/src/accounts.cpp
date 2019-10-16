@@ -21,7 +21,7 @@ Account::Account()
 
 void Account::Clear()
 {
-	memset(this, 0, sizeof(*this));
+	memset((void*)this, 0, sizeof(*this));
 }
 
 void Account::Copy(const Account& other)

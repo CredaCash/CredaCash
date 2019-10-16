@@ -26,6 +26,12 @@
 #include <blake2/blake2.h>
 #include <siphash/siphash.h>
 
+//!#define TEST_RANDOM_POLLING		16
+
+#ifndef TEST_RANDOM_POLLING
+#define TEST_RANDOM_POLLING		0	// don't test
+#endif
+
 static const string cc_destination_prefix = "CredaCash_";
 
 #define TRACE_SECRETS	(g_params.trace_secrets)
@@ -38,7 +44,7 @@ Secret::Secret()
 
 void Secret::Clear()
 {
-	memset(this, 0, sizeof(*this));
+	memset((void*)this, 0, sizeof(*this));
 }
 
 void Secret::Copy(const Secret& other)
@@ -71,11 +77,6 @@ string Secret::DebugString() const
 	out << " expected_commitnum " << expected_commitnum;
 
 	return out.str();
-}
-
-bool Secret::TypeIsValid(unsigned type)
-{
-	return type > SECRET_TYPE_VOID && type < SECRET_TYPE_INVALID;
 }
 
 bool Secret::IsValid() const
@@ -406,7 +407,7 @@ int Secret::ExtractToTxSecrets(SpendSecretParams& params, SpendSecret *txsecrets
 		CCASSERT(size >= sizeof(*txsecrets));
 	}
 
-	memset(txsecrets, 0, size);
+	memset((void*)txsecrets, 0, size);
 
 	uint32_t bufpos = 0;
 
@@ -778,7 +779,7 @@ int Secret::CreateBaseSecrets(DbConn *dbconn)
 
 	Secret secret;
 	SpendSecretParams params;
-	memset(&params, 0, sizeof(params));
+	memset((void*)&params, 0, sizeof(params));
 
 	params.____allow_master_secret = 1;
 	params.____use_spend_secret[0] = 1;
@@ -1350,6 +1351,7 @@ int Secret::CheckForConflict(DbConn *dbconn, TxQuery& txquery, uint64_t _dest_ch
 
 	QueryAddressResults results;
 	rc = txquery.QueryAddress(_dest_chain, address.value, query_commitnum, results);
+	if (g_shutdown) throw txrpc_shutdown_error;
 	if (rc)
 	{
 		BOOST_LOG_TRIVIAL(error) << "Secret::CheckForConflict query address failed";
@@ -1377,7 +1379,7 @@ int Secret::CreatePollingAddresses(DbConn *dbconn, uint64_t _dest_chain, SpendSe
 	if (!HasStaticAddress())
 	{
 		// change SECRET_TYPE_STATIC_ADDRESS to SECRET_TYPE_RECV_ADDRESS and add some SECRET_TYPE_POLL_ADDRESS
-		auto rc = address.SetPollingAddresses(dbconn, *this, true);
+		auto rc = address.SetPollingAddresses(dbconn, *this, g_params.polling_addresses, true, true);
 		if (rc) return rc;
 	}
 
@@ -1395,14 +1397,14 @@ int Secret::UpdatePollingAddresses(DbConn *dbconn, const Secret &destination)
 
 	++number;
 
-	return SetPollingAddresses(dbconn, destination);
+	return SetPollingAddresses(dbconn, destination, g_params.polling_addresses, true, false);
 }
 
-int Secret::SetPollingAddresses(DbConn *dbconn, const Secret &destination, bool is_new)
+int Secret::SetPollingAddresses(DbConn *dbconn, const Secret &destination, unsigned polling_addresses, bool update_current, bool is_new)
 {
 	SpendSecret txsecrets;
 	SpendSecretParams params;
-	memset(&params, 0, sizeof(params));
+	memset((void*)&params, 0, sizeof(params));
 
 	auto rc = destination.ExtractToTxSecrets(params, &txsecrets, sizeof(txsecrets));
 	if (rc) return rc;
@@ -1434,26 +1436,26 @@ int Secret::SetPollingAddresses(DbConn *dbconn, const Secret &destination, bool 
 	if (!rc)
 		*this = secret;
 
-	type = SECRET_TYPE_RECV_ADDRESS;
-
 	uint64_t now = time(NULL);
 
-	if (is_new)
-		UpdatePollingTimes(now);
-	else
-		next_check = 1;	// check now
+	if (update_current)
+	{
+		type = SECRET_TYPE_RECV_ADDRESS;
 
-	rc = dbconn->SecretInsert(*this);
-	if (rc) return rc;
+		if (is_new)
+			UpdatePollingTimes(now);
+		else
+			next_check = 1;	// check now
+
+		rc = dbconn->SecretInsert(*this);
+		if (rc) return rc;
+	}
 
 	// add more SECRET_TYPE_POLL_ADDRESS if needed
 
-	rc = dbconn->SecretSelectId(parent_id, secret);
-	if (rc) return rc;
+	if (TRACE_SECRETS) BOOST_LOG_TRIVIAL(trace) << "Secret::UpdatePollingAddresses polling_addresses " << polling_addresses << " parent " << parent_id;
 
-	if (TRACE_SECRETS) BOOST_LOG_TRIVIAL(trace) << "Secret::UpdatePollingAddresses parent " << secret.DebugString();
-
-	for (unsigned i = 1; (int)i < g_params.polling_addresses; ++i)
+	for (unsigned i = 0; i < polling_addresses; ++i)
 	{
 		if (IncrementNumber())
 			break;
@@ -1503,6 +1505,7 @@ int Secret::PollAddress(DbConn *dbconn, TxQuery& txquery, bool update_times)
 				query new address
 	*/
 
+	int return_code = 0;
 	uint64_t now = 0;
 
 	bool is_first = !first_receive;
@@ -1513,7 +1516,7 @@ int Secret::PollAddress(DbConn *dbconn, TxQuery& txquery, bool update_times)
 	{
 		QueryAddressResults results;
 		auto rc = txquery.QueryAddress(dest_chain, value, query_commitnum, results);
-		if (rc) goto done;
+		if (rc) goto error;
 
 		if (results.nresults && TRACE_POLLING) BOOST_LOG_TRIVIAL(debug) << "Secret::PollAddress nresults " << results.nresults;
 
@@ -1521,10 +1524,12 @@ int Secret::PollAddress(DbConn *dbconn, TxQuery& txquery, bool update_times)
 		{
 			QueryAddressResult &result = results.results[i];
 
+			if (TRACE_POLLING) BOOST_LOG_TRIVIAL(trace) << "Secret::PollAddress result.commitnum " << result.commitnum;
+
 			if (destination.id != dest_id)
 			{
 				auto rc = dbconn->SecretSelectId(dest_id, destination);
-				if (rc) goto done;
+				if (rc) goto error;
 			}
 
 			bool ignore = false;
@@ -1537,40 +1542,72 @@ int Secret::PollAddress(DbConn *dbconn, TxQuery& txquery, bool update_times)
 			{
 				dbconn->DoDbFinishTx(-1);
 
-				goto done;
+				goto error;
 			}
 
 			Finally finally(boost::bind(&DbConn::DoDbFinishTx, dbconn, 1));		// 1 = rollback
 
 			Billet bill;
 
-			rc = dbconn->BilletSelectTxid(&value, &result.commitment, bill);
+			rc = dbconn->BilletSelectCommitnum(result.commitnum, bill);
 			if (rc < 0)
-				goto done;
-			else if (rc > 0 && destination.type == SECRET_TYPE_SEND_DESTINATION)
-				ignore = true;
-			else if (rc > 0)
-				create_new = true;			// billet doesn't exist, so create it
-			else if (bill.BillIsPending())
-				update_existing = true;
-			else if (bill.commitnum != result.commitnum)
+				goto error;
+			if (!rc)
 			{
-				create_new = true;			// billet doesn't exist in this wallet, so create it (note: could first search db to make sure another billet with same commitnum doesn't exist, but that shouldn't happen
-				duplicate_txid = true;		// could happen if two wallets using same master secret create a tx with same commitment
-			}
-			else
 				ignore = true;
+
+				if (result.commitment != bill.commitment)
+					BOOST_LOG_TRIVIAL(info) << "Secret::PollAddress commitment mismatch: bill commitnum " << bill.commitnum << " commitment " << bill.commitment << " query result commitnum " << result.commitnum << " commitment " << result.commitment;
+			}
+
+			if (!ignore)
+			{
+				rc = dbconn->BilletSelectTxid(&value, &result.commitment, bill);
+				if (rc < 0)
+					goto error;
+
+				if (rc && destination.type == SECRET_TYPE_SEND_DESTINATION)
+					ignore = true;
+				else if (rc)
+					create_new = true;			// billet doesn't exist, so create it
+				else if (bill.BillIsPending())
+					update_existing = true;
+				else
+				{
+					CCASSERT(bill.commitnum != result.commitnum);
+
+					duplicate_txid = true;		// can happen when two wallets are sending tx's to the same destination
+					create_new = true;			// billet doesn't exist, so create it
+				}
+			}
+
+			if (update_existing)
+			{
+				CCASSERTZ(create_new);
+
+				Transaction tx;
+
+				auto rc = tx.ReadTx(dbconn, bill.create_tx);
+				if (rc) return rc;
+
+				if (tx.status == TX_STATUS_ERROR)
+				{
+					create_new = true;
+					duplicate_txid = true;
+				}
+				else
+				{
+					rc = tx.UpdateStatus(dbconn, bill.id, result.commitnum);
+					if (rc) goto error;
+				}
+			}
 
 			if (create_new)
 			{
 				Transaction tx;
+
 				rc = tx.CreateTxFromAddressQueryResult(dbconn, txquery, destination, *this, result, duplicate_txid);
-				if (rc) goto done;
-			}
-			else if (update_existing)
-			{
-				rc = Transaction::UpdateStatus(dbconn, bill.create_tx, bill.id, result.commitnum);
-				if (rc) goto done;
+				if (rc) goto error;
 			}
 			else
 				(void)ignore;
@@ -1582,7 +1619,7 @@ int Secret::PollAddress(DbConn *dbconn, TxQuery& txquery, bool update_times)
 			{
 				BOOST_LOG_TRIVIAL(fatal) << "Secret::PollAddress error committing db transaction";
 
-				goto done;
+				goto error;
 			}
 
 			dbconn->DoDbFinishTx();
@@ -1601,13 +1638,20 @@ int Secret::PollAddress(DbConn *dbconn, TxQuery& txquery, bool update_times)
 				first_receive = now;
 
 			update_times = true;
+			return_code = 1;
 		}
 
 		if (!results.more_results)
 			break;
 	}
 
-done:
+	goto no_err;
+
+error:
+	update_times = true;
+	return_code = -1;
+
+no_err:
 
 	if (update_times)
 		UpdateSavePollingTimes(dbconn, now, true);
@@ -1622,7 +1666,7 @@ done:
 		(void)rc;
 	}
 
-	return 0;
+	return return_code;
 }
 
 int Secret::UpdateSavePollingTimes(DbConn *dbconn, uint64_t now, bool checked_now)
@@ -1712,6 +1756,10 @@ int Secret::UpdatePollingTimes(uint64_t now, bool checked_now)
 	{
 		auto dt = g_params.polling_table[dim0][dim1][tier].first;
 
+		#if TEST_RANDOM_POLLING
+		dt = (rand() % TEST_RANDOM_POLLING) + 1;
+		#endif
+
 		if (last_check)
 			next_check = last_check + dt;
 		else
@@ -1723,9 +1771,9 @@ int Secret::UpdatePollingTimes(uint64_t now, bool checked_now)
 	return 0;
 }
 
-int Secret::PollDestination(DbConn *dbconn, TxQuery& txquery, uint64_t dest_id, uint64_t last_receive_max)
+int Secret::PollDestination(DbConn *dbconn, TxQuery& txquery, uint64_t dest_id, unsigned polling_addresses, uint64_t last_receive_max)
 {
-	if (TRACE_SECRETS) BOOST_LOG_TRIVIAL(trace) << "Secret::PollDestination dest_id " << dest_id << " last_receive_max " << last_receive_max;
+	if (TRACE_SECRETS) BOOST_LOG_TRIVIAL(trace) << "Secret::PollDestination dest_id " << dest_id << " polling_addresses " << polling_addresses << " last_receive_max " << last_receive_max;
 
 	TxParams txparams;
 
@@ -1733,31 +1781,51 @@ int Secret::PollDestination(DbConn *dbconn, TxQuery& txquery, uint64_t dest_id, 
 	if (rc) return rc;
 
 	uint64_t next_id = 0;
-	Secret address;
+	bool update_addresses = false;
+	Secret destination, address, update_address;
 
-	while (!g_shutdown)
+	while (next_id < INT64_MAX && !g_shutdown)
 	{
 		auto rc = dbconn->SecretSelectDestination(dest_id, next_id, address);
 		if (rc < 0)
 			return -1;
 		if (rc || address.dest_id != dest_id)
-			break;
-
-		if (address.dest_chain != txparams.blockchain || (address.last_receive && (time(NULL) - address.last_receive) > last_receive_max))
 		{
-			if (TRACE_SECRETS) BOOST_LOG_TRIVIAL(trace) << "Secret::PollDestination dest_id " << dest_id << " skipping address " << address.id << " dest_chain " << address.dest_chain << " last_receive " << address.last_receive;
+			if (!polling_addresses || !update_addresses)
+				break;
+
+			if (!destination.id)
+			{
+				rc = dbconn->SecretSelectId(dest_id, destination);
+				if (rc) return rc;
+			}
+
+			rc = update_address.SetPollingAddresses(dbconn, destination, polling_addresses);
+			if (rc) return rc;
+
+			update_addresses = false;
 
 			continue;
 		}
 
 		next_id = address.id + 1;
 
-		rc = address.PollAddress(dbconn, txquery);
-		if (rc < 0)
-			return -1;
+		bool skip = (address.dest_chain != txparams.blockchain || (last_receive_max && address.last_receive && (time(NULL) - address.last_receive) > last_receive_max));
 
-		if (next_id > INT64_MAX)
-			break;
+		if (!skip)
+		{
+			rc = address.PollAddress(dbconn, txquery);
+			if (rc < 0)
+				return -1;
+		}
+		else
+			if (TRACE_SECRETS) BOOST_LOG_TRIVIAL(trace) << "Secret::PollDestination dest_id " << dest_id << " skipping address " << address.id << " dest_chain " << address.dest_chain << " last_receive " << address.last_receive;
+
+		if (address.type != SECRET_TYPE_POLL_ADDRESS || (!skip && rc))
+		{
+			update_address = address;
+			update_addresses = true;
+		}
 	}
 
 	if (TRACE_SECRETS) BOOST_LOG_TRIVIAL(trace) << "Secret::PollDestination dest_id " << dest_id << " done";

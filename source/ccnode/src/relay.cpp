@@ -866,7 +866,7 @@ void RelayConnection::CheckToSend()
 			continue;		// try the next object in the queue
 		}
 
-		if (TEST_CUZZ) ccsleep(rand() % 3);
+		if (TEST_CUZZ) ccsleep(rand() & 3);
 
 		if (WriteAsync("RelayConnection::CheckToSend", boost::asio::buffer(obj->ObjPtr(), size),
 				boost::bind(&RelayConnection::HandleObjWrite, this, boost::asio::placeholders::error, smartobj, AutoCount(this))))

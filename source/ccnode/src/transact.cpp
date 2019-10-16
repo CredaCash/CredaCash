@@ -638,7 +638,7 @@ void TransactConnection::HandleTxQueryAddress(const char *msg, unsigned size)
 
 		bigint_t iv;
 
-		memcpy(&iv, &commitiv[i], sizeof(commitiv[i]));
+		memcpy((void*)&iv, &commitiv[i], sizeof(commitiv[i]));
 
 		if (i) os << ",";
 		os << dec;
