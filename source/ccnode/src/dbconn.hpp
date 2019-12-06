@@ -239,8 +239,8 @@ public:
 	int BlockchainInsert(uint64_t level, SmartBuf smartobj);
 	int BlockchainSelect(uint64_t level, SmartBuf *retobj);
 	int BlockchainSelectMax(uint64_t& level);
-	int SerialnumInsert(const void *serialnum, unsigned serialnum_size, const void *hashkey, unsigned hashkey_size);
-	int SerialnumSelect(const void *serialnum, unsigned serialnum_size, void *hashkey = NULL, unsigned *hashkey_size = NULL);
+	int SerialnumInsert(const void *serialnum, unsigned serialnum_size, const void *hashkey, unsigned hashkey_size, uint64_t tx_commitnum);
+	int SerialnumSelect(const void *serialnum, unsigned serialnum_size, void *hashkey = NULL, unsigned *hashkey_size = NULL, uint64_t *tx_commitnum = NULL);
 	int CommitTreeInsert(unsigned height, uint64_t offset, const void *data, unsigned datasize);
 	int CommitTreeSelect(unsigned height, uint64_t offset, void *data, unsigned datasize);
 	int CommitRootsInsert(uint64_t level, uint64_t timestamp, uint64_t next_commitnum, const void *hash, unsigned hashsize);

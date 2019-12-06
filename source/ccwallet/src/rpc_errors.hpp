@@ -40,9 +40,11 @@ extern const RPC_Exception txrpc_shutdown_error;
 
 extern const RPC_Exception txrpc_not_implemented_error;
 extern const RPC_Exception txrpc_invalid_txid_error;
+extern const RPC_Exception txrpc_txid_not_found;
 
 extern const RPC_Exception txrpc_block_not_found_err;
 extern const RPC_Exception txrpc_invalid_address;
+extern const RPC_Exception txrpc_address_not_found;
 extern const RPC_Exception txrpc_tx_not_in_block;
 extern const RPC_Exception txrpc_block_height_range_err;
 extern const RPC_Exception txrpc_insufficient_funds;

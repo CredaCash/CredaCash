@@ -30,8 +30,11 @@ class BlockChain
 {
 	SmartBuf m_new_indelible_block;
 	SmartBuf m_last_indelible_block;
-	uint64_t m_last_indelible_level;
+	atomic<uint64_t> m_last_indelible_level;
+	atomic<uint64_t> m_last_indelible_timestamp;
+	atomic<uint32_t> m_last_indelible_ticks;
 	uint64_t m_startup_prune_level;
+
 	atomic<bool> m_have_fatal_error;
 
 	bool DoConfirmOne(DbConn *dbconn, SmartBuf newobj, TxPay& txbuf);
@@ -63,6 +66,8 @@ public:
 
 	BlockChain()
 	 :	m_last_indelible_level(0),
+		m_last_indelible_timestamp(0),
+		m_last_indelible_ticks(0),
 		m_startup_prune_level(0),
 		m_have_fatal_error(false)
 	{ }
@@ -82,6 +87,7 @@ public:
 	uint64_t ComputePruneLevel(unsigned min_level, unsigned trailing_rounds) const;
 
 	bool SetNewlyIndelibleBlock(DbConn *dbconn, SmartBuf smartobj, TxPay& txbuf);
+	void SetLastIndelible(SmartBuf smartobj);
 
 	SmartBuf GetLastIndelibleBlock()
 	{
@@ -90,7 +96,17 @@ public:
 
 	uint64_t GetLastIndelibleLevel() const
 	{
-		return m_last_indelible_level;	// can be momentarily out of sync with GetLastIndelibleBlock(), so if both are needed in sync, use only GetLastIndelibleBlock()
+		return m_last_indelible_level.load();	// can be momentarily out of sync with GetLastIndelibleBlock(), so if both are needed in sync, use only GetLastIndelibleBlock()
+	}
+
+	uint64_t GetLastIndelibleTimestamp() const
+	{
+		return m_last_indelible_timestamp.load();	// can be momentarily out of sync with GetLastIndelibleBlock(), so if both are needed in sync, use only GetLastIndelibleBlock()
+	}
+
+	uint32_t GetLastIndelibleTicks() const
+	{
+		return m_last_indelible_ticks.load();
 	}
 
 	void SetupGenesisBlock(SmartBuf *retobj);
@@ -103,8 +119,6 @@ public:
 
 	bool DoConfirmations(DbConn *dbconn, SmartBuf newobj, TxPay& txbuf);
 	bool DoConfirmationLoop(DbConn *dbconn, SmartBuf newobj, TxPay& txbuf);
-
-	typedef int (*SerialnumInsertFunction)(DbConn *dbconn, const void *serial, unsigned size, const void* blockp, uint64_t level);
 
 	static bool IndexTxs(DbConn *dbconn, SmartBuf smartobj, TxPay& txbuf);
 	static void CheckCreatePseudoSerialnum(TxPay& txbuf, const void *wire, const uint32_t bufsize);

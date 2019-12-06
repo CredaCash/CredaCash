@@ -25,6 +25,13 @@ TxParams::TxParams()
 	memset((void*)this, 0, sizeof(*this));
 }
 
+bool TxParams::NotConnected() const
+{
+	if (!connected) BOOST_LOG_TRIVIAL(warning) << "Transaction server is not connected to the blockchain network";
+
+	return !connected;
+}
+
 unsigned TxParams::ComputeTxSize(unsigned nout, unsigned nin) const
 {
 	unsigned pred_size = 304 + nout*57;

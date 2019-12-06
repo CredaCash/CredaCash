@@ -27,6 +27,7 @@
 #define IF_NOT_EXISTS_SQL		"if not exists "
 
 #define CREATE_TABLE_SQL		"create table " IF_NOT_EXISTS_SQL
+#define ALTER_TABLE_SQL			"alter table "
 #define CREATE_INDEX_SQL		"create index " IF_NOT_EXISTS_SQL
 #define CREATE_INDEX_UNIQUE_SQL	"create unique index " IF_NOT_EXISTS_SQL
 
@@ -42,7 +43,7 @@
 #endif
 
 #define DB_TAG			"CredaCash Wallet"
-#define DB_SCHEMA		4
+#define DB_SCHEMA		5
 
 #define WALLET_ID_BYTES	(128/8)
 
@@ -63,12 +64,20 @@ static int db_callback(void* p, int cols, char** vals, char** names)
 }
 #endif
 
-static void OpenDbFile(const char *name, bool createdb, sqlite3** db, bool interactive = false)
+static void OpenDbFile(const char *name, bool createdb, sqlite3** db, bool interactive = false, bool backup = false)
 {
-	string path = boost::locale::conv::utf_to_utf<char>(g_params.app_data_dir);
-	path += PATH_DELIMITER;
+	string path;
+
+	if (!backup || name[0] == '.' || (!strchr(name, '/') && !strchr(name, '\\')))
+	{
+		path = boost::locale::conv::utf_to_utf<char>(g_params.app_data_dir);
+		path += PATH_DELIMITER;
+	}
+
 	path += name;
 	path += ".ccw";
+	if (backup)
+		path += ".bak";
 
 	string file = "file:";
 	file += path;
@@ -95,7 +104,7 @@ static void OpenDbFile(const char *name, bool createdb, sqlite3** db, bool inter
 		//msg += " -- ";
 		//msg += sqlite3_errstr(rc);
 
-		if (!interactive)
+		if (!interactive && !backup)
 			BOOST_LOG_TRIVIAL(error) << "DbConn::OpenDbFile error " << msg;
 
 		throw runtime_error(msg);
@@ -115,7 +124,7 @@ static void OpenDbFile(const char *name, bool createdb, sqlite3** db, bool inter
 	CCASSERTZ(dbexec(*db, "PRAGMA foreign_keys = ON;"));
 	CCASSERTZ(dbexec(*db, "PRAGMA page_size = 4096;"));
 	CCASSERTZ(dbexec(*db, "PRAGMA synchronous = EXTRA;"));
-	CCASSERTZ(dbexec(*db, "PRAGMA journal_mode = TRUNCATE;"));
+	CCASSERTZ(dbexec(*db, "PRAGMA journal_mode = PERSIST;"));
 
 	if (TEST_ENABLE_SQLITE_BUSY)
 	{
@@ -227,7 +236,7 @@ int DbConn::CreateTables()
 	// and then want to spend the billet again in another Tx. In order to handle that without losing the original Tx details,
 	// a separate table is created for billet spends
 	// Hashkey is the value used in the spend transaction, which is useful as an identifier to detemine which Tx spent the bill
-	CCASSERTZ(dbexec(Wallet_db, CREATE_TABLE_SQL "Billet_Spends (SpendTx " REFERENCES_SQL("Transactions(Id)") " not null, Billet " REFERENCES_SQL("Billets(Id)") " not null, Hashkey blob, primary key (SpendTx, Billet)) without rowid;"));
+	CCASSERTZ(dbexec(Wallet_db, CREATE_TABLE_SQL "Billet_Spends (SpendTx " REFERENCES_SQL("Transactions(Id)") " not null, Billet " REFERENCES_SQL("Billets(Id)") " not null, Hashkey blob, TxCommitnum integer, primary key (SpendTx, Billet)) without rowid;"));
 	//CCASSERTZ(dbexec(Wallet_db, CREATE_INDEX_UNIQUE_SQL "Bill_Spends_Billet_Index on Billet_Spends (Billet);"));
 
 	// balances and amounts received for accounts and destinations
@@ -353,13 +362,13 @@ void DbConn::PrepareDbConn()
 		CCASSERTZ(dblog(sqlite3_prepare_v2(Wallet_db, (select_sql + " where Status = " STRINGIFY(BILL_STATUS_CLEARED) " and Asset = ?1 and Blockchain = ?2 and Amount >= ?3" /*and Amount > " AMOUNT_ZERO*/ " and (Id >= ?4 or Amount > ?3) order by Amount, Id limit 1;").c_str(), -1, &Billets_select_amount_scan, NULL))); // has a funny query plan, so limit use of this query; currently used only by diagnostic RPC listunspent
 		CCASSERTZ(dblog(sqlite3_prepare_v2(Wallet_db, (select_sql + " where Status = " STRINGIFY(BILL_STATUS_CLEARED) " and Asset = ?1 and Blockchain = ?2" /*and Amount > " AMOUNT_ZERO*/ " and DelayTime <= ?3 order by Amount desc limit 1;").c_str(), -1, &Billets_select_amount_max, NULL)));
 		CCASSERTZ(dblog(sqlite3_prepare_v2(Wallet_db, (select_sql + " where CreateTx = ?1 order by Id limit ?2;").c_str(), -1, &Billets_select_createtx, NULL))); // note: order by id required so output billet ordering is maintained when tx's are saved and read
-		CCASSERTZ(dblog(sqlite3_prepare_v2(Wallet_db, (_select_sql + columns_sql + ", Hashkey from " + table_sql + ", Billet_Spends on Billet = Id where SpendTx = ?1 limit ?2;").c_str(), -1, &Billets_select_spendtx, NULL)));
+		CCASSERTZ(dblog(sqlite3_prepare_v2(Wallet_db, (_select_sql + columns_sql + ", Hashkey, TxCommitnum from " + table_sql + ", Billet_Spends on Billet = Id where SpendTx = ?1 limit ?2;").c_str(), -1, &Billets_select_spendtx, NULL)));
 	}
 
 	{
 		const string table_sql = "Billet_Spends";
-		const string columns_sql = "SpendTx, Billet, Hashkey";
-		const string values_sql = "(?1, ?2, ?3)";
+		const string columns_sql = "SpendTx, Billet, Hashkey, TxCommitnum";
+		const string values_sql = "(?1, ?2, ?3, ?4)";
 		const string update_sql = _update_sql + table_sql + " set (" + columns_sql + ") = " + values_sql;
 		const string select_sql = _select_sql + columns_sql + " from " + table_sql;
 		CCASSERTZ(dblog(sqlite3_prepare_v2(Wallet_db, (insert_sql + table_sql + " (" + columns_sql + ") values " + values_sql + ";").c_str(), -1, &Billet_Spends_insert, NULL)));
@@ -450,8 +459,8 @@ int DbConn::CheckDb(bool post_create)
 
 		cerr << "Updating wallet to schema version 4\n" << endl;
 
-		CCASSERTZ(dbexec(Wallet_db, "alter table Transactions add column RefId varchar;"));
-		CCASSERTZ(dbexec(Wallet_db, "alter table Transactions add column ParamLevel integer;"));
+		CCASSERTZ(dbexec(Wallet_db, ALTER_TABLE_SQL "Transactions add column RefId varchar;"));
+		CCASSERTZ(dbexec(Wallet_db, ALTER_TABLE_SQL "Transactions add column ParamLevel integer;"));
 		CCASSERTZ(dbexec(Wallet_db, CREATE_INDEX_UNIQUE_SQL "Transactions_RefId_Index on Transactions (RefId) where RefId not null;"));
 		//CCASSERTZ(dbexec(Wallet_db, CREATE_INDEX_SQL "Transactions_ParamLevel_Index on Transactions (ParamLevel) where ParamLevel not null and Status = " STRINGIFY(TX_STATUS_PENDING) ";"));
 
@@ -459,10 +468,26 @@ int DbConn::CheckDb(bool post_create)
 		CCASSERTZ(dbexec(Wallet_db, CREATE_INDEX_UNIQUE_SQL "Billets_Commitnum_Index on Billets (Commitnum) where Commitnum not null;"));
 		CCASSERTZ(dbexec(Wallet_db, CREATE_INDEX_UNIQUE_SQL "Billets_Unspent_Index on Billets (Amount, Id) where (Status = " STRINGIFY(BILL_STATUS_CLEARED) " or Status = " STRINGIFY(BILL_STATUS_ALLOCATED) ") and Amount > " AMOUNT_ZERO ";"));
 
-		CCASSERTZ(dbexec(Wallet_db, "update Parameters set Value = 4 where Key = " STRINGIFY(DB_KEY_SCHEMA) " and Subkey = 1;"));
-
 		bigint_t refid = 0UL;
 		CCASSERTZ(ParameterInsert(DB_KEY_UNIQUE_REFID, 0, &refid, sizeof(refid)));
+
+		CCASSERTZ(dbexec(Wallet_db, "update Parameters set Value = 4 where Key = " STRINGIFY(DB_KEY_SCHEMA) " and Subkey = 1;"));
+
+		return 1;	// retry CheckDb
+	}
+
+	if (!strcmp(schema, "4"))
+	{
+		CheckSchemaUpdateOption();
+
+		if (!post_create)
+			return 1;
+
+		cerr << "Updating wallet to schema version 5\n" << endl;
+
+		CCASSERTZ(dbexec(Wallet_db, ALTER_TABLE_SQL "Billet_Spends add column TxCommitnum integer;"));
+
+		CCASSERTZ(dbexec(Wallet_db, "update Parameters set Value = 5 where Key = " STRINGIFY(DB_KEY_SCHEMA) " and Subkey = 1;"));
 
 		return 1;	// retry CheckDb
 	}
@@ -724,6 +749,77 @@ int DbConn::Commit()
 	}
 
 	return 0;
+}
+
+int DbConn::BackupDb(const char *name)
+{
+	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(debug) << "DbConn::BackupDb to " << name;
+
+	int result = 0;
+	sqlite3 *backup_db = NULL;
+	sqlite3_backup *backup_obj = NULL;
+
+	try
+	{
+		OpenDbFile(name, true, &backup_db, g_interactive, true);
+	}
+	catch (const exception& e)
+	{
+		BOOST_LOG_TRIVIAL(error) << "DbConn::BackupDb error " << e.what();
+
+		if (g_interactive)
+			cerr << "ERROR: " << e.what() << endl;
+
+		return -1;
+	}
+
+	{
+		lock_guard<mutex> lock(db_mutex);
+
+		backup_obj = sqlite3_backup_init(backup_db, "main", Wallet_db, "main");
+
+		if (!backup_obj)
+		{
+			BOOST_LOG_TRIVIAL(error) << "DbConn::BackupDb sqlite3_backup_init error " << sqlite3_errmsg(backup_db);
+
+			result = -1;
+		}
+	}
+
+	if (!result)
+	{
+		auto rc = sqlite3_backup_step(backup_obj, -1);
+
+		if (rc != SQLITE_DONE)
+		{
+			BOOST_LOG_TRIVIAL(error) << "DbConn::BackupDb sqlite3_backup_step error " << sqlite3_errstr(rc);
+
+			result = -1;
+		}
+	}
+
+	if (backup_obj)
+	{
+		auto rc = sqlite3_backup_finish(backup_obj);
+
+		if (rc != SQLITE_OK)
+		{
+			BOOST_LOG_TRIVIAL(error) << "DbConn::BackupDb sqlite3_backup_finish error " << sqlite3_errstr(rc);
+
+			result = -1;
+		}
+	}
+
+	if (backup_db)
+	{
+		dbexec(backup_db, "PRAGMA journal_mode = DELETE;");
+
+		dblog(sqlite3_close_v2(backup_db));
+	}
+
+	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::BackupDb done";
+
+	return result;
 }
 
 #if TEST_DEBUG_WRITE_LOCKING

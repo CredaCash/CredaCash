@@ -87,6 +87,11 @@ public:
 		CONN_STOPPING
 	} m_conn_state;
 
+	char * ReadBuf() const
+	{
+		return m_pread;
+	}
+
 	/// Counter increments each time a read operation completes
 	unsigned m_read_count;
 

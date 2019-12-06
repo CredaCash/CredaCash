@@ -61,7 +61,8 @@ string Billet::DebugString() const
 	out << " commitment " << commitment;
 	out << " commitnum " << dec << commitnum << hex;
 	out << " serialnum " << serialnum;
-	out << " hashkey " << hashkey;
+	out << " spend_hashkey " << spend_hashkey;
+	out << " spend_tx_commitnum " << dec << spend_tx_commitnum;
 
 	return out.str();
 }
@@ -342,11 +343,12 @@ int Billet::SetStatusCleared(DbConn *dbconn, uint64_t _commitnum)
 	return rc;
 }
 
-int Billet::SetStatusSpent(DbConn *dbconn, const bigint_t& spend_hashkey)
+int Billet::SetStatusSpent(DbConn *dbconn, const bigint_t& hashkey, uint64_t tx_commitnum)
 {
 	// must be called from inside a BeginWrite
 
-	if (TRACE_BILLETS) BOOST_LOG_TRIVIAL(trace) << "Billet::SetStatusSpent " << DebugString() << " spend_hashkey " << hex << spend_hashkey << dec;
+	if (!hashkey) BOOST_LOG_TRIVIAL(info) << "Billet::SetStatusSpent hashkey is zero;" << DebugString() << " hashkey " << hex << hashkey << dec << " tx_commitnum " << tx_commitnum; // !!! this should maybe log at warning level
+	else if (TRACE_BILLETS) BOOST_LOG_TRIVIAL(trace) << "Billet::SetStatusSpent " << DebugString() << " hashkey " << hex << hashkey << dec << " tx_commitnum " << tx_commitnum;
 
 	if (status == BILL_STATUS_ALLOCATED)
 	{
@@ -366,7 +368,36 @@ int Billet::SetStatusSpent(DbConn *dbconn, const bigint_t& spend_hashkey)
 	//cerr << "    SetStatusSpent new balance " << balance << " bill amount " << amount << endl;
 	#endif
 
-	return dbconn->BilletInsert(*this);
+	rc = dbconn->BilletInsert(*this);
+	if (rc) return rc;
+
+	// check for any conflicting transactions
+
+	uint64_t tx_id = 0;
+
+	while (true)
+	{
+		bigint_t check_hashkey;
+		uint64_t check_tx_commitnum;
+
+		auto rc = dbconn->BilletSpendSelectBillet(id, tx_id, &check_hashkey, &check_tx_commitnum);
+		if (rc < 0) return rc;
+
+		if (rc)
+			break;
+
+		if (TRACE_BILLETS) BOOST_LOG_TRIVIAL(trace) << "Billet::CheckConflicts bill id " << id << " returned tx_id " << tx_id << " hashkey " << hex << check_hashkey << dec << " tx_commitnum " << check_tx_commitnum;
+
+		if (check_hashkey != hashkey || (check_tx_commitnum && tx_commitnum && check_tx_commitnum != tx_commitnum))
+		{
+			rc = Transaction::SetConflicted(dbconn, tx_id);
+			if (rc) return rc;
+		}
+
+		++tx_id;
+	}
+
+	return 0;
 }
 
 int Billet::CheckIfBilletsSpent(DbConn *dbconn, TxQuery& txquery, Billet *billets, unsigned nbills, bool or_pending)  // throws RPC_Exception
@@ -382,6 +413,7 @@ int Billet::CheckIfBilletsSpent(DbConn *dbconn, TxQuery& txquery, Billet *billet
 	array<uint16_t, TX_MAXIN> statuses;
 	array<bigint_t, TX_MAXIN> serialnums;
 	array<bigint_t, TX_MAXIN> hashkeys;
+	array<uint64_t, TX_MAXIN> tx_commitnums;
 
 	auto blockchain = billets[0].blockchain;
 
@@ -397,7 +429,7 @@ int Billet::CheckIfBilletsSpent(DbConn *dbconn, TxQuery& txquery, Billet *billet
 		}
 	}
 
-	auto rc = txquery.QuerySerialnums(blockchain, &serialnums[0], nbills, &statuses[0], &hashkeys[0]);
+	auto rc = txquery.QuerySerialnums(blockchain, &serialnums[0], nbills, &statuses[0], &hashkeys[0], &tx_commitnums[0]);
 	if (g_shutdown) throw txrpc_shutdown_error;
 	if (rc) throw txrpc_server_error;
 
@@ -422,7 +454,7 @@ int Billet::CheckIfBilletsSpent(DbConn *dbconn, TxQuery& txquery, Billet *billet
 			rc = dbconn->BilletSelectId(billets[i].id, billets[i]);
 			if (rc) throw txrpc_wallet_db_error;
 
-			rc = billets[i].SetStatusSpent(dbconn, hashkeys[i]);
+			rc = billets[i].SetStatusSpent(dbconn, hashkeys[i], tx_commitnums[i]);
 			if (rc) throw txrpc_wallet_db_error;
 
 			// commit db writes

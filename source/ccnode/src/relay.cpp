@@ -525,7 +525,7 @@ void RelayConnection::HandleMsgReadComplete(const boost::system::error_code& e, 
 				{
 					BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleMsgReadComplete CC_TAG_TX_WIRE error next requested tx oid " << buf2hex(&req_params.oid, sizeof(ccoid_t)) << " != received oid " << buf2hex(obj->OidPtr(), sizeof(ccoid_t));
 
-					continue;	// assume this requested object will not be sent, but check if the recieved object matches a later requested object
+					continue;	// assume this requested object will not be sent, but check if the received object matches a later requested object
 				}
 
 				if (req_params.size != msgsize)
@@ -698,7 +698,7 @@ void RelayConnection::HandleMsgReadComplete(const boost::system::error_code& e, 
 					continue;
 				}
 
-				auto auxp = block->SetupAuxBuf(smartobj);
+				auto auxp = block->SetupAuxBuf(smartobj, true);
 				if (!auxp)
 				{
 					BOOST_LOG_TRIVIAL(error) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleMsgReadComplete CC_TAG_BLOCK error SetupAuxBuf failed";
@@ -709,7 +709,7 @@ void RelayConnection::HandleMsgReadComplete(const boost::system::error_code& e, 
 				auxp->SetHash(block_hash);
 				auxp->SetOid(oid);
 
-				auxp->announce_time = req_params.announce_time;
+				auxp->announce_ticks = req_params.announce_ticks;
 
 				static atomic<int64_t> low_block_priority(1);
 				priority = low_block_priority.fetch_add(1);
@@ -1280,9 +1280,7 @@ int RelayService::LoadPrivateHosts()
 	m_connect_error_count.reserve(m_nprivhosts);
 	m_connect_time.reserve(m_nprivhosts);
 
-	auto ticks = ccticks();
-	if (!ticks)
-		ticks = 1;
+	auto ticks = ccticksnz();
 
 	for (int i = 0; i < m_nprivhosts; ++i)
 	{

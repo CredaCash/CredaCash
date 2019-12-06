@@ -101,14 +101,14 @@ int DbConn::ParameterSelect(int key, int subkey, void *value, unsigned bufsize, 
 
 	// Value
 	auto data_blob = sqlite3_column_blob(Parameters_select, 0);
+	unsigned datasize = sqlite3_column_bytes(Parameters_select, 0);
+
 	if (!data_blob)
 	{
 		BOOST_LOG_TRIVIAL(error) << "DbConn::ParameterSelect Data is null";
 
 		return -1;
 	}
-
-	unsigned datasize = sqlite3_column_bytes(Parameters_select, 0);
 
 	if (dblog(sqlite3_extended_errcode(Wallet_db), DB_STMT_SELECT)) return -1;	// check if error retrieving results
 

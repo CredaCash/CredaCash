@@ -26,7 +26,12 @@
 #include <boost/program_options/options_description.hpp>
 #include <boost/program_options/parsers.hpp>
 
+//!#define TEST_TX_DIFFICULTY_ZERO			1
 //#define TEST_SKIP_RELAY_CONNS_CHECK		1
+
+#ifndef TEST_TX_DIFFICULTY_ZERO
+#define TEST_TX_DIFFICULTY_ZERO			0	// don't test
+#endif
 
 #ifndef TEST_SKIP_RELAY_CONNS_CHECK
 #define TEST_SKIP_RELAY_CONNS_CHECK		0	// don't skip
@@ -186,8 +191,14 @@ static void check_config_values()
 	if (g_transact_service.threads_per_conn <= 0 || g_transact_service.threads_per_conn > 2)
 		throw range_error("Max connections for transaction support service not in valid range");
 
-	if (g_params.query_work_difficulty && g_params.query_work_difficulty < ((uint64_t)1 << 38))
+	if (g_transact_service.query_work_difficulty && g_transact_service.query_work_difficulty < ((uint64_t)1 << 38))
 		throw range_error("Transaction server query work difficulty not in valid range");
+
+	if (g_transact_service.max_net_sec < 0 || g_transact_service.max_net_sec > 100000)
+		throw range_error("Transaction server maximum network seconds not in valid range");
+
+	if (g_transact_service.max_block_sec < 0 || g_transact_service.max_block_sec > 1000000)
+		throw range_error("Transaction server maximum indelible block age not in valid range");
 
 	#if !TEST_SKIP_RELAY_CONNS_CHECK
 
@@ -227,7 +238,7 @@ static int process_options(int argc, char **argv)
 		("rendezvous-file", po::wvalue<wstring>(&g_params.directory_servers_file), "Path to file containing a list of peer rendezvous servers; a \"#\" character in this path will be replaced by the blockchain number (default: \"" DEFAULT_DIR_SERVERS_FILE "\" in same directory as this program).")
 		("genesis-file", po::wvalue<wstring>(&g_params.genesis_data_file), "Path to file containing data for the genesis block; a \"#\" character in this path will be replaced by the blockchain number (default: \"" DEFAULT_GENESIS_DATA_FILE "\" in same directory as this program).")
 		("genesis-generate", "Generate new genesis block data files.")
-		("genesis-nwitnesses", po::value<int>(&g_params.genesis_nwitnesses)->default_value(3), "Initial # of witnesses when generating new genesis block data files.")
+		("genesis-nwitnesses", po::value<int>(&g_params.genesis_nwitnesses)->default_value(1), "Initial # of witnesses when generating new genesis block data files.")
 		("genesis-maxmal", po::value<int>(&g_params.genesis_maxmal)->default_value(0), "Initial allowance for malicious witnesses when generating new genesis block data files.")
 		("proof-key-dir", po::wvalue<wstring>(&g_params.proof_key_dir), "Path to zero knowledge proof keys; if set to \"env\", the environment variable " KEY_PATH_ENV_VAR " is used (default: the subdirectory \"" ZK_KEY_DIR "\" in same directory as this program).")
 		("tor-exe", po::wvalue<wstring>(&g_params.tor_exe), "Path to Tor executable; if set to \"external\", Tor is not launched by this program, and must be launched and managed externally (default: \"" TOR_EXE "\" in same directory as this program).")
@@ -251,7 +262,9 @@ static int process_options(int argc, char **argv)
 		("transact-tor-auth", po::value<string>(&g_transact_service.tor_auth_string)->default_value("v3"), "Tor hidden service authentication method (none, basic, or v3).")
 		("transact-conns", po::value<int>(&g_transact_service.max_inconns)->default_value(20), "Maximum number of incoming connections for transaction support service.")
 		("transact-threads", po::value<float>(&g_transact_service.threads_per_conn)->default_value(1), "Threads per connection for transaction support service.")
-		("transact-difficulty", po::value<uint64_t>(&g_params.query_work_difficulty)->default_value(0), "Proof-of-work difficulty for transaction server queries (0 = none, otherwise lower numbers have more difficulty).")
+		("transact-difficulty", po::value<uint64_t>(&g_transact_service.query_work_difficulty)->default_value(0), "Proof-of-work difficulty for transaction server queries (0 = none, otherwise lower numbers have more difficulty).")
+		("transact-max-network-sec", po::value<int32_t>(&g_transact_service.max_net_sec)->default_value(420), "Maximum time in seconds since last block received for transaction server to be considered connected to the network (0 = disabled).")
+		("transact-max-block-sec", po::value<int32_t>(&g_transact_service.max_block_sec)->default_value(50400), "Maximum timestamp age in seconds of last indelible block for transaction server to be considered connected to the network (0 = disabled).")
 		("relay", po::value<bool>(&g_relay_service.enabled)->default_value(1), "Fetch and relay blocks and transactions (at port baseport+" STRINGIFY(RELAY_PORT) ");\n"
 				"if no relay is enabled, this node will receive no updates and will only use data previously stored.")
 		("relay-addr", po::value<string>(&g_relay_service.address_string)->default_value(LOCALHOST), "Network address for relay service;\n"
@@ -405,7 +418,7 @@ static int process_options(int argc, char **argv)
 
 	g_params.tx_work_difficulty = (uint64_t)1 << 43; //@@! larger number is easier
 
-	#if 0 // for testing
+	#if TEST_TX_DIFFICULTY_ZERO
 	g_params.tx_work_difficulty = 0;
 	#endif
 

@@ -19,6 +19,16 @@ uint32_t ccticks(clockid_t clock_id)
 	return ts.tv_sec * CCTICKS_PER_SEC + (ts.tv_nsec + 1000 * 1000 * 1000 / CCTICKS_PER_SEC / 2) / (1000 * 1000 * 1000 / CCTICKS_PER_SEC);
 }
 
+uint32_t ccticksnz(uint32_t non_zero, clockid_t clock_id)
+{
+	auto ticks = ccticks(clock_id);
+
+	if (!ticks)
+		return non_zero;
+
+	return ticks;
+}
+
 int32_t ccticks_elapsed(uint32_t t0, uint32_t t1)
 {
 	int32_t diff = t1 - t0;

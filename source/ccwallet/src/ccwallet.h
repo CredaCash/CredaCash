@@ -9,7 +9,7 @@
 #pragma once
 
 #define CCAPPNAME	"CredaCash RPC Wallet"
-#define CCVERSION	 "1.01 beta" //@@!
+#define CCVERSION	 "1.01 beta2" //@@!
 #define CCEXENAME	"ccwallet"
 #define CCAPPDIR	"CCWallet-#"
 

@@ -54,12 +54,13 @@ public:
 	uint64_t amount_fp;
 	unsigned delaytime;
 	uint64_t commitnum;
+	uint64_t spend_tx_commitnum;		// property of the spend tx, not the Billet
 	snarkfront::bigint_t amount;
 	snarkfront::bigint_t address;		// part of txid; M_address = zkhash(#dest, dest_chain, #paynum)
 	snarkfront::bigint_t commit_iv;
 	snarkfront::bigint_t commitment;	// part of txid; M_commitment = zkhash(M_commitment_iv, #dest, #paynum, M_pool, #asset, #amount)
 	snarkfront::bigint_t serialnum;		// holds monitor_secret[0] until billet clears; S-serialnum = zkhash(@monitor_secret[0], M-commitment, M-commitnum)
-	snarkfront::bigint_t hashkey;		// property of the spend tx, not the Billet
+	snarkfront::bigint_t spend_hashkey;	// property of the spend tx, not the Billet
 
 	Billet();
 
@@ -99,7 +100,7 @@ public:
 	static int ResetAllocated(DbConn *dbconn, bool reset_balance);
 
 	int SetStatusCleared(DbConn *dbconn, uint64_t _commitnum);
-	int SetStatusSpent(DbConn *dbconn, const snarkfront::bigint_t& spend_hashkey);
+	int SetStatusSpent(DbConn *dbconn, const snarkfront::bigint_t& hashkey, uint64_t tx_commitnum = 0);
 
 	static int CheckIfBilletsSpent(DbConn *dbconn, TxQuery& txquery, Billet *billets, unsigned nbills, bool or_pending = false);
 

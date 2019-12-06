@@ -108,8 +108,12 @@ void tor_start(const wstring& process_dir, const wstring& tor_exe, const wstring
 		STARTUPINFOW si;
 		memset(&si, 0, sizeof(si));
 		si.cb = sizeof(si);
+		si.dwFlags |= STARTF_USESTDHANDLES;
+		si.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
+		si.hStdError = si.hStdOutput;
+		si.hStdInput = si.hStdOutput;
 
-		if (! CreateProcessW(tor_exe.c_str(), &paramline_text[0], NULL, NULL, FALSE,
+		if (! CreateProcessW(tor_exe.c_str(), &paramline_text[0], NULL, NULL, TRUE,
 				CREATE_NO_WINDOW | DEBUG_PROCESS, NULL, process_dir.c_str(), &si, &pi))
 		{
 			BOOST_LOG_TRIVIAL(error) << "Unable to start Tor; error = " << GetLastError();
@@ -145,6 +149,9 @@ void tor_start(const wstring& process_dir, const wstring& tor_exe, const wstring
 
 				if (de.dwDebugEventCode == EXIT_PROCESS_DEBUG_EVENT && de.dwProcessId == pi.dwProcessId && !g_shutdown)
 				{
+					CloseHandle(pi.hProcess);
+					CloseHandle(pi.hThread);
+
 					tor_running = false;
 					BOOST_LOG_TRIVIAL(error) << "Tor process exited unexpectedly--restart will be attempted in 10 seconds...";
 

@@ -140,7 +140,7 @@ int DbConn::BilletInsert(Billet& bill, bool lock_optional)
 	return 0;
 }
 
-int DbConn::BilletSelect(sqlite3_stmt *select, bool has_hashkey, Billet& bill, bool expect_row, uint64_t required_id)
+int DbConn::BilletSelect(sqlite3_stmt *select, bool has_spend, Billet& bill, bool expect_row, uint64_t required_id)
 {
 	int rc;
 
@@ -168,7 +168,7 @@ int DbConn::BilletSelect(sqlite3_stmt *select, bool has_hashkey, Billet& bill, b
 		return -1;
 	}
 
-	if (sqlite3_data_count(select) != 16 + has_hashkey)
+	if (sqlite3_data_count(select) != 16 + 2*has_spend)
 	{
 		BOOST_LOG_TRIVIAL(error) << "DbConn::BilletSelect select returned " << sqlite3_data_count(select) << " columns";
 
@@ -192,18 +192,24 @@ int DbConn::BilletSelect(sqlite3_stmt *select, bool has_hashkey, Billet& bill, b
 	uint64_t dest_id = sqlite3_column_int64(select, 4);
 	uint64_t blockchain = sqlite3_column_int64(select, 5);
 	auto address_blob = sqlite3_column_blob(select, 6);
+	unsigned address_size = sqlite3_column_bytes(select, 6);
 	uint32_t pool = sqlite3_column_int(select, 7);
 	uint64_t asset = sqlite3_column_int64(select, 8);
 	uint64_t amount_fp = sqlite3_column_int64(select, 9);
 	auto amount_blob = sqlite3_column_blob(select, 10);
+	unsigned amount_size = sqlite3_column_bytes(select, 10);
 	unsigned delaytime = sqlite3_column_int(select, 11);
 	auto commit_iv_blob = sqlite3_column_blob(select, 12);
+	unsigned commit_iv_size = sqlite3_column_bytes(select, 12);
 	auto commitment_blob = sqlite3_column_blob(select, 13);
+	unsigned commitment_size = sqlite3_column_bytes(select, 13);
 	uint64_t commitnum = sqlite3_column_int64(select, 14);
 	auto serialnum_blob = sqlite3_column_blob(select, 15);
-	const void *hashkey_blob = NULL;
-	if (has_hashkey)
-		hashkey_blob = sqlite3_column_blob(select, 16);
+	bool has_serialnum = Billet::HasSerialnum(status, flags);
+	unsigned serialnum_size = (has_serialnum ? sqlite3_column_bytes(select, 15) : 0);
+	const void *hashkey_blob = (has_spend ? sqlite3_column_blob(select, 16) : NULL);
+	unsigned hashkey_size = (has_spend ? sqlite3_column_bytes(select, 16) : 0);
+	uint64_t tx_commitnum = (has_spend ? sqlite3_column_int64(select, 17) : 0);
 
 	if (!Billet::StatusIsValid(status))
 	{
@@ -219,7 +225,6 @@ int DbConn::BilletSelect(sqlite3_stmt *select, bool has_hashkey, Billet& bill, b
 		return -1;
 	}
 
-	unsigned address_size = sqlite3_column_bytes(select, 6);
 	if (address_size != TX_ADDRESS_BYTES)
 	{
 		BOOST_LOG_TRIVIAL(error) << "DbConn::BilletSelect select returned address size " << address_size << " != " << TX_ADDRESS_BYTES;
@@ -234,7 +239,6 @@ int DbConn::BilletSelect(sqlite3_stmt *select, bool has_hashkey, Billet& bill, b
 		return -1;
 	}
 
-	unsigned amount_size = sqlite3_column_bytes(select, 10);
 	if (amount_size != AMOUNT_UNSIGNED_PACKED_BYTES)
 	{
 		BOOST_LOG_TRIVIAL(error) << "DbConn::BilletSelect select returned amount size " << amount_size << " != " << AMOUNT_UNSIGNED_PACKED_BYTES;
@@ -249,7 +253,6 @@ int DbConn::BilletSelect(sqlite3_stmt *select, bool has_hashkey, Billet& bill, b
 		return -1;
 	}
 
-	unsigned commit_iv_size = sqlite3_column_bytes(select, 12);
 	if (commit_iv_size != TX_COMMIT_IV_BYTES)
 	{
 		BOOST_LOG_TRIVIAL(error) << "DbConn::BilletSelect select returned commitment iv size " << commit_iv_size << " != " << TX_COMMIT_IV_BYTES;
@@ -264,15 +267,12 @@ int DbConn::BilletSelect(sqlite3_stmt *select, bool has_hashkey, Billet& bill, b
 		return -1;
 	}
 
-	unsigned commitment_size = sqlite3_column_bytes(select, 13);
 	if (commitment_size != TX_COMMITMENT_BYTES)
 	{
 		BOOST_LOG_TRIVIAL(warning) << "DbConn::BilletSelect select returned commitment size " << commitment_size << " != " << TX_COMMITMENT_BYTES;
 
 		return -1;
 	}
-
-	bool has_serialnum = Billet::HasSerialnum(status, flags);
 
 	if (has_serialnum && !serialnum_blob)
 	{
@@ -281,7 +281,6 @@ int DbConn::BilletSelect(sqlite3_stmt *select, bool has_hashkey, Billet& bill, b
 		return -1;
 	}
 
-	unsigned serialnum_size = (has_serialnum ? sqlite3_column_bytes(select, 15) : 0);
 	if (has_serialnum && serialnum_size != TX_SERIALNUM_BYTES)
 	{
 		BOOST_LOG_TRIVIAL(warning) << "DbConn::BilletSelect select returned serialnum size " << serialnum_size << " != " << TX_SERIALNUM_BYTES;
@@ -289,15 +288,14 @@ int DbConn::BilletSelect(sqlite3_stmt *select, bool has_hashkey, Billet& bill, b
 		return -1;
 	}
 
-	if (has_hashkey && !hashkey_blob)
+	if (has_spend && !hashkey_blob)
 	{
 		BOOST_LOG_TRIVIAL(error) << "DbConn::BilletSelect hashkey is null; status " << status;
 
 		return -1;
 	}
 
-	unsigned hashkey_size = (has_hashkey ? sqlite3_column_bytes(select, 16) : 0);
-	if (has_hashkey && hashkey_size != TX_HASHKEY_BYTES)
+	if (has_spend && hashkey_size != TX_HASHKEY_BYTES)
 	{
 		BOOST_LOG_TRIVIAL(warning) << "DbConn::BilletSelect select returned hashkey size " << hashkey_size << " != " << TX_HASHKEY_BYTES;
 
@@ -331,16 +329,17 @@ int DbConn::BilletSelect(sqlite3_stmt *select, bool has_hashkey, Billet& bill, b
 	if (serialnum_blob)
 		memcpy((void*)&bill.serialnum, serialnum_blob, TX_SERIALNUM_BYTES);
 	if (hashkey_blob)
-		memcpy((void*)&bill.hashkey, hashkey_blob, TX_HASHKEY_BYTES);
+		memcpy((void*)&bill.spend_hashkey, hashkey_blob, TX_HASHKEY_BYTES);
+	bill.spend_tx_commitnum = tx_commitnum;
 
 	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(debug) << "DbConn::BilletSelect returning " << bill.DebugString();
 
 	return 0;
 }
 
-int DbConn::BilletSelectMulti(sqlite3_stmt *select, bool has_hashkeys, unsigned &nbills, Billet *bills, const unsigned maxbills, bool expect_row)
+int DbConn::BilletSelectMulti(sqlite3_stmt *select, bool has_spend, unsigned &nbills, Billet *bills, const unsigned maxbills, bool expect_row)
 {
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::BilletSelectMulti has_hashkeys " << has_hashkeys << " maxbills " << maxbills;
+	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::BilletSelectMulti has_spend " << has_spend << " maxbills " << maxbills;
 
 	nbills = 0;
 
@@ -348,7 +347,7 @@ int DbConn::BilletSelectMulti(sqlite3_stmt *select, bool has_hashkeys, unsigned 
 	{
 		bills[nbills].Clear();
 
-		auto rc = BilletSelect(select, has_hashkeys, bills[nbills]);
+		auto rc = BilletSelect(select, has_spend, bills[nbills]);
 		if (rc < 0) return rc;
 
 		if (rc)

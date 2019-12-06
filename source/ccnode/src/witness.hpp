@@ -111,6 +111,8 @@ public:
 		return witness_index;
 	}
 
+	bool IsSoleWitness() const;
+
 	bool IsMalTest() const;
 	static bool SimLoss(uint64_t level);
 

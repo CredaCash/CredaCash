@@ -37,11 +37,11 @@ BlockAux* Block::AuxPtr()
 	return (BlockAux*)auxp;
 }
 
-BlockAux* Block::SetupAuxBuf(SmartBuf smartobj)
+BlockAux* Block::SetupAuxBuf(SmartBuf smartobj, bool from_tx_net)
 {
 	auto wire = WireData();
 
-	if (TRACE_SMARTBUF) BOOST_LOG_TRIVIAL(debug) << "Block::SetupAuxBuf level " << wire->level.GetValue() << " witness " << (unsigned)wire->witness << " prior oid " << buf2hex(&wire->prior_oid, sizeof(ccoid_t));
+	if (TRACE_SMARTBUF) BOOST_LOG_TRIVIAL(debug) << "Block::SetupAuxBuf from_tx_net " << from_tx_net << " level " << wire->level.GetValue() << " witness " << (unsigned)wire->witness << " prior oid " << buf2hex(&wire->prior_oid, sizeof(ccoid_t));
 
 	auto auxp = (BlockAux*)malloc(sizeof(BlockAux));
 	if (!auxp)
@@ -56,7 +56,8 @@ BlockAux* Block::SetupAuxBuf(SmartBuf smartobj)
 	preamble.auxp[0] = auxp;
 	smartobj.SetAuxPtrCount(2);
 
-	auxp->announce_time = ccticks();
+	auxp->from_tx_net = from_tx_net;
+	auxp->announce_ticks = ccticks();
 
 	return auxp;
 }
@@ -466,7 +467,7 @@ void BlockAux::SetHash(const block_hash_t& hash)
 
 	memcpy(&block_hash, &hash, sizeof(hash));
 
-	if (TRACE_CALCOID) BOOST_LOG_TRIVIAL(trace) << "BlockAux::SetHash TRACE_CALCOID block with announce time " << announce_time << " set to hash " << buf2hex(&block_hash, sizeof(block_hash));
+	if (TRACE_CALCOID) BOOST_LOG_TRIVIAL(trace) << "BlockAux::SetHash TRACE_CALCOID block with announced " << announce_ticks << " set to hash " << buf2hex(&block_hash, sizeof(block_hash));
 }
 
 void BlockAux::SetOid(const ccoid_t& soid)
@@ -475,7 +476,7 @@ void BlockAux::SetOid(const ccoid_t& soid)
 
 	memcpy(&oid, &soid, sizeof(oid));
 
-	if (TRACE_CALCOID) BOOST_LOG_TRIVIAL(trace) << "BlockAux::SetOid TRACE_CALCOID block with announce time " << announce_time << " set to oid " << buf2hex(&oid, sizeof(oid));
+	if (TRACE_CALCOID) BOOST_LOG_TRIVIAL(trace) << "BlockAux::SetOid TRACE_CALCOID block with announced " << announce_ticks << " set to oid " << buf2hex(&oid, sizeof(oid));
 }
 
 void Block::CalcHash(block_hash_t& block_hash)
@@ -606,7 +607,7 @@ void Block::ConsoleAnnounce(const char *verb, const BlockWireHeader *wire, const
 
 	lock_guard<FastSpinLock> lock(g_cout_lock);
 
-	cerr << " " << verb;
+	cerr << verb;
 	cerr << " block timestamp " << ts;
 	cerr << " level " << wire->level.GetValue();
 	cerr << " witness " << (unsigned)wire->witness;

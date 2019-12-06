@@ -4,6 +4,10 @@
 
 ## Release History
 
+### 2019-12-04 v1.1 Beta2
+
+Second beta release for enterprise readiness.
+
 ### 2019-10-15 v1.1 Beta
 
 Beta release to enhance wallet robustness.

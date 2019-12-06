@@ -1,5 +1,5 @@
 set CREDACASH_BUILD=%cd:\=/%
-set CPPFLAGS=-m64 -mthreads -fstack-protector-strong
+set CPPFLAGS=-m64 -mthreads -fstack-protector-strong -Wno-misleading-indentation
 set LDFLAGS=-static
 set LDLIBS=-lWs2_32 -lMswsock -lssp
 cd source/3rdparty/Release
@@ -23,3 +23,4 @@ cd ../../..
 cd source/ccwallet/Release
 make all
 cd ../../..
+echo CredaCash build done.

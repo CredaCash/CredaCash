@@ -72,9 +72,10 @@ class BlockAux
 public:
 	ccoid_t oid;	// must be first for OidPtr() in CCobjects
 	block_hash_t block_hash;
-	uint32_t announce_time;
+	uint32_t announce_ticks;
 	uint16_t skip;
 	bool marked_for_indelible;
+	bool from_tx_net;
 
 	struct
 	{
@@ -169,7 +170,7 @@ public:
 	void CalcHash(block_hash_t& block_hash);
 	void CalcOid(const block_hash_t& block_hash, ccoid_t& oid);
 
-	BlockAux* SetupAuxBuf(SmartBuf smartobj);
+	BlockAux* SetupAuxBuf(SmartBuf smartobj, bool from_tx_net = false);
 	void SetPriorBlock(SmartBuf priorobj);
 	void ChainToPriorBlock(SmartBuf priorobj);
 	static unsigned ComputeSkip(unsigned prev_witness, unsigned next_witness, unsigned nwitnesses);

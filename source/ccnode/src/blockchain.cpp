@@ -565,8 +565,7 @@ void BlockChain::RestoreLastBlocks(DbConn *dbconn, uint64_t last_indelible_level
 
 		if (i == 0)
 		{
-			m_last_indelible_block = smartobj;
-			m_last_indelible_level = last_indelible_level;
+			SetLastIndelible(smartobj);
 
 			// read enough blocks to run CheckBadSigOrder
 			nblocks = (auxp->blockchain_params.next_nwitnesses - auxp->blockchain_params.next_maxmal) / 2 + auxp->blockchain_params.next_maxmal + 1;
@@ -591,6 +590,19 @@ void BlockChain::RestoreLastBlocks(DbConn *dbconn, uint64_t last_indelible_level
 			}
 		}
 	}
+}
+
+void BlockChain::SetLastIndelible(SmartBuf smartobj)
+{
+	CCASSERT(smartobj);
+
+	auto block = (Block*)smartobj.data();
+	auto wire = block->WireData();
+
+	m_last_indelible_block = smartobj;
+	m_last_indelible_level = wire->level.GetValue();
+	m_last_indelible_timestamp = wire->timestamp.GetValue();
+	m_last_indelible_ticks = ccticks();
 }
 
 /*
@@ -679,12 +691,7 @@ bool BlockChain::DoConfirmationLoop(DbConn *dbconn, SmartBuf newobj, TxPay& txbu
 		return true;
 	}
 
-	block = (Block*)m_new_indelible_block.data();
-	wire = block->WireData();
-
-	// careful when using these: m_last_indelible_block and m_last_indelible_level may appear momentarily out-of-sync
-	m_last_indelible_block = m_new_indelible_block;
-	m_last_indelible_level = wire->level.GetValue();
+	SetLastIndelible(m_new_indelible_block);
 
 	m_new_indelible_block.ClearRef();
 
@@ -818,12 +825,9 @@ bool BlockChain::SetNewlyIndelibleBlock(DbConn *dbconn, SmartBuf smartobj, TxPay
 
 	auxp->marked_for_indelible = true;
 
-	BOOST_LOG_TRIVIAL(info) << "BlockChain::SetNewlyIndelibleBlock announced " << auxp->announce_time << " level " << level << " witness " << (unsigned)wire->witness << " size " << block->ObjSize() << " oid " << buf2hex(&auxp->oid, sizeof(ccoid_t)) << " prior oid " << buf2hex(prior_oid, sizeof(ccoid_t));
+	BOOST_LOG_TRIVIAL(info) << "BlockChain::SetNewlyIndelibleBlock announced " << auxp->announce_ticks << " level " << level << " witness " << (unsigned)wire->witness << " size " << block->ObjSize() << " oid " << buf2hex(&auxp->oid, sizeof(ccoid_t)) << " prior oid " << buf2hex(prior_oid, sizeof(ccoid_t));
 
-	{
-		//lock_guard<FastSpinLock> lock(g_cout_lock);
-		//cerr << "INDELIBLE BLOCK LEVEL " << wire->level.GetValue() << " witness " << (unsigned)wire->witness << " skip " << auxp->skip << " size " << (block->ObjSize() < 1000 ? " " : "") << block->ObjSize() << " oid " << buf2hex(&auxp->oid, 3, 0) << ".. prior " << buf2hex(&wire->prior_oid, 3, 0) << ".." << endl;
-	}
+	//block->ConsoleAnnounce("INDELIBLE", wire, auxp);
 
 	auto last_indelible_block = m_last_indelible_block;
 	if (m_new_indelible_block)
@@ -1005,11 +1009,13 @@ bool BlockChain::IndexTxs(DbConn *dbconn, SmartBuf smartobj, TxPay& txbuf)
 
 		pdata += txsize;
 
+		auto tx_commitnum = g_commitments.GetNextCommitnum();
+
 		for (unsigned i = 0; i < txbuf.nin; ++i)
 		{
 			if (!txbuf.inputs[i].no_serialnum)
 			{
-				auto rc = dbconn->SerialnumInsert(&txbuf.inputs[i].S_serialnum, TX_SERIALNUM_BYTES, &txbuf.inputs[i].S_hashkey, TX_HASHKEY_WIRE_BYTES);
+				auto rc = dbconn->SerialnumInsert(&txbuf.inputs[i].S_serialnum, TX_SERIALNUM_BYTES, &txbuf.inputs[i].S_hashkey, TX_HASHKEY_WIRE_BYTES, tx_commitnum);
 				if (rc)
 				{
 					const char *msg = "FATAL ERROR BlockChain::IndexTxs error in SerialnumInsert";
@@ -1160,7 +1166,7 @@ int BlockChain::CheckSerialnum(DbConn *dbconn, SmartBuf topblock, int type, Smar
 	// snapshot m_last_indelible_block before reading so value doesn't get ahead of values read from persistent serialnum db
 	auto last_indelible_block = m_last_indelible_block;
 
-	// check serialnum's in persistent db
+	// check serialnums in persistent db
 
 	auto result = dbconn->SerialnumSelect(serial, size);
 	if (result < 0)
@@ -1179,7 +1185,7 @@ int BlockChain::CheckSerialnum(DbConn *dbconn, SmartBuf topblock, int type, Smar
 		return 4;	// !!! don't want to do this yet--need to check if block is on side chain and if so, it's ok?
 	}
 
-	// check serialnum's in temp db
+	// check serialnums in temp db
 	// note: serialnum is not removed from tempdb until the block is pruned, long after it is indelible or no longer in path to indelible
 	//	if that were not so, we would have to check tempdb before persistentdb to avoid race condition (serialnum deleted from tempdb before inserted into persistentdb)
 

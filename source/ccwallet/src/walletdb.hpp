@@ -97,9 +97,9 @@ class DbConn
 	int AccountSelect(sqlite3_stmt *select, Account& account, bool expect_row = false, uint64_t required_id = 0);
 	int SecretSelect(sqlite3_stmt *select, Secret& secret, bool expect_row = false, uint64_t required_id = 0);
 	int TransactionSelect(sqlite3_stmt *select, Transaction& tx, bool expect_row = false, uint64_t required_id = 0);
-	int BilletSelect(sqlite3_stmt *select, bool has_hashkey, Billet& bill, bool expect_row = false, uint64_t required_id = 0);
-	int BilletSelectMulti(sqlite3_stmt *select, bool has_hashkeys, unsigned &nbills, Billet *bills, const unsigned maxbills, bool expect_row = false);
-	int BilletSpendSelect(sqlite3_stmt *select, uint64_t &tx_id, uint64_t &bill_id, snarkfront::bigint_t &hashkey, bool expect_row, uint64_t required_id);
+	int BilletSelect(sqlite3_stmt *select, bool has_spend, Billet& bill, bool expect_row = false, uint64_t required_id = 0);
+	int BilletSelectMulti(sqlite3_stmt *select, bool has_spend, unsigned &nbills, Billet *bills, const unsigned maxbills, bool expect_row = false);
+	int BilletSpendSelect(sqlite3_stmt *select, uint64_t &tx_id, uint64_t &bill_id, snarkfront::bigint_t *hashkey, uint64_t *tx_commitnum, bool expect_row, uint64_t required_id);
 	int TotalSelect(sqlite3_stmt *select, Total& total);
 
 	static void CheckSchemaUpdateOption();
@@ -117,6 +117,8 @@ public:
 	void PrepareDbConnParameters();
 	void PrepareDbConn();
 	void CloseDb(bool done = false);
+
+	int BackupDb(const char *name);
 
 	#if 0
 	void LockTest();
@@ -172,8 +174,8 @@ public:
 	int BilletSelectSpendTx(uint64_t id, unsigned &nbills, Billet *bills, const unsigned maxbills);
 	int BilletsResetAllocated(bool zero_balance);
 
-	int BilletSpendInsert(uint64_t id, uint64_t bill_id, const void *hashkey);
-	int BilletSpendSelectBillet(uint64_t bill_id, uint64_t &tx_id, snarkfront::bigint_t &hashkey);
+	int BilletSpendInsert(uint64_t id, uint64_t bill_id, const void *hashkey, uint64_t tx_commitnum = 0);
+	int BilletSpendSelectBillet(uint64_t bill_id, uint64_t &tx_id, snarkfront::bigint_t *hashkey = NULL, uint64_t *tx_commitnum = NULL);
 
 	int TotalInsert(const Total& total, bool lock_optional = false);
 	int TotalSelectMatch(bool exact, Total& total);

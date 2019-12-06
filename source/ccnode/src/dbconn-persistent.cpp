@@ -54,8 +54,8 @@ DbConnPersistData::DbConnPersistData()
 	CCASSERTZ(dblog(sqlite3_prepare_v2(Persistent_db, "select max(Level) from Blockchain;", -1, &Blockchain_select_max, NULL)));
 	CCASSERTZ(dblog(sqlite3_prepare_v2(Persistent_db, "select Block from Blockchain where Level = ?1;", -1, &Blockchain_select, NULL)));
 
-	CCASSERTZ(dblog(sqlite3_prepare_v2(Persistent_db, "insert into Serialnums (Serialnum, HashKey) values (?1, ?2);", -1, &Serialnum_insert, NULL)));
-	CCASSERTZ(dblog(sqlite3_prepare_v2(Persistent_db, "select HashKey from Serialnums where Serialnum = ?1;", -1, &Serialnum_select, NULL)));
+	CCASSERTZ(dblog(sqlite3_prepare_v2(Persistent_db, "insert into Serialnums (Serialnum, HashKey, TxCommitnum) values (?1, ?2, ?3);", -1, &Serialnum_insert, NULL)));
+	CCASSERTZ(dblog(sqlite3_prepare_v2(Persistent_db, "select HashKey, TxCommitnum from Serialnums where Serialnum = ?1;", -1, &Serialnum_select, NULL)));
 
 	CCASSERTZ(dblog(sqlite3_prepare_v2(Persistent_db, "insert or replace into Commit_Tree (Height, Offset, Data) values (?1, ?2, ?3);", -1, &Commit_Tree_insert, NULL)));
 	CCASSERTZ(dblog(sqlite3_prepare_v2(Persistent_db, "select Data from Commit_Tree where Height = ?1 and Offset = ?2;", -1, &Commit_Tree_select, NULL)));
@@ -380,14 +380,14 @@ int DbConnPersistData::ParameterSelect(int key, int subkey, void *value, unsigne
 
 	// Value
 	auto data_blob = sqlite3_column_blob(Parameters_select, 0);
+	unsigned datasize = sqlite3_column_bytes(Parameters_select, 0);
+
 	if (!data_blob)
 	{
 		BOOST_LOG_TRIVIAL(error) << "DbConnPersistData::ParameterSelect Data is null";
 
 		return -1;
 	}
-
-	unsigned datasize = sqlite3_column_bytes(Parameters_select, 0);
 
 	if (dblog(sqlite3_extended_errcode(Persistent_db), DB_STMT_SELECT)) return -1;	// check if error retrieving results
 
@@ -509,14 +509,14 @@ int DbConnPersistData::BlockchainSelect(uint64_t level, SmartBuf *retobj)
 
 	// Block
 	auto data_blob = sqlite3_column_blob(Blockchain_select, 0);
+	unsigned datasize = sqlite3_column_bytes(Blockchain_select, 0);
+
 	if (!data_blob)
 	{
 		BOOST_LOG_TRIVIAL(error) << "DbConnPersistData::BlockchainSelect Data is null";
 
 		return -1;
 	}
-
-	unsigned datasize = sqlite3_column_bytes(Blockchain_select, 0);
 
 	if (dblog(sqlite3_extended_errcode(Persistent_db), DB_STMT_SELECT)) return -1;	// check if error retrieving results
 
@@ -618,18 +618,19 @@ int DbConnPersistData::BlockchainSelectMax(uint64_t& level)
 	return 0;
 }
 
-int DbConnPersistData::SerialnumInsert(const void *serialnum, unsigned serialnum_size, const void *hashkey, unsigned hashkey_size)
+int DbConnPersistData::SerialnumInsert(const void *serialnum, unsigned serialnum_size, const void *hashkey, unsigned hashkey_size, uint64_t tx_commitnum)
 {
 	CCASSERT(ThisThreadHoldsMutex());
 	// call BeginWrite first to acquire lock
 	//lock_guard<mutex> lock(Persistent_db_write_mutex);	// sql statements must be reset before lock is released
 	Finally finally(boost::bind(&DbConnPersistData::DoPersistentDataFinish, this));
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnPersistData::SerialnumInsert serialnum " << buf2hex(serialnum, serialnum_size) << " hashkey " << buf2hex(hashkey, hashkey_size);
+	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnPersistData::SerialnumInsert serialnum " << buf2hex(serialnum, serialnum_size) << " hashkey " << buf2hex(hashkey, hashkey_size) << " tx_commitnum " << tx_commitnum;
 
-	// Serialnum, HashKey
+	// Serialnum, HashKey, TxCommitnum
 	if (dblog(sqlite3_bind_blob(Serialnum_insert, 1, serialnum, serialnum_size, SQLITE_STATIC))) return -1;
 	if (dblog(sqlite3_bind_blob(Serialnum_insert, 2, hashkey, hashkey_size, SQLITE_STATIC))) return -1;
+	if (dblog(sqlite3_bind_int64(Serialnum_insert, 3, tx_commitnum))) return -1;
 
 	if (RandTest(RTEST_DB_ERRORS))
 	{
@@ -646,17 +647,17 @@ int DbConnPersistData::SerialnumInsert(const void *serialnum, unsigned serialnum
 
 	if (changes != 1)
 	{
-		BOOST_LOG_TRIVIAL(error) << "DbConnPersistData::SerialnumInsert sqlite3_changes " << changes << " after insert serialnum " << buf2hex(serialnum, serialnum_size) << " hashkey " << buf2hex(hashkey, hashkey_size);
+		BOOST_LOG_TRIVIAL(error) << "DbConnPersistData::SerialnumInsert sqlite3_changes " << changes << " after insert serialnum " << buf2hex(serialnum, serialnum_size) << " hashkey " << buf2hex(hashkey, hashkey_size) << " tx_commitnum " << tx_commitnum;
 
 		return -1;
 	}
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(debug) << "DbConnPersistData::SerialnumInsert inserted serialnum " << buf2hex(serialnum, serialnum_size) << " hashkey " << buf2hex(hashkey, hashkey_size);
+	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(debug) << "DbConnPersistData::SerialnumInsert inserted serialnum " << buf2hex(serialnum, serialnum_size) << " hashkey " << buf2hex(hashkey, hashkey_size) << " tx_commitnum " << tx_commitnum;
 
 	return 0;
 }
 
-int DbConnPersistData::SerialnumSelect(const void *serialnum, unsigned serialnum_size, void *hashkey, unsigned *hashkey_size)
+int DbConnPersistData::SerialnumSelect(const void *serialnum, unsigned serialnum_size, void *hashkey, unsigned *hashkey_size, uint64_t *tx_commitnum)
 {
 	Finally finally(boost::bind(&DbConnPersistData::DoPersistentDataFinish, this));
 
@@ -673,6 +674,9 @@ int DbConnPersistData::SerialnumSelect(const void *serialnum, unsigned serialnum
 		keysize = *hashkey_size;
 		*hashkey_size = 0;
 	}
+
+	if (tx_commitnum)
+		*tx_commitnum = 0;
 
 	int rc;
 
@@ -702,16 +706,17 @@ int DbConnPersistData::SerialnumSelect(const void *serialnum, unsigned serialnum
 		return -1;
 	}
 
-	if (sqlite3_data_count(Serialnum_select) != 1)
+	if (sqlite3_data_count(Serialnum_select) != 2)
 	{
 		BOOST_LOG_TRIVIAL(error) << "DbConnPersistData::SerialnumSelect select returned " << sqlite3_data_count(Serialnum_select) << " columns";
 
 		return -1;
 	}
 
-	// Block
+	// HashKey, TxCommitnum
 	auto data_blob = sqlite3_column_blob(Serialnum_select, 0);
 	unsigned datasize = sqlite3_column_bytes(Serialnum_select, 0);
+	uint64_t commitnum = sqlite3_column_int64(Serialnum_select, 1);
 
 	if (dblog(sqlite3_extended_errcode(Persistent_db), DB_STMT_SELECT)) return -1;	// check if error retrieving results
 
@@ -735,7 +740,10 @@ int DbConnPersistData::SerialnumSelect(const void *serialnum, unsigned serialnum
 		*hashkey_size = datasize;
 	}
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(debug) << "DbConnPersistData::SerialnumSelect serialnum " << buf2hex(serialnum, serialnum_size) << " returning " << (hashkey_size && *hashkey_size ? buf2hex(hashkey, *hashkey_size) : "found");
+	if (tx_commitnum)
+		*tx_commitnum = commitnum;
+
+	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(debug) << "DbConnPersistData::SerialnumSelect serialnum " << buf2hex(serialnum, serialnum_size) << " returning " << (hashkey_size && *hashkey_size ? buf2hex(hashkey, *hashkey_size) : "found") << " tx_commitnum " << commitnum;
 
 	return 0;
 }
@@ -1233,7 +1241,7 @@ void DbConnPersistData::TestConcurrency()
 	BOOST_LOG_TRIVIAL(info) << " ---- BeginWrite result " << rc;
 	CCASSERTZ(rc);
 
-	rc = dbconnW->SerialnumInsert(&serial, sizeof(serial), &hashkey, sizeof(hashkey));
+	rc = dbconnW->SerialnumInsert(&serial, sizeof(serial), &hashkey, sizeof(hashkey), 0);
 	BOOST_LOG_TRIVIAL(info) << " ---- serial " << serial << " insert result " << rc;
 	CCASSERTZ(rc);
 
@@ -1264,7 +1272,7 @@ void DbConnPersistData::TestConcurrency()
 	BOOST_LOG_TRIVIAL(info) << " ---- BeginWrite result " << rc;
 	CCASSERTZ(rc);
 
-	rc = dbconnW->SerialnumInsert(&serial, sizeof(serial), &hashkey, sizeof(hashkey));
+	rc = dbconnW->SerialnumInsert(&serial, sizeof(serial), &hashkey, sizeof(hashkey), 0);
 	BOOST_LOG_TRIVIAL(info) << " ---- serial " << serial << " insert result " << rc;
 	CCASSERTZ(rc);
 
@@ -1303,7 +1311,7 @@ void DbConnPersistData::TestConcurrency()
 	BOOST_LOG_TRIVIAL(info) << " ---- serial " << serial << " check result " << rc;
 	CCASSERTZ(rc);
 
-	rc = dbconnW->SerialnumInsert(&serial, sizeof(serial), &hashkey, sizeof(hashkey));
+	rc = dbconnW->SerialnumInsert(&serial, sizeof(serial), &hashkey, sizeof(hashkey), 0);
 	BOOST_LOG_TRIVIAL(info) << " ---- serial " << serial << " insert result " << rc;
 	CCASSERTZ(rc);
 

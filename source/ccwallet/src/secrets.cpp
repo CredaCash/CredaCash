@@ -1574,7 +1574,7 @@ int Secret::PollAddress(DbConn *dbconn, TxQuery& txquery, bool update_times)
 					update_existing = true;
 				else
 				{
-					CCASSERT(bill.commitnum != result.commitnum);
+					CCASSERT(bill.commitnum != result.commitnum || bill.commitnum == 0);
 
 					duplicate_txid = true;		// can happen when two wallets are sending tx's to the same destination
 					create_new = true;			// billet doesn't exist, so create it

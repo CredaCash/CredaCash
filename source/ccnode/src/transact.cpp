@@ -9,6 +9,7 @@
 #include "ccnode.h"
 #include "transact.hpp"
 #include "processtx.hpp"
+#include "processblock.hpp"
 #include "blockchain.hpp"
 #include "commitments.hpp"
 #include "witness.hpp"
@@ -224,7 +225,7 @@ void TransactConnection::HandleMsgReadComplete(const boost::system::error_code& 
 	case CC_TAG_TX_QUERY_INPUTS:
 	case CC_TAG_TX_QUERY_SERIAL:
 	{
-		proof_difficulty = g_params.query_work_difficulty;
+		proof_difficulty = g_transact_service.query_work_difficulty;
 		const unsigned data_offset = CC_MSG_HEADER_SIZE + TX_POW_SIZE;
 		auto rc = blake2b(&objhash, sizeof(objhash), &tag, sizeof(tag), m_pread + data_offset, size - data_offset);
 		CCASSERTZ(rc);
@@ -370,6 +371,9 @@ void TransactConnection::HandleTx(SmartBuf smartobj)
 	if (CancelTimer())	// cancel timer first, to make sure we send a response instead of just stopping on timeout
 		return;
 
+	if (!g_transact_service.IsConnectedToNet())
+		return SendNotConnectedError();
+
 	static atomic<int64_t> med_tx_priority(1);
 	auto priority = med_tx_priority.fetch_add(1);
 	auto callback_id = m_use_count.load();
@@ -492,12 +496,13 @@ static void StreamNetParams(ostream& os)
 	os << ",\"server-version\":\"0x" << g_params.server_version << "\"" JSON_ENDL
 	os << ",\"protocol-version\":\"0x" << g_params.protocol_version << "\"" JSON_ENDL
 	os << ",\"effective-level\":\"0x" << g_params.effective_level << "\"" JSON_ENDL
-	os << ",\"query-work-difficulty\":\"0x" << g_params.query_work_difficulty << "\"" JSON_ENDL
+	os << ",\"query-work-difficulty\":\"0x" << g_transact_service.query_work_difficulty << "\"" JSON_ENDL
 	os << ",\"tx-work-difficulty\":\"0x" << g_params.tx_work_difficulty << "\"" JSON_ENDL
 	os << ",\"blockchain-number\":\"0x" << g_params.blockchain << "\"" JSON_ENDL
 	os << ",\"blockchain-highest-indelible-level\":\"0x" << g_blockchain.GetLastIndelibleLevel() << "\"" JSON_ENDL
 	os << ",\"merkle-tree-oldest-commitment-number\":\"0x0\"" JSON_ENDL
 	os << ",\"merkle-tree-next-commitment-number\":\"0x" << g_commitments.GetNextCommitnum() << "\"" JSON_ENDL	// !!! note: small chance this could be out-of-sync with GetLastIndelibleLevel()
+	os << ",\"connected-to-network\":" << g_transact_service.IsConnectedToNet() JSON_ENDL
 }
 
 static void StreamPoolParams(ostream& os)
@@ -880,8 +885,9 @@ void TransactConnection::HandleTxQuerySerials(const char *msg, unsigned size)
 
 		bigint_t hashkey;
 		unsigned hashkey_size = sizeof(hashkey);
+		uint64_t tx_commitnum;
 
-		auto rc1 = tx_dbconn->SerialnumSelect(&serialnum, TX_SERIALNUM_BYTES, &hashkey, &hashkey_size);
+		auto rc1 = tx_dbconn->SerialnumSelect(&serialnum, TX_SERIALNUM_BYTES, &hashkey, &hashkey_size, &tx_commitnum);
 		if (rc1 < 0)
 			return SendServerError(__LINE__);
 
@@ -903,9 +909,12 @@ void TransactConnection::HandleTxQuerySerials(const char *msg, unsigned size)
 		{
 			os << "\"indelible\"" JSON_ENDL
 			if (hashkey_size)
-				os << ",\"hashkey\":\"0x" << hashkey << "\"}" JSON_ENDL
+				os << ",\"hashkey\":\"0x" << hashkey << "\"" JSON_ENDL
 			else
 				os << "}";
+			if (tx_commitnum)
+				os << ",\"transaction-commitment-number\":\"0x" << tx_commitnum << "\"" JSON_ENDL
+			os << "}";
 		}
 		else if (rc2)
 			os << "\"pending\"}" JSON_ENDL
@@ -972,6 +981,16 @@ void TransactConnection::SendTooManyObjectsError()
 	return;
 }
 
+void TransactConnection::SendNotConnectedError()
+{
+	static const string outbuf = "ERROR:server not connected";
+
+	BOOST_LOG_TRIVIAL(error) << Name() << " Conn " << m_conn_index << " TransactConnection::SendNotConnectedError sending " << outbuf;
+
+	WriteAsync("TransactConnection::SendNotConnectedError", boost::asio::buffer(outbuf.c_str(), outbuf.size() + 1),
+			boost::bind(&Connection::HandleWrite, this, boost::asio::placeholders::error, AutoCount(this)));
+}
+
 void TransactConnection::SendServerError(unsigned line)
 {
 	static const string outbuf = "ERROR:server error";
@@ -1000,6 +1019,75 @@ void TransactConnection::SendTimeout()
 
 	WriteAsync("TransactConnection::SendTimeout", boost::asio::buffer(outbuf.c_str(), outbuf.size() + 1),
 			boost::bind(&Connection::HandleWrite, this, boost::asio::placeholders::error, AutoCount(this)));
+}
+
+void TransactService::DumpExtraConfigBottom() const
+{
+	cout << "   max network seconds = " << max_net_sec << endl;
+	cout << "   max indelible block age = " << max_block_sec << endl;
+	cout << "   query work difficulty = " << query_work_difficulty << endl;
+}
+
+bool TransactService::IsConnectedToNet() const
+{
+	bool connected = false;
+
+	int32_t delta;
+
+	while (true)	// so we can use break on error
+	{
+		if (max_net_sec)
+		{
+			// not connected if elapsed time since last block received from relay > max_net_sec
+
+			auto net_ticks = g_processblock.GetLastNetworkTime();
+
+			if (!net_ticks)
+				break;
+
+			auto ticks = ccticks();
+
+			delta = ccticks_elapsed(net_ticks, ticks)/CCTICKS_PER_SEC;
+
+			if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(trace) << "TransactService::IsConnectedToNet net_ticks " << net_ticks << " delta " << delta << " max_net_sec " << max_net_sec;
+
+			if (delta > max_net_sec)
+				break;
+
+			// not connected if elapsed time since last block became indelible > max_net_sec
+
+			auto block_ticks = g_blockchain.GetLastIndelibleTicks();
+
+			delta = ccticks_elapsed(block_ticks, ticks)/CCTICKS_PER_SEC;
+
+			if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(trace) << "TransactService::IsConnectedToNet block_ticks " << block_ticks << " delta " << delta << " max_net_sec " << max_net_sec;
+
+			if (delta > max_net_sec)
+				break;
+		}
+
+		if (max_block_sec)
+		{
+			// not connected if timestamp age of last indelible block > max_block_sec
+
+			auto block_time = g_blockchain.GetLastIndelibleTimestamp();
+
+			delta = time(NULL) - block_time;
+
+			if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(trace) << "TransactService::IsConnectedToNet block_time " << block_time << " delta " << delta << " max_block_sec " << max_block_sec;
+
+			if (delta > max_block_sec)
+				break;
+		}
+
+		connected = true;
+
+		break;
+	}
+
+	if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(trace) << "TransactService::IsConnectedToNet connected " << connected;
+
+	return connected;
 }
 
 void TransactService::Start()

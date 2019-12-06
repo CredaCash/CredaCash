@@ -634,23 +634,10 @@ bool Witness::AttemptNewBlock()
 
 			auto now = ccticks();
 			min_time = now;
-			if (ccticks_elapsed(now, auxp->announce_time) <= 0)
-			{
-				min_time = auxp->announce_time;
+			max_time = now;
 
-				if (!is_ccmint)
-				{
-					if (WITNESS_RANDOM_TEST_TIME <= 0)
-						min_time += (skip + 1) * WITNESS_TIME_SPACING;
-					else
-						min_time += rand() % (WITNESS_RANDOM_TEST_TIME * 2);	// double the input value so it is an average time
-
-					if (ccticks_elapsed(now, min_time) > 60*60*CCTICKS_PER_SEC)
-						min_time = now;
-				}
-
-				//cerr << "announce " << auxp->announce_time << " skip " << skip << " min_time " << min_time << endl;
-			}
+			if (ccticks_elapsed(now, auxp->announce_ticks) <= 0)
+				min_time = auxp->announce_ticks;
 
 			if (is_ccmint)
 			{
@@ -658,26 +645,28 @@ bool Witness::AttemptNewBlock()
 				min_time /= CC_MINT_BLOCK_SEC * CCTICKS_PER_SEC;
 				min_time *= CC_MINT_BLOCK_SEC * CCTICKS_PER_SEC;
 
-				max_time = now - 1 + (1 << 31);
+				max_time = now - 1 + (1 << 30);
 			}
 			else
 			{
-				if (ccticks_elapsed(m_block_start_time, min_time) <= MIN_BLOCK_WORK_TIME && WITNESS_RANDOM_TEST_TIME <= 0)
+				if (WITNESS_RANDOM_TEST_TIME <= 0)
+					min_time += (skip + 1) * WITNESS_TIME_SPACING;
+				else
+					min_time += rand() % (WITNESS_RANDOM_TEST_TIME * 2);	// double the input value so it is an average time
+
+				if (ccticks_elapsed(m_block_start_time, min_time) <= MIN_BLOCK_WORK_TIME && WITNESS_RANDOM_TEST_TIME < 0)
 					min_time = m_block_start_time + MIN_BLOCK_WORK_TIME;
 
-				max_time = min_time;
 				auto delibletxs = g_blockchain.ChainHasDelibleTxs(priorobj, last_indelible_level);
 				if (!delibletxs && WITNESS_RANDOM_TEST_TIME <= 0)
-					max_time += WITNESS_NO_WORK_TIME_SPACING - WITNESS_TIME_SPACING;
+					max_time = g_blockchain.GetLastIndelibleTicks() + WITNESS_NO_WORK_TIME_SPACING + skip * WITNESS_TIME_SPACING;
 			}
 
-			if (!min_time)
-				min_time = 1;	// because zero means no wait
+			if (ccticks_elapsed(min_time, max_time) <= 0)
+				max_time = min_time;
 
-			if (!max_time)
-				max_time = 1;	// because zero means no wait
-
-			//cerr << "announce " << auxp->announce_time << " now " << now << " skip " << skip << " min_time " << min_time << " max_time " << max_time << endl;
+			//lock_guard<FastSpinLock> lock(g_cout_lock);
+			//cerr << "GetLastIndelibleTicks " << g_blockchain.GetLastIndelibleTicks() << " announce " << auxp->announce_ticks << " now " << now << " diff " << ccticks_elapsed(auxp->announce_ticks, now) << " skip " << skip << " spacing " << WITNESS_TIME_SPACING << " min_time " << min_time << " diff " << ccticks_elapsed(now, min_time) << " max_time " << max_time << " diff " << ccticks_elapsed(min_time, max_time) << endl;
 		}
 
 		CCASSERT(priorobj);
@@ -719,7 +708,12 @@ bool Witness::AttemptNewBlock()
 		if (HaveNewBlockWork())
 			continue;	// check to restart with a different prior block
 
-		if (ccticks_elapsed(ccticks(), (m_newblock_bufpos ? min_time : max_time)) <= 0)
+		auto now = ccticks();
+
+		//lock_guard<FastSpinLock> lock(g_cout_lock);
+		//cerr << "GetLastIndelibleTicks " << g_blockchain.GetLastIndelibleTicks() << " now " << now << " min_time " << min_time << " diff " << ccticks_elapsed(now, min_time) << " max_time " << max_time << " diff " << ccticks_elapsed(min_time, max_time) << endl;
+
+		if (ccticks_elapsed(now, (m_newblock_bufpos ? min_time : max_time)) <= 0)
 			break;
 	}
 
@@ -750,7 +744,7 @@ bool Witness::AttemptNewBlock()
 	if (!m_test_is_double_spend && !m_test_ignore_order)
 		m_highest_witnessed_level[TEST_SIM_ALL_WITNESSES * witness_index] = wire->level.GetValue();
 
-	block->ConsoleAnnounce(" created", wire, auxp, (m_test_is_double_spend ? " double-spend" : ""), (m_test_ignore_order ? " bad-order" : ""));
+	block->ConsoleAnnounce("  created", wire, auxp, (m_test_is_double_spend ? " double-spend" : ""), (m_test_ignore_order ? " bad-order" : ""));
 
 	relay_request_wire_params_t req_params;
 	memset(&req_params, 0, sizeof(req_params));
@@ -937,7 +931,7 @@ Witness::BuildNewBlockStatus Witness::BuildNewBlock(uint32_t& min_time, uint32_t
 			for (unsigned i = 0; i < m_txbuf.nin; ++i)
 			{
 				// if the witness accepts tx's with duplicate serialnums (which it does for maltest),
-				// we can end up with extra serialnum's in the tempdb that were put there before the duplicate was detected and the tx rejected
+				// we can end up with extra serialnums in the tempdb that were put there before the duplicate was detected and the tx rejected
 				// that can result in the later rejection of a valid block from another witness that contains the same serialnum so it appears to be a double-spend
 				// but the non-mal witnesses won't have this problem, and they will accept the valid block
 
@@ -974,10 +968,9 @@ Witness::BuildNewBlockStatus Witness::BuildNewBlock(uint32_t& min_time, uint32_t
 				if (ccticks_elapsed(now, min_time) <= MIN_BLOCK_WORK_TIME && WITNESS_RANDOM_TEST_TIME <= 0)
 				{
 					min_time = now + MIN_BLOCK_WORK_TIME;
+
 					if (ccticks_elapsed(min_time, max_time) <= 0)
-						min_time = max_time;
-					if (!min_time)
-						min_time = 1;	// because zero means no wait
+						max_time = min_time;
 				}
 
 				if (TEST_UNRECOGNIZED_TAG && !witness_index)
@@ -1106,7 +1099,7 @@ SmartBuf Witness::FinishNewBlock(SmartBuf priorobj)
 		memcpy(block->TxData(), m_blockbuf.data(), m_newblock_bufpos);
 	}
 
-	auto auxp = block->SetupAuxBuf(smartobj);
+	auto auxp = block->SetupAuxBuf(smartobj, true);
 	if (!auxp)
 	{
 		BOOST_LOG_TRIVIAL(error) << "Witness::FinishNewBlock witness " << witness_index << " SetupAuxBuf failed";
@@ -1167,6 +1160,22 @@ SmartBuf Witness::FinishNewBlock(SmartBuf priorobj)
 		BOOST_LOG_TRIVIAL(info) << "Witness::FinishNewBlock built double-spend test block level " << wire->level.GetValue() << " witness " << (unsigned)wire->witness << " size " << block->ObjSize() << " oid " << buf2hex(&auxp->oid, sizeof(ccoid_t)) << " prior oid " << buf2hex(&wire->prior_oid, sizeof(ccoid_t));
 
 	return smartobj;
+}
+
+bool Witness::IsSoleWitness() const
+{
+	if (witness_index)
+		return false;
+
+	if (TEST_SIM_ALL_WITNESSES)
+		return true;
+
+	auto last_indelible_block = g_blockchain.GetLastIndelibleBlock();
+	auto block = (Block*)last_indelible_block.data();
+	auto auxp = block->AuxPtr();
+	auto nwitnesses = auxp->blockchain_params.nwitnesses;
+
+	return (nwitnesses == 1);
 }
 
 void Witness::NotifyNewWork(bool is_block)

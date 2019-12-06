@@ -36,6 +36,7 @@ static const char* Valid_Objs = "Valid_Objs";
 #define IF_NOT_EXISTS_SQL		"if not exists "
 
 #define CREATE_TABLE_SQL		"create table " IF_NOT_EXISTS_SQL
+#define ALTER_TABLE_SQL			"alter table "
 #define CREATE_INDEX_SQL		"create index " IF_NOT_EXISTS_SQL
 #define CREATE_INDEX_UNIQUE_SQL	"create unique index " IF_NOT_EXISTS_SQL
 
@@ -212,6 +213,8 @@ void DbInit::CreateDBs()
 
 	// this table contains the spent serialnums from indelible transactions
 	CCASSERTZ(dbexec(Persistent_db, CREATE_TABLE_SQL "Serialnums (Serialnum blob primary key not null, HashKey blob) without rowid;"));
+	if (SQLITE_OK != sqlite3_table_column_metadata(Persistent_db, NULL, "Serialnums", "TxCommitnum", NULL, NULL, NULL, NULL, NULL))
+		CCASSERTZ(dbexec(Persistent_db, ALTER_TABLE_SQL "Serialnums add column TxCommitnum integer;"));
 
 	// this table contains the Merkle tree of all commitments
 	// note: tree entries are stored in (Height, Offset) sort order, so updating the Merkle tree should take about 40 disk seeks, one

@@ -190,7 +190,7 @@ def SocksConnectString(server, proxyuser = None):
 	if proxyuser is None:
 		proxyuser = RandomString(12)
 	string = "\x04\x01\x01\xBB\x00\x00\x00\x01"	# the string is: Socks4, connect, port 443, ip 0.0.0.1
-	string += proxyuser							# add a Socks4 user id; Tor gives every user id it's own circuit
+	string += proxyuser							# add a Socks4 user id; Tor gives every user id its own circuit
 	string += chr(0)
 	string += server
 	string += chr(0)

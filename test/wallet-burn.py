@@ -48,6 +48,11 @@ import threading
 import logging
 import pprint
 
+TEST_THREAD_SLEEP = False
+TEST_RELEASE_ALLOCATED = False
+TEST_ABANDON_TXS = False
+TEST_POLL_DESTINATION = False
+
 # CRITICAL, ERROR, WARNING, INFO, DEBUG
 logging.basicConfig(level=logging.WARNING, format='[%(levelname)s] (%(threadName)-10s) %(message)s')
 
@@ -68,6 +73,14 @@ def do_rpc(s, method, params):
 	if r.status_code != 200:
 		logging.critical('rpc status code %d' % r.status_code)
 	logging.debug('rpc response %s' % r.text)
+	if method.startswith('cc.dump'):
+		return None
+	try:
+		j = json.loads(r.text)
+		return j['result']
+	except:
+		print 'json load failed:', r.text
+		return None
 
 def poll_thread(tnum):
 	global stime
@@ -98,7 +111,7 @@ def wallet_thread(tnum):
 	while True:
 		now = time.time()
 		sleep_start = start_time + (sleep_num*2 - tgroup) * sleep_period
-		if tnum > 1 and now >= sleep_start and 0:
+		if tnum > 1 and now >= sleep_start and TEST_THREAD_SLEEP:
 			sduration = sleep_period
 			if tgroup and sleep_num < 2:
 				sduration /= 2
@@ -108,8 +121,8 @@ def wallet_thread(tnum):
 			sleep_num += 1
 			if tnum == 2:
 				print 'time', int(time.time()),'thread', tnum, 'group', tgroup, 'done sleeping'
-		method = random.randrange(4)
-		if not random.randrange(10 * nthreads) and tgroup and 0:
+		method = random.randrange(5)
+		if not random.randrange(10 * nthreads) and tgroup and TEST_RELEASE_ALLOCATED:
 			do_rpc(s, 'cc.billets_release_allocated', ())	# will cause "BilletSpendInsert constraint violation" warnings
 		elif random.random() < prob_tx:
 			destination = destinations[random.randrange(len(destinations))]
@@ -125,7 +138,9 @@ def wallet_thread(tnum):
 			if random.random() < 0.5:
 				amount = '1'
 			#amount = '5000' # for testing
-			do_rpc(s, 'sendtoaddress', (destination, amount))
+			txid = do_rpc(s, 'sendtoaddress', (destination, amount))
+			if txid and random.random() < 0.5 and TEST_ABANDON_TXS:
+				do_rpc(s, 'abandontransaction', ('"' + txid + '"', ))
 		elif method == 0:
 			do_rpc(s, 'getbalance', ())
 		elif method == 1:
@@ -133,6 +148,8 @@ def wallet_thread(tnum):
 		elif method == 2:
 			do_rpc(s, 'listransactions', ())
 		elif method == 3:
+			do_rpc(s, 'cc.billets_poll_unspent', ())
+		elif method == 4:
 			do_rpc(s, 'cc.dump_tx_build', ())
 		else:
 			raise Exception
@@ -169,7 +186,7 @@ def main(argv):
 	start_time = int(time.time())
 	print 'start_time', start_time
 
-	for i in range(nthreads + 2*0):
+	for i in range(nthreads + 2 * TEST_POLL_DESTINATION):
 		if i < nthreads:
 			t = threading.Thread(target=wallet_thread, args=(i,))
 		else:

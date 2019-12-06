@@ -227,8 +227,8 @@ int ProcessBlock::BlockValidate(DbConn *dbconn, SmartBuf smartobj, TxPay& txbuf)
 
 	if (dbconn->TempSerialnumClear((void*)TEMP_SERIALS_PROCESS_BLOCKP))	// before attempting to index, delete whatever is left over from last time
 	{
-		// if we can't delete them, the serialnum's already in Temp_Serials_db might end up associated with the wrong block,
-		// causing a block in the eventually indelible chain to be rejected because the serialnum's appear to be already spent
+		// if we can't delete them, the serialnums already in Temp_Serials_db might end up associated with the wrong block,
+		// causing a block in the eventually indelible chain to be rejected because the serialnums appear to be already spent
 
 		BOOST_LOG_TRIVIAL(error) << "ProcessBlock::BlockValidate TempSerialnumClear failed which might cause this node to lose sync with blockchain";
 	}
@@ -378,12 +378,17 @@ void ProcessBlock::ValidObjsBlockInsert(DbConn *dbconn, SmartBuf smartobj, TxPay
 
 	if (dbconn->ValidObjsInsert(smartobj))
 	{
-		// if ValidObjsInsert fails, we might now have serialnum's in the Temp_Serials_db associated with a blockp that could be reused,
-		// causing a block in the eventually indelible chain to be rejected because the serialnum's appear to be already spent
+		// if ValidObjsInsert fails, we might now have serialnums in the Temp_Serials_db associated with a blockp that could be reused,
+		// causing a block in the eventually indelible chain to be rejected because the serialnums appear to be already spent
 
 		BOOST_LOG_TRIVIAL(error) << "ProcessBlock::ValidObjsBlockInsert ValidObjsInsert failed which might cause this node to lose sync with blockchain";
 
 		return;
+	}
+
+	if (auxp->from_tx_net)
+	{
+		m_last_network_ticks = (auxp->announce_ticks ? auxp->announce_ticks : 1);
 	}
 
 	if (TEST_CUZZ) usleep(rand() & (1024*1024-1));
@@ -434,7 +439,7 @@ void ProcessBlock::ValidObjsBlockInsert(DbConn *dbconn, SmartBuf smartobj, TxPay
 		}
 	}
 
-	m_last_block_ticks.store(ccticks());
+	m_last_block_ticks = ccticks();
 
 	g_witness.NotifyNewWork(true);
 }
@@ -501,7 +506,7 @@ void ProcessBlock::ThreadProc()
 
 			ValidObjsBlockInsert(dbconn, smartobj, txbuf);
 
-			block->ConsoleAnnounce("received", wire, auxp);
+			block->ConsoleAnnounce(" received", wire, auxp);
 
 			break;
 		}

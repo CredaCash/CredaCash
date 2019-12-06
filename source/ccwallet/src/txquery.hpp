@@ -96,6 +96,6 @@ public:
 
 	int QueryParams(TxParams& txparams, vector<char> &querybuf);
 	int QueryAddress(uint64_t blockchain, const snarkfront::bigint_t& address, const uint64_t commitstart, QueryAddressResults &results);
-	int QuerySerialnums(uint64_t blockchain, const snarkfront::bigint_t *serialnums, unsigned nserials, uint16_t *statuses, snarkfront::bigint_t *hashkeys);
+	int QuerySerialnums(uint64_t blockchain, const snarkfront::bigint_t *serialnums, unsigned nserials, uint16_t *statuses, snarkfront::bigint_t *hashkeys, uint64_t *tx_commitnums);
 	int QueryInputs(const uint64_t *commitnum, const unsigned ncommits, TxParams& txparams, QueryInputResults &inputs);
 };

@@ -9,7 +9,7 @@
 #pragma once
 
 #define CCAPPNAME	"CredaCash node"
-#define CCVERSION	 "1.01 beta" //@@!
+#define CCVERSION	 "1.01 beta2" //@@!
 #define CCEXENAME	"ccnode"
 #define CCAPPDIR	"CCNode-#"
 
@@ -64,8 +64,6 @@ DECLARE_EXTERN struct global_params_struct
 	uint64_t blockchain;
 	uint32_t default_pool;
 	int32_t  max_param_age;
-
-	uint64_t query_work_difficulty;
 	uint64_t tx_work_difficulty;
 
 	int		max_obj_mem;

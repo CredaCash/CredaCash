@@ -463,7 +463,7 @@ int Transaction::SaveOutgoingTx(DbConn *dbconn)
 
 		CCASSERT(check.status == BILL_STATUS_ALLOCATED);
 
-		rc = dbconn->BilletSpendInsert(tx_id, bill.id, &bill.hashkey);
+		rc = dbconn->BilletSpendInsert(tx_id, bill.id, &bill.spend_hashkey);
 		if (rc) return rc;	// if billets were deallocated while tx was being built, the same billet could have been used twice
 	}
 
@@ -930,11 +930,12 @@ void Transaction::SetAdjustedAmounts(bool incwatch)
 	// the bitcoin-emulation API reports each txout (except change) as a separate transaction with its own txid
 	// the donation is assigned pro rata to the non-change txout's + the excess txin amount
 	//	Note: if a transaction comes in from outside, the change outputs might not be marked
-	// the total transaction amount for the txout is generally thw same as the txout amount, except:
+	// the total transaction amount for the txout is generally the same as the txout amount, except:
 	//	if the txin's exceed the txout's, then the excess txin's are assigned pro rata to all the non-zero txout's
 
 	// TODO: needs to be tested to work correctedly as more capabilities are added to wallet
 
+	bigint_t total_sent = 0UL;
 	bigint_t sum_sent = 0UL;
 	bigint_t sum_out = 0UL;
 	bigint_t sum_in = 0UL;
@@ -944,6 +945,13 @@ void Transaction::SetAdjustedAmounts(bool incwatch)
 		Billet& bill = output_bills[i];
 
 		if (bill.asset == 0 && !bill.BillIsChange())
+		{
+			total_sent = total_sent + bill.amount;
+
+			if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "Transaction::SetAdjustedAmounts output " << i << " amount " << bill.amount << " total_sent " << total_sent;
+		}
+
+		if (bill.asset == 0 && !output_destinations[i].DestinationFromThisWallet(false))
 		{
 			sum_sent = sum_sent + bill.amount;
 
@@ -980,7 +988,7 @@ void Transaction::SetAdjustedAmounts(bool incwatch)
 
 	bigint_t net_donation = 0UL;
 	if (WeSent(incwatch))
-		net_donation = donation;
+		net_donation = donation + excess_in;
 
 	bigint_t total_donation = 0UL;
 	bigint_t total_out = 0UL;
@@ -989,18 +997,18 @@ void Transaction::SetAdjustedAmounts(bool incwatch)
 	{
 		Billet& bill = output_bills[i];
 
-		if (bill.asset == 0 && !bill.BillIsChange() && sum_sent)
+		if (bill.asset == 0 && !bill.BillIsChange() && total_sent)
 		{
-			adj_donations[i] = (net_donation * bill.amount + sum_sent/2) / sum_sent;
+			adj_donations[i] = (net_donation * bill.amount + total_sent/2) / total_sent;
 
 			total_donation = total_donation + adj_donations[i];
 
 			if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "Transaction::SetAdjustedAmounts output " << i << " adj_donations " << adj_donations[i] << " total_donation " << total_donation;
 		}
 
-		if (bill.asset == 0 && bill.amount && sum_out)
+		if (bill.asset == 0 && bill.amount && sum_sent)
 		{
-			adj_amounts[i] = bill.amount + (excess_in * bill.amount + sum_out/2) / sum_out;
+			adj_amounts[i] = bill.amount + (excess_in * bill.amount + sum_sent/2) / sum_sent;
 
 			total_out = total_out + adj_amounts[i];
 
@@ -1008,10 +1016,7 @@ void Transaction::SetAdjustedAmounts(bool incwatch)
 		}
 	}
 
-	if (sum_sent)
-		total_donation = total_donation + (net_donation * excess_in + sum_sent/2) / sum_sent;
-
-	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "Transaction::SetAdjustedAmounts sum_out " << sum_out << " sum_in " << sum_in << " donation " << donation << " excess_in " << excess_in << " sum_sent " << sum_sent << " total_out " << total_out << " total_donation " << total_donation;
+	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "Transaction::SetAdjustedAmounts sum_out " << sum_out << " sum_in " << sum_in << " donation " << donation << " excess_in " << excess_in << " sum_sent " << sum_sent << " total_sent " << total_sent << " total_out " << total_out << " total_donation " << total_donation;
 
 	const bigint_t one = 1UL;
 
@@ -1040,13 +1045,11 @@ void Transaction::SetAdjustedAmounts(bool incwatch)
 		}
 	}
 
-	sum_out = sum_out + excess_in;
-
-	for (unsigned iter = 0; iter < 2000 && total_out != sum_out; ++iter)
+	for (unsigned iter = 0; iter < 2000 && total_out != sum_sent; ++iter)
 	{
-		if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "Transaction::SetAdjustedAmounts total_out " << total_out << " sum_out " << sum_out;
+		if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "Transaction::SetAdjustedAmounts total_out " << total_out << " sum_sent " << sum_sent;
 
-		for (unsigned i = 0; i < nout && total_out < sum_out; ++i)
+		for (unsigned i = 0; i < nout && total_out < sum_sent; ++i)
 		{
 			Billet& bill = output_bills[i];
 
@@ -1057,7 +1060,7 @@ void Transaction::SetAdjustedAmounts(bool incwatch)
 			}
 		}
 
-		for (unsigned i = nout; i > 0 && total_out > sum_out; --i)
+		for (unsigned i = nout; i > 0 && total_out > sum_sent; --i)
 		{
 			if (adj_amounts[i-1])
 			{
@@ -1080,6 +1083,7 @@ int Transaction::CreateTxMint(DbConn *dbconn, TxQuery& txquery) // throws RPC_Ex
 	auto rc = txquery.QueryInputs(NULL, 0, txparams, inputs);
 	if (g_shutdown) throw txrpc_shutdown_error;
 	if (rc) throw txrpc_server_error;
+	if (txparams.NotConnected()) throw txrpc_server_error;
 
 	if (Implement_CCMint(txparams.blockchain))
 	{
@@ -1477,7 +1481,7 @@ tx-new-billet-wait-sec command line option when starting the wallet.)"
 			"\n" << endl;
 		}
 
-		if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "Transaction::WaitNewBillet billet wait failed; throwing txrpc_insufficient_funds";
+		if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(debug) << "Transaction::WaitNewBillet billet wait failed; throwing txrpc_insufficient_funds";
 
 		throw txrpc_insufficient_funds;
 	}
@@ -1507,7 +1511,7 @@ wallet.)"
 			"\n" << endl;
 		}
 
-		if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "Transaction::CheckTimeout timed out; throwing txrpc_tx_timeout";
+		if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(debug) << "Transaction::CheckTimeout timed out; throwing txrpc_tx_timeout";
 
 		throw txrpc_tx_timeout;
 	}
@@ -1599,6 +1603,7 @@ int Transaction::FillOutTx(DbConn *dbconn, TxQuery& txquery, TxParams& txparams,
 	auto rc = txquery.QueryInputs(commitnums, nin, txparams, inputs);
 	if (g_shutdown) throw txrpc_shutdown_error;
 	if (rc) throw txrpc_server_error;
+	if (txparams.NotConnected()) throw txrpc_server_error;
 
 	if (Implement_CCMint(txparams.blockchain) && inputs.param_level < CC_MINT_COUNT + CC_MINT_ACCEPT_SPAN)
 		throw txrpc_tx_rejected;
@@ -1702,9 +1707,9 @@ int Transaction::FillOutTx(DbConn *dbconn, TxQuery& txquery, TxParams& txparams,
 		rc = Secret::GetParentValue(dbconn, SECRET_TYPE_SPEND, secret.id, txin.params, &txin.secrets[0], sizeof(txin.secrets));
 		if (rc) throw txrpc_wallet_db_error;
 
-		CCRandom(&bill.hashkey, TX_HASHKEY_WIRE_BYTES);
+		CCRandom(&bill.spend_hashkey, TX_HASHKEY_WIRE_BYTES);
 
-		//cerr << "bill " << i << " address " << hex << bill.address << " hashkey " << bill.hashkey << dec << endl;
+		//cerr << "bill " << i << " address " << hex << bill.address << " spend_hashkey " << bill.spend_hashkey << dec << endl;
 
 		if (TRACE_TRANSACTIONS)
 		{
@@ -1724,7 +1729,7 @@ int Transaction::FillOutTx(DbConn *dbconn, TxQuery& txquery, TxParams& txparams,
 		txin.merkle_root = tx.tx_merkle_root;
 		txin.enforce_trust_secrets = 1;
 
-		txin.S_hashkey = bill.hashkey;
+		txin.S_hashkey = bill.spend_hashkey;
 
 		txin.pathnum = i + 1;
 
@@ -1826,6 +1831,12 @@ int Transaction::CreateTxPay(DbConn *dbconn, TxQuery& txquery, bool async, strin
 
 	auto rc = g_txparams.GetParams(txparams, txquery);
 	if (rc) throw txrpc_server_error;
+	if (txparams.NotConnected())
+	{
+		rc = g_txparams.UpdateParams(txparams, txquery);
+		if (rc) throw txrpc_server_error;
+		if (txparams.NotConnected()) throw txrpc_server_error;
+	}
 
 	// check dest_chain
 	// dest_chain comes from the encoded destination string and can be zero, which means use any blockchain
@@ -2188,7 +2199,7 @@ void Transaction::CleanupSubTx(DbConn *dbconn, const Secret &destination, bool n
 
 			if (bill.status != BILL_STATUS_ALLOCATED)
 			{
-				BOOST_LOG_TRIVIAL(info) << "Transaction::CleanupSubTx skipping release of input " << i << " billet id " << bill.id << " status " << bill.status << " amount " << bill.amount;
+				BOOST_LOG_TRIVIAL(debug) << "Transaction::CleanupSubTx skipping release of input " << i << " billet id " << bill.id << " status " << bill.status << " amount " << bill.amount;
 
 				continue;
 			}
@@ -2244,7 +2255,7 @@ void Transaction::CleanupSubTx(DbConn *dbconn, const Secret &destination, bool n
 					{
 						// all output billets initially get a txid so the polling thread can find the billet if it gets a matching address query response
 						// but if the billet was not successfully submitted, the txid can be released in case the same txid is created by another wallet
-						// as currently implemented however, this would result in listtransactions briefly reporting the transaction and it's txid,
+						// as currently implemented however, this would result in listtransactions briefly reporting the transaction and its txid,
 						// and then the transaction disappearing when the txid is released
 
 						BOOST_LOG_TRIVIAL(info) << "Transaction::CleanupSubTx releasing txid for billet " << bill.DebugString();
@@ -2640,7 +2651,7 @@ int Transaction::TryCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& txpa
 	{
 		if (RandTest(4))
 		{
-			BOOST_LOG_TRIVIAL(info) << "Transaction::TryCreateTxPay RTEST_ALLOW_DOUBLE_SPENDS skipping input spent check" << " and waiting for conflicting tx's to clear...";
+			BOOST_LOG_TRIVIAL(info) << "Transaction::TryCreateTxPay RTEST_ALLOW_DOUBLE_SPENDS skipping input spent check" << ", and then waiting for conflicting tx's to clear...";
 
 			ccsleep(10);	// allow conflicting tx to clear
 		}
@@ -2825,20 +2836,13 @@ int Transaction::TryCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& txpa
 				rc = -1;
 			}
 
-			/*
-
-			SubmitTx possible return values:
+			/* SubmitTx possible return values:
 
 				0 = submitted
+				1 = submitted with error returned -> submit failed
 				-1 = maybe
-					!WasPossiblySent() -> not submitted
-					WasPossiblySent() = maybe submitted
-						serialnum cleared -> submitted ok
-						serialnum not cleared -> maybe submitted
-				1 = submitted with error returned
-					serialnum unknown -> maybe submitted
-					serialnum cleared -> submitted ok
-					serialnum not cleared -> submit failed
+					!WasPossiblySent() = not submitted
+					WasPossiblySent() = maybe submitted -> assume submitted
 			*/
 
 			//if (rc && (si < 2 || need_intermediate_txs))
@@ -2848,16 +2852,31 @@ int Transaction::TryCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& txpa
 			{
 				tx->build_state = TX_BUILD_SUBMIT_OK;
 			}
-			else if (rc < 0)
+			else if (rc > 0)
 			{
+				BOOST_LOG_TRIVIAL(warning) << "Transaction::TryCreateTxPay ref id " << entry->ref_id << " SubmitTx returned error: " << txquery.ReadBuf();
+
+				tx->build_state = TX_BUILD_SUBMIT_INVALID;
+
+				if (si < 2 || need_intermediate_txs)
+					throw txrpc_tx_rejected;
+
+				BOOST_LOG_TRIVIAL(warning) << "Transaction::TryCreateTxPay ref id " << entry->ref_id << " transaction only partially sent; SubmitTx and QuerySerialnums error in subtx " << si << " of " << active_subtx_count << " need_intermediate_txs " << need_intermediate_txs << " parent_id " << tx->parent_id;
+
+				continue;
+			}
+			else
+			{
+				BOOST_LOG_TRIVIAL(warning) << "Transaction::TryCreateTxPay ref id " << entry->ref_id << " SubmitTx failed";
+
 				if (need_intermediate_txs)
 					throw txrpc_server_error;
 
 				if (txquery.WasPossiblySent())
 				{
-					// for now TX_BUILD_SUBMIT_UNKNOWN is handled the same as TX_BUILD_SUBMIT_OK, so don't query any further
-
 					BOOST_LOG_TRIVIAL(warning) << "Transaction::TryCreateTxPay ref id " << entry->ref_id << " SubmitTx sent a transaction but did not get a response from the server. The wallet will consider this transaction to have been sent, but if it is never received by the network, it will need to be abandoned.";
+
+					// for now TX_BUILD_SUBMIT_UNKNOWN is handled the same as TX_BUILD_SUBMIT_OK
 
 					tx->build_state = TX_BUILD_SUBMIT_UNKNOWN;
 				}
@@ -2871,54 +2890,6 @@ int Transaction::TryCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& txpa
 					continue;
 				}
 			}
-			else
-			{
-				// query hashkey to see if this tx cleared
-
-				uint16_t status;
-				bigint_t hashkey;
-
-				auto rc2 = txquery.QuerySerialnums(entry->dest_chain, &tx->input_bills[0].serialnum, 1, &status, &hashkey);
-
-				if (!rc2 && RandTest(RTEST_TX_ERRORS+2*0))
-				{
-					BOOST_LOG_TRIVIAL(warning) << "Transaction::TryCreateTxPay ref id " << entry->ref_id << " simulating failed QuerySerialnums after apparently failed SubmitTx for subtx " << si << " of " << active_subtx_count << " need_intermediate_txs " << need_intermediate_txs;
-
-					rc2 = -1;
-				}
-
-				if (rc2 && need_intermediate_txs)
-				{
-					throw txrpc_server_error;
-				}
-				else if (rc2)
-				{
-					BOOST_LOG_TRIVIAL(warning) << "Transaction::TryCreateTxPay ref id " << entry->ref_id << " SubmitTx sent a transaction and got an ambiguous response from the server. The wallet will consider this transaction to have been sent, but if it is never received by the network, it will need to be abandoned.";
-
-					tx->build_state = TX_BUILD_SUBMIT_UNKNOWN;
-				}
-				else if (status == SERIALNUM_STATUS_SPENT && !memcpy(&hashkey, &tx->input_bills[0].hashkey, sizeof(hashkey)))
-				{
-					// consider this submit ok because input billet was spent using same hashkey
-
-					tx->build_state = TX_BUILD_SUBMIT_OK;
-				}
-				else
-				{
-					// tx was invalid, so this submit failed
-					// TODO: if rc > 1, query all inputs to see if one of them was spent in a different tx, and if so, make this tx status conflicted and auto retry?
-
-					tx->build_state = TX_BUILD_SUBMIT_INVALID;
-
-					if (si < 2 || need_intermediate_txs)
-						throw txrpc_tx_rejected;
-
-					BOOST_LOG_TRIVIAL(warning) << "Transaction::TryCreateTxPay ref id " << entry->ref_id << " transaction only partially sent; SubmitTx and QuerySerialnums error in subtx " << si << " of " << active_subtx_count << " need_intermediate_txs " << need_intermediate_txs << " parent_id " << tx->parent_id;
-
-					continue;
-				}
-			}
-
 
 			if (tx->build_state == TX_BUILD_SUBMIT_UNKNOWN)
 				CCASSERTZ(need_intermediate_txs);
@@ -3042,10 +3013,7 @@ int Transaction::CreateTxFromAddressQueryResult(DbConn *dbconn, TxQuery& txquery
 	if (duplicate_txid)
 		txout.flags |= BILL_FLAG_NO_TXID;
 
-	rc = txout.SetStatusCleared(dbconn, result.commitnum);
-	if (rc) return rc;
-
-	return CheckConflicts(dbconn);
+	return txout.SetStatusCleared(dbconn, result.commitnum);
 }
 
 int Transaction::UpdateStatus(DbConn *dbconn, uint64_t bill_id, uint64_t commitnum)
@@ -3055,7 +3023,7 @@ int Transaction::UpdateStatus(DbConn *dbconn, uint64_t bill_id, uint64_t commitn
 	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(debug) << "Transaction::UpdateStatus bill id " << bill_id << " commitnum " << commitnum << " tx " << DebugString();
 
 	if (status != TX_STATUS_PENDING && status != TX_STATUS_ABANDONED)
-		if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(debug) << "Transaction::UpdateStatus billet cleared in transaction id " << id << " with status " << status << "; bill id " << bill_id << " commitnum " << commitnum;
+		BOOST_LOG_TRIVIAL(debug) << "Transaction::UpdateStatus billet cleared in transaction id " << id << " with status " << status << "; bill id " << bill_id << " commitnum " << commitnum;
 
 	bool all_cleared = true;
 	bool none_cleared = true;
@@ -3112,13 +3080,13 @@ int Transaction::UpdateStatus(DbConn *dbconn, uint64_t bill_id, uint64_t commitn
 	{
 		Billet& bill = input_bills[i];
 
-		// mark all input serialnum's as spent
-		// !!! TBD: could query one of the serialnum's first just to be sure this transaction was spent
+		// mark all input serialnums as spent
+		// !!! TBD: could query the serialnums first just to be sure this transaction was spent
 		//	(this function is inside a BeginWrite and would need first drop the write lock before running a query)
 
 		if (bill.status != BILL_STATUS_SPENT)
 		{
-			auto rc = bill.SetStatusSpent(dbconn, bill.hashkey);
+			auto rc = bill.SetStatusSpent(dbconn, bill.spend_hashkey, bill.spend_tx_commitnum);
 			if (rc) return rc;
 		}
 	}
@@ -3130,47 +3098,7 @@ int Transaction::UpdateStatus(DbConn *dbconn, uint64_t bill_id, uint64_t commitn
 
 	status = TX_STATUS_CLEARED;
 
-	auto rc = dbconn->TransactionInsert(*this);
-	if (rc) return rc;
-
-	return CheckConflicts(dbconn);
-}
-
-int Transaction::CheckConflicts(DbConn *dbconn)
-{
-	// must be called from inside a BeginWrite
-
-	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(debug) << "Transaction::CheckConflicts " << DebugString();
-
-	for (unsigned i = 0; i < nin; ++i)
-	{
-		Billet& bill = input_bills[i];
-
-		uint64_t tx_id = 0;
-
-		while (true)
-		{
-			bigint_t hashkey;
-
-			auto rc = dbconn->BilletSpendSelectBillet(bill.id, tx_id, hashkey);
-			if (rc < 0) return rc;
-
-			if (rc)
-				break;
-
-			if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "Transaction::CheckConflicts tx id " << id << " bill id " << bill.id << " returned tx_id " << tx_id;
-
-			if (tx_id != id)
-			{
-				rc = Transaction::SetConflicted(dbconn, tx_id);
-				if (rc) return rc;
-			}
-
-			++tx_id;
-		}
-	}
-
-	return 0;
+	return dbconn->TransactionInsert(*this);
 }
 
 int Transaction::SetConflicted(DbConn *dbconn, uint64_t tx_id)
@@ -3209,9 +3137,7 @@ int Transaction::SetConflicted(DbConn *dbconn, uint64_t tx_id)
 
 		while (tx_id < INT64_MAX)
 		{
-			bigint_t _hashkey;
-
-			auto rc = dbconn->BilletSpendSelectBillet(bill.id, tx_id, _hashkey);
+			auto rc = dbconn->BilletSpendSelectBillet(bill.id, tx_id);
 			if (rc < 0) return rc;
 
 			if (rc)

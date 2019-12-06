@@ -116,7 +116,7 @@ int TorService::SetConfig()
 	return 0;
 }
 
-void TorService::DumpConfig()
+void TorService::DumpConfig() const
 {
 	cout << name << " service configuration:" << endl;
 	cout << "   enabled = " << yesno(enabled) << endl;

@@ -39,6 +39,7 @@ private:
 	void SendObjectNotValid();
 	void SendBlockchainNumberError();
 	void SendTooManyObjectsError();
+	void SendNotConnectedError();
 	void SendServerError(unsigned line);
 	void SendReplyWriteError();
 	void SendTimeout();
@@ -52,13 +53,24 @@ class TransactService : public TorService
 public:
 	TransactService(const string& n, const wstring& d, const string& s)
 	 :	TorService(n, d, s),
-		m_service(n)
+		m_service(n),
+		max_net_sec(0),
+		max_block_sec(0),
+		query_work_difficulty(0)
 	{ }
+
+	int32_t  max_net_sec;
+	int32_t  max_block_sec;
+	uint64_t query_work_difficulty;
 
 	void ConfigPostset()
 	{
 		tor_advertise = false;
 	}
+
+	void DumpExtraConfigBottom() const;
+
+	bool IsConnectedToNet() const;
 
 	void Start();
 

@@ -23,6 +23,7 @@ public:
 	uint64_t block_level;
 	uint64_t oldest_commitnum;
 	uint64_t next_commitnum;
+	uint16_t connected;
 	uint16_t asset_bits;
 	uint16_t amount_bits;
 	uint16_t donation_bits;
@@ -40,6 +41,8 @@ public:
 	unsigned update_counter;
 
 	TxParams();
+
+	bool NotConnected() const;
 
 	unsigned ComputeTxSize(unsigned nout, unsigned nin) const;
 	void ComputeDonation(unsigned nout, unsigned nin, snarkfront::bigint_t& donation) const;

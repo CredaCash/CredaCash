@@ -138,10 +138,12 @@ static string input_to_json(const string& input)
 			token += c;						// add escaped char to token
 			escaped = false;
 			tstart = false;
+
 			continue;
 		}
+
 		#if 0 // test code treated quoted \'s differently than unquoted \'s
-		else if (escaped)
+		if (escaped)
 			token += "\\\\";
 		#endif
 

@@ -195,10 +195,13 @@ int DbConn::SecretSelect(sqlite3_stmt *select, Secret& secret, bool expect_row, 
 	uint64_t dest_id = sqlite3_column_int64(select, 3);
 	uint64_t account_id = sqlite3_column_int64(select, 4);
 	auto params_blob = sqlite3_column_blob(select, 5);
+	unsigned params_size = sqlite3_column_bytes(select, 5);
 	uint64_t number = sqlite3_column_int64(select, 6);
 	uint64_t dest_chain = sqlite3_column_int64(select, 7);
 	auto value_blob = sqlite3_column_blob(select, 8);
+	unsigned value_size = sqlite3_column_bytes(select, 8);
 	auto label_text = sqlite3_column_text(select, 9);
+	unsigned label_size = sqlite3_column_bytes(select, 9);
 	uint64_t create_time = sqlite3_column_int64(select, 10);
 	uint64_t first_receive = sqlite3_column_int64(select, 11);
 	uint64_t last_receive = sqlite3_column_int64(select, 12);
@@ -214,7 +217,6 @@ int DbConn::SecretSelect(sqlite3_stmt *select, Secret& secret, bool expect_row, 
 		return -1;
 	}
 
-	unsigned params_size = sqlite3_column_bytes(select, 5);
 	if (params_size > sizeof(secret.packed_params))
 	{
 		BOOST_LOG_TRIVIAL(warning) << "DbConn::SecretSelect select returned packed params size " << params_size << " > " << sizeof(secret.packed_params);
@@ -229,7 +231,6 @@ int DbConn::SecretSelect(sqlite3_stmt *select, Secret& secret, bool expect_row, 
 		return -1;
 	}
 
-	unsigned value_size = sqlite3_column_bytes(select, 8);
 	if (value_size != Secret::ValueBytes(type))
 	{
 		BOOST_LOG_TRIVIAL(error) << "DbConn::SecretSelect select returned secret size " << value_size << " != " << Secret::ValueBytes(type);
@@ -237,7 +238,6 @@ int DbConn::SecretSelect(sqlite3_stmt *select, Secret& secret, bool expect_row, 
 		return -1;
 	}
 
-	unsigned label_size = sqlite3_column_bytes(select, 9);
 	if (label_size >= sizeof(secret.label))
 	{
 		BOOST_LOG_TRIVIAL(warning) << "DbConn::SecretSelect select returned label size " << label_size << " >= " << sizeof(secret.label);

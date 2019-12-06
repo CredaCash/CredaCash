@@ -129,8 +129,8 @@ int DbConn::AccountSelect(sqlite3_stmt *select, Account& account, bool expect_ro
 	}
 
 	auto name_text = sqlite3_column_text(select, 1);
-
 	unsigned name_size = sqlite3_column_bytes(select, 1);
+
 	if (name_size >= sizeof(account.name))
 	{
 		BOOST_LOG_TRIVIAL(warning) << "DbConn::AccountSelect select returned name size " << name_size << " >= " << sizeof(account.name);

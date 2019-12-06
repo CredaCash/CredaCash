@@ -379,12 +379,12 @@ static void bless_input(bool pubvar, int& badsel, ZKVAR& var, const bigint_t& va
 		about nobad because badsel will never be zero.  Therefore nobad does not need to account for the general "enforce" variable.
 		Note that nobad only operates during proof construction, so it can take into account the values of both published and hidden inputs.
 	anyval true indicates the variable can take any value. When TEST_RANDOM_ANYVALS is true,
-		this is tested by setting the variable to a pseudorandom value.  Anyval is used in both proving and verifying, so it's value
+		this is tested by setting the variable to a pseudorandom value.  Anyval is used in both proving and verifying, so its value
 		should ponly depend on published tx values, not hidden values, to ensure anyval has the same value when proving and verifying.
 		The pseudorandom generator for the varialbe value is seeded from tx.random_seed, and both the prover and verifier should set this
 		seed to the same value so that the same pseudorandom values are used for both the public inputs	when both proving the verifing.
 		In a production build, when anyval is true, the variable is set to zero.
-	nomod true indicates the proof will succeed if the variable is set to it's intended value plus the prime modulus.  This is the case for
+	nomod true indicates the proof will succeed if the variable is set to its intended value plus the prime modulus.  This is the case for
 		variables that are not broken down into a multibit field.  Otherwise, when testing bad values, bless_input will try the
 		intended value plus the prime modulus to ensure this fails.
 	*/

@@ -116,6 +116,7 @@ int DbConn::TotalSelect(sqlite3_stmt *select, Total& total)
 	unsigned delaytime = sqlite3_column_int(select, 3);
 	uint64_t blockchain = sqlite3_column_int64(select, 4);
 	auto total_blob = sqlite3_column_blob(select, 5);
+	unsigned total_size = sqlite3_column_bytes(select, 5);
 
 	if (!Total::TypeIsValid(type))
 	{
@@ -124,7 +125,6 @@ int DbConn::TotalSelect(sqlite3_stmt *select, Total& total)
 		return -1;
 	}
 
-	unsigned total_size = sqlite3_column_bytes(select, 5);
 	if (total_size > sizeof(packed_total))
 	{
 		BOOST_LOG_TRIVIAL(error) << "DbConn::TotalSelect select returned total size " << total_size << " > " << sizeof(packed_total);

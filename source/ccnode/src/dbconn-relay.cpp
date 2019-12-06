@@ -343,7 +343,7 @@ int DbConnRelayObjs::RelayObjsFindDownloads(unsigned conn_index, uint64_t tx_lev
 
 		// Seqnum, Time, ObjId, Size, Level, PriorOid, Witness
 		auto seqnum = sqlite3_column_int64(Relay_Objs_select_download, 0);
-		uint32_t announce_time = sqlite3_column_int(Relay_Objs_select_download, 1);
+		uint32_t announce_ticks = sqlite3_column_int(Relay_Objs_select_download, 1);
 		auto objid_blob = sqlite3_column_blob(Relay_Objs_select_download, 2);
 		auto size = sqlite3_column_int64(Relay_Objs_select_download, 3);
 		auto level = sqlite3_column_int64(Relay_Objs_select_download, 4);
@@ -387,7 +387,7 @@ int DbConnRelayObjs::RelayObjsFindDownloads(unsigned conn_index, uint64_t tx_lev
 		total_size += size;
 		timeout = RELAY_DOWLOAD_RETRY_SECS + total_size/RELAY_DOWLOAD_RETRY_BYTES_PER_SEC;
 
-		if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnRelayObjs::RelayObjsFindDownloads found seqnum " << seqnum << " announced " << announce_time << " peer Conn " << conn_index << " oid " << buf2hex(objid_blob, sizeof(ccoid_t)) << " size " << size << " total size " << total_size << " timeout " << timeout;
+		if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnRelayObjs::RelayObjsFindDownloads found seqnum " << seqnum << " announced " << announce_ticks << " peer Conn " << conn_index << " oid " << buf2hex(objid_blob, sizeof(ccoid_t)) << " size " << size << " total size " << total_size << " timeout " << timeout;
 
 		// UPDATE PeerStatus so the object will not get downloaded again from this peer
 
@@ -452,7 +452,7 @@ int DbConnRelayObjs::RelayObjsFindDownloads(unsigned conn_index, uint64_t tx_lev
 			memset(&req_params[nfound].prior_oid, 0, sizeof(ccoid_t));
 		req_params[nfound].level = level;
 		req_params[nfound].witness = witness;
-		req_params[nfound].announce_time = announce_time;
+		req_params[nfound].announce_ticks = announce_ticks;
 		++nfound;
 
 		if (timeout >= RELAY_DOWNLOAD_TIME_MAX)

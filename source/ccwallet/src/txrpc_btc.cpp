@@ -49,13 +49,17 @@ const RPC_Exception txrpc_simulated_error(RPC_WALLET_SIMULATED_ERROR, "Simulated
 const RPC_Exception txrpc_shutdown_error(RPC_CLIENT_NOT_CONNECTED, "Shutting down");
 
 const RPC_Exception txrpc_not_implemented_error(RPC_INVALID_PARAMS, "Method not implemented");
-const RPC_Exception txrpc_invalid_txid_error(RPC_INVALID_ADDRESS_OR_KEY, "Invalid or non-wallet transaction id");
+// ...RPC_Exception txrpc_invalid_txid_error(RPC_INVALID_ADDRESS_OR_KEY, "Invalid or non-wallet transaction id");	// bitcoin's error
+const RPC_Exception txrpc_invalid_txid_error(RPC_INVALID_PARAMETER, "Invalid transaction id");						// slight departure from bitcoin
+const RPC_Exception txrpc_txid_not_found(RPC_INVALID_ADDRESS_OR_KEY, "Non-wallet transaction id");					// slight departure from bitcoin
 const RPC_Exception txrpc_accounts_not_implemented_error(RPC_WALLET_INSUFFICIENT_FUNDS, "Accounts not implemented");
 
 const RPC_Exception txrpc_block_height_range_err(RPC_INVALID_PARAMETER, "Block height out of range");
 const RPC_Exception txrpc_block_not_found_err(RPC_INVALID_ADDRESS_OR_KEY, "Block not found");
 const RPC_Exception txrpc_tx_not_in_block(RPC_INVALID_ADDRESS_OR_KEY, "Transaction not yet in block");
-const RPC_Exception txrpc_invalid_address(RPC_INVALID_ADDRESS_OR_KEY, "Invalid address");
+// ...RPC_Exception txrpc_invalid_address(RPC_INVALID_ADDRESS_OR_KEY, "Invalid address");			// bitcoin's error
+const RPC_Exception txrpc_invalid_address(RPC_INVALID_PARAMETER, "Invalid address");				// slight departure from bitcoin
+const RPC_Exception txrpc_address_not_found(RPC_INVALID_ADDRESS_OR_KEY, "Non-wallet address");		// slight departure from bitcoin
 const RPC_Exception txrpc_insufficient_funds(RPC_WALLET_INSUFFICIENT_FUNDS, "Insufficient funds");
 const RPC_Exception txrpc_tx_rejected(RPC_VERIFY_REJECTED, "Transaction not allowed or invalid");
 
@@ -303,7 +307,7 @@ void btc_getinfo(stdparams)													// implemented
 	if (TRACE_TX) BOOST_LOG_TRIVIAL(info) << "btc_getinfo";
 
 	TxParams txparams;
-	auto param_rc = g_txparams.GetParams(txparams, txquery);
+	auto param_rc = g_txparams.FetchParams(txparams, txquery, true);
 
 	string balance, fee;
 
@@ -327,7 +331,7 @@ void btc_getinfo(stdparams)													// implemented
 	"\"balance\":" << balance << ","
 	"\"blocks\":" << btc_block << ","
 	"\"timeoffset\":" << txparams.clock_diff << ","
-	"\"connections\":" << (param_rc ? 0 : 8) << ","
+	"\"connections\":" << (param_rc || txparams.NotConnected() ? 0 : 20) << ","
 	"\"difficulty\":1.0,";
 
 	if (!param_rc) // don't say anything about testnet unless we know
@@ -335,7 +339,7 @@ void btc_getinfo(stdparams)													// implemented
 
 	rstream <<
 	"\"keypoololdest\":1514764800,"
-	"\"keypoolsize\":100,"
+	"\"keypoolsize\":200,"
 	"\"unlocked_until\":7258075199,"
 	"\"paytxfee\":" << fee << ","
 	"\"relayfee\":" << fee << ","
@@ -563,13 +567,13 @@ void btc_validateaddress(CP string& addr, stdparams)							// implemented
 	"}";
 }
 
-void btc_abandontransaction(CP string& txid, stdparams)						// NOT_implemented
+void btc_abandontransaction(CP string& txid, stdparams)						// implemented
 {
 	if (TRACE_TX) BOOST_LOG_TRIVIAL(info) << "btc_abandontransaction " << txid;
 
 	// !!! automatically abandon tx's based on command line param?
 
-	if (TEST_STUB_BTC)
+	if (0 && TEST_STUB_BTC)
 	{
 		if (txid.length() < 10)
 			throw RPC_Exception(RPC_INVALID_ADDRESS_OR_KEY, "Invalid or non-wallet transaction id");
@@ -577,14 +581,145 @@ void btc_abandontransaction(CP string& txid, stdparams)						// NOT_implemented
 		throw RPC_Exception(RPC_INVALID_ADDRESS_OR_KEY, "Transaction not eligible for abandonment");
 	}
 
-	throw txrpc_not_implemented_error;
+	bigint_t address, commitment;
+	uint64_t dest_chain;
+
+	auto rc = Transaction::DecodeBtcTxid(txid, dest_chain, address, commitment);
+	if (rc) throw txrpc_invalid_txid_error;
+
+	Billet bill;
+
+	rc = dbconn->BilletSelectTxid(&address, &commitment, bill);
+	if (rc < 0) throw txrpc_txid_not_found;
+
+	rc = dbconn->BeginWrite();
+	if (rc)
+	{
+		dbconn->DoDbFinishTx(-1);
+
+		throw txrpc_wallet_db_error;
+	}
+
+	Finally finally(boost::bind(&DbConn::DoDbFinishTx, dbconn, 1));		// 1 = rollback
+
+	Transaction tx;
+
+	rc = tx.ReadTx(dbconn, bill.create_tx);
+	if (rc) throw txrpc_wallet_db_error;
+
+	/*
+	For reference, this is the input billet handling elsewhere in the wallet:
+		LocateBillet takes input bills with status BILL_STATUS_CLEARED and sets them to BILL_STATUS_ALLOCATED
+		ReleaseTxBillet takes input bills with status BILL_STATUS_ALLOCATED and sets them to BILL_STATUS_CLEARED
+
+		CleanupSubTx:
+			takes input bills with status BILL_STATUS_ALLOCATED and sets them to BILL_STATUS_CLEARED
+
+		when input bill clears:
+			if (status == BILL_STATUS_ALLOCATED)
+				Total::AddBalances(dbconn, true, TOTAL_TYPE_ALLOCATED_BIT, 0, 0, asset, delaytime, blockchain, false, amount);
+
+	For reference, this is the output billet handling elsewhere in the wallet:
+
+		SaveOutgoingTx sets output_bills[i].status = BILL_STATUS_PENDING;
+			if it's trusted then ???
+
+		CleanupSubTx:
+			takes output bills with status BILL_STATUS_PENDING and sets them to BILL_STATUS_ERROR
+				if (i > 0 || need_intermediate_txs || destination.type == SECRET_TYPE_SPENDABLE_DESTINATION)
+					balance_pending = balance_pending + bill.amount;
+
+		when output billet clears:
+			if (old_status == BILL_STATUS_PENDING && (flags & BILL_RECV_MASK) && (flags & BILL_FLAG_TRUSTED))
+				Total::AddBalances(dbconn, true, TOTAL_TYPE_PENDING_BIT, 0, 0, asset, delaytime, blockchain, false, amount);
+	*/
+
+	bigint_t balance_allocated = 0UL;
+	bigint_t balance_pending = 0UL;
+
+	for (unsigned i = 0; i < tx.nin; ++i)
+	{
+		Billet& bill = tx.input_bills[i];
+
+		//cout << "input bill " << i << " " << bill.DebugString();
+
+		if (bill.status != BILL_STATUS_ALLOCATED)
+			throw RPC_Exception(RPC_INVALID_ADDRESS_OR_KEY, "Transaction not eligible for abandonment");
+
+		CCASSERT(bill.blockchain == dest_chain);
+
+		balance_allocated = balance_allocated + bill.amount;
+
+		bill.status = BILL_STATUS_CLEARED;
+
+		rc = dbconn->BilletInsert(bill);
+		if (rc) throw txrpc_wallet_db_error;
+	}
+
+	for (unsigned i = 0; i < tx.nout; ++i)
+	{
+		Billet& bill = tx.output_bills[i];
+
+		//cout << "output bill " << i << " " << bill.DebugString();
+
+		if (bill.status != BILL_STATUS_PENDING)
+			throw RPC_Exception(RPC_INVALID_ADDRESS_OR_KEY, "Transaction not eligible for abandonment");
+
+		if ((bill.flags & BILL_RECV_MASK) && (bill.flags & BILL_FLAG_TRUSTED))
+		{
+			CCASSERT(bill.blockchain == dest_chain);
+
+			balance_pending = balance_pending + bill.amount;
+		}
+
+		bill.status = BILL_STATUS_ABANDONED;
+
+		rc = dbconn->BilletInsert(bill);
+		if (rc) throw txrpc_wallet_db_error;
+	}
+
+	tx.status = TX_STATUS_ABANDONED;
+
+	rc = dbconn->TransactionInsert(tx);
+	if (rc) throw txrpc_wallet_db_error;
+
+	if (TRACE_TX) BOOST_LOG_TRIVIAL(debug) << "btc_abandontransaction balance_allocated " << balance_allocated << " balance_pending " << balance_pending;
+
+	uint64_t asset = 0;
+	unsigned delaytime = 0;
+
+	// TBD: this will get more complicated if billets have various delaytimes or blockchains
+
+	Total::AddBalances(dbconn, true, TOTAL_TYPE_ALLOCATED_BIT, 0, 0, asset, delaytime, dest_chain, false, balance_allocated);
+	Total::AddBalances(dbconn, true, TOTAL_TYPE_PENDING_BIT, 0, 0, asset, delaytime, dest_chain, false, balance_pending);
+
+	Total::AddNoWaitAmounts(balance_pending, false, 0UL, true);
+
+	#if TEST_LOG_BALANCE
+	amtint_t balance;
+	Total::GetTotalBalance(dbconn, false, balance, TOTAL_TYPE_DA_DESTINATION | TOTAL_TYPE_RB_BALANCE, true, false, 0, 0, 0, -1, 0, -1, false);
+	BOOST_LOG_TRIVIAL(info) << "btc_abandontransaction new balance " << balance << " balance_allocated " << balance_allocated << " balance_pending " << balance_pending;
+	//cerr << "btc_abandontransaction new balance " << balance << " balance_allocated " << balance_allocated << " balance_pending " << balance_pending << endl;
+	#endif
+
+	rc = dbconn->Commit();
+	if (rc) throw txrpc_wallet_db_error;
+
+	dbconn->DoDbFinishTx();
+
+	finally.Clear();
+
+	if (balance_allocated)
+		Billet::NotifyNewBillet(true);
+
+	//!!! what to return?
 }
 
-void btc_backupwallet(CP string& dest, stdparams)										// NOT_implemented
+void btc_backupwallet(CP string& dest, stdparams)							// implemented
 {
 	if (TRACE_TX) BOOST_LOG_TRIVIAL(info) << "btc_backupwallet " << dest;
 
-	if (TEST_STUB_BTC)
+	if (0 && TEST_STUB_BTC)
 	{
 		if (dest.length() < 10)
 			throw RPC_Exception(RPC_WALLET_ERROR, "Error: Wallet backup failed!");
@@ -592,7 +727,12 @@ void btc_backupwallet(CP string& dest, stdparams)										// NOT_implemented
 		rstream << "";
 	}
 
-	throw txrpc_not_implemented_error;
+	auto rc = dbconn->BackupDb(dest.c_str());
+
+	if (rc)
+			throw RPC_Exception(RPC_WALLET_ERROR, "Error: Wallet backup failed!");
+
+	rstream << "";
 }
 
 void btc_dumpwallet(CP string& dest, stdparams)											// NOT_implemented
@@ -721,13 +861,6 @@ void btc_getbalance(CP string& acct, bool incwatch, stdparamsaq)				// implement
 	// account "" = default account
 	// account "*" = sum of all accounts in wallet
 	// incwatch true = include balances in watch-only addresses (see 'importaddress')
-
-	if (0 && TEST_STUB_BTC)
-	{
-		rstream << "123.00000000";
-		add_quotes = false;
-	}
-
 	// if account does not exist, bitcoin returns 0.0
 
 	amtint_t amounti = 0UL;
@@ -810,13 +943,6 @@ void btc_getreceivedbyaccount(CP string& acct, stdparamsaq)					// implemented
 
 	// returns the total amount received by addresses with <account>
 	// see getreceivedbyaddress
-
-	if (0 && TEST_STUB_BTC)
-	{
-		rstream << "123.00000000";
-		add_quotes = false;
-	}
-
 	// !!! TBD: include watch?
 
 	amtint_t amounti;
@@ -864,7 +990,7 @@ void btc_getreceivedbyaddress(CP string& addr, stdparamsaq)					// implemented
 	Secret secret;
 	rc = dbconn->SecretSelectSecret(&destination, TX_INPUT_BYTES, secret);
 	if (rc < 0) throw txrpc_wallet_db_error;
-	if (rc) throw txrpc_invalid_address;
+	if (rc) throw txrpc_address_not_found;
 
 	amtint_t amounti;
 	string balance;
@@ -879,9 +1005,7 @@ void btc_getreceivedbyaddress(CP string& addr, stdparamsaq)					// implemented
 	add_quotes = false;
 }
 
-static const char *bip125str = ",\"bip125-replaceable\":\"no\"";
-
-static void _btc_list_tx(Transaction& tx, unsigned index, uint64_t btc_block, bool incwatch, ostringstream& rstream)
+static void _btc_list_tx(DbConn *dbconn, Transaction& tx, unsigned index, uint64_t btc_block, bool incwatch, ostringstream& rstream)
 {
 	/*
     entry.push_back(Pair("confirmations", confirms));
@@ -908,7 +1032,12 @@ static void _btc_list_tx(Transaction& tx, unsigned index, uint64_t btc_block, bo
         entry.push_back(Pair(item.first, item.second));
 	*/
 
-	if (tx.status == TX_STATUS_CLEARED && btc_block >= tx.btc_block)
+	if (tx.status == TX_STATUS_CONFLICTED)
+	{
+		rstream
+			<<	"\"confirmations\":-201";
+	}
+	else if (tx.status == TX_STATUS_CLEARED && btc_block >= tx.btc_block)
 	{
 		rstream
 			<<	"\"confirmations\":" << btc_block - tx.btc_block + 1
@@ -920,7 +1049,7 @@ static void _btc_list_tx(Transaction& tx, unsigned index, uint64_t btc_block, bo
 	{
 		rstream
 			<<	"\"confirmations\":0"
-			<<	",\"trusted\":" << truefalse(tx.WeSent(incwatch) && tx.type != TX_TYPE_MINT && tx.status != TX_STATUS_ERROR);
+			<<	",\"trusted\":" << truefalse(tx.WeSent(incwatch) && tx.type != TX_TYPE_MINT && (tx.status >= TX_STATUS_MOVED && tx.status <= TX_STATUS_CLEARED));
 	}
 
 	if (tx.type == TX_TYPE_MINT)
@@ -928,16 +1057,53 @@ static void _btc_list_tx(Transaction& tx, unsigned index, uint64_t btc_block, bo
 
 	rstream
 		<<	",\"txid\":\"" << tx.GetBtcTxid() << "\""
-			",\"walletconflicts\":";
-	if (tx.status != TX_STATUS_CONFLICTED)
-		rstream << "[]";
-	else
-		rstream << "[0]";	// !!! TODO: report conflicts !!!!!
-
-	rstream
-		<<	",\"time\":" << tx.create_time
+			",\"time\":" << tx.create_time
 		<<	",\"timereceived\":" << tx.create_time
-		<<	bip125str;
+		<<	",\"bip125-replaceable\":\"no\""
+			",\"walletconflicts\":[";
+
+	set<uint64_t> conflicts;
+
+	// unlike bitcoin, report conflicts only for conflicted and pending tx's
+	for (unsigned i = 0; i < tx.nin && (tx.status == TX_STATUS_CONFLICTED || tx.status == TX_STATUS_PENDING); ++i)
+	{
+		Billet& bill = tx.input_bills[i];
+
+		uint64_t tx_id = 0;
+
+		while (tx_id < INT64_MAX)
+		{
+			auto rc = dbconn->BilletSpendSelectBillet(bill.id, tx_id);
+			if (rc < 0) throw txrpc_wallet_db_error;
+
+			if (rc)
+				break;
+
+			if (tx_id != tx.id && !conflicts.count(tx_id))
+			{
+				Transaction tx2;
+
+				rc = tx2.ReadTx(dbconn, tx_id);
+				if (rc) throw txrpc_wallet_db_error;
+
+				if (conflicts.empty())
+					rstream << "\"";
+				else
+					rstream << ",\"";
+
+				rstream << tx2.GetBtcTxid() << "\"";
+
+				conflicts.insert(tx_id);
+			}
+
+			++tx_id;
+		}
+	}
+
+	if (tx.status == TX_STATUS_CONFLICTED && conflicts.empty())
+		rstream << "0]";	// this wallet doesn't contain the conflicting tx, but report something
+	else
+		rstream << "]";
 
 	//@@! TODO: btc wtx.mapValue items:
 	// "comment" set by sendtoaddress, sendfrom, sendmany
@@ -990,7 +1156,7 @@ static void _btc_list_sent(Transaction& tx, unsigned index, ostringstream& rstre
 	rstream
 		<<	",\"vout\":0"
 		<<	",\"fee\":" << (tx.adj_donations[index] ? "-" : "") << amount
-		<<	",\"abandoned\":" << truefalse(tx.status == TX_STATUS_ABANDONED || tx.status == TX_STATUS_ERROR);
+		<<	",\"abandoned\":" << truefalse(tx.status == TX_STATUS_ABANDONED || tx.status == TX_STATUS_CONFLICTED || tx.status == TX_STATUS_ERROR);
 }
 
 static void _btc_list_received(Transaction& tx, unsigned index, uint64_t btc_block, ostringstream& rstream)
@@ -1070,20 +1236,20 @@ void btc_gettransaction(CP string& txid, bool incwatch, stdparams)			// implemen
 	Billet bill;
 
 	rc = dbconn->BilletSelectTxid(&address, &commitment, bill);
-	if (rc < 0) throw txrpc_invalid_txid_error;
+	if (rc < 0) throw txrpc_txid_not_found;
 
 	if (rc || bill.status < BILL_STATUS_SENT)
 	{
 		Secret secret;
 		auto rc2 = dbconn->SecretSelectSecret(&address, TX_ADDRESS_BYTES, secret);
-		if (rc2) throw txrpc_invalid_txid_error;
+		if (rc2) throw txrpc_txid_not_found;
 
 		secret.PollAddress(dbconn, txquery);
 	}
 	if (rc)
 	{
 		rc = dbconn->BilletSelectTxid(&address, &commitment, bill);
-		if (rc) throw txrpc_invalid_txid_error;
+		if (rc) throw txrpc_txid_not_found;
 	}
 
 	Transaction tx;
@@ -1158,7 +1324,7 @@ void btc_gettransaction(CP string& txid, bool incwatch, stdparams)			// implemen
 
 	rstream << ",";
 
-	_btc_list_tx(tx, index, btc_block, incwatch, rstream);
+	_btc_list_tx(dbconn, tx, index, btc_block, incwatch, rstream);
 
 	// If we are debited by the transaction, add the output as a "sent" entry
 
@@ -1240,7 +1406,7 @@ void btc_getwalletinfo(stdparams)											// implemented
 	"\"immature_balance\":0,"
 	"\"txcount\":" << txcount.id << ","
 	"\"keypoololdest\":1546300800,"
-	"\"keypoolsize\":100,"
+	"\"keypoolsize\":200,"
 	"\"unlocked_until\":7258075199,"
 	"\"paytxfee\":" << fee << ","
 	"\"hdmasterkeyid\":\"" << setw(40) << setfill('0') << hex << masterhash << dec <<"\""
@@ -1312,7 +1478,7 @@ void btc_listreceivedbyaccount(bool incempty, bool incwatch, stdparams)		// impl
 	rstream << "}]";
 }
 
-void btc_listreceivedbyaddress(bool incempty, bool incwatch, string addr, stdparams)					// NOT_implemented !!! TODO: implement, with filtering
+void btc_listreceivedbyaddress(bool incempty, bool incwatch, string addr, stdparams)	// NOT_implemented !!! TODO: implement, with filtering
 {
 	if (TRACE_TX) BOOST_LOG_TRIVIAL(info) << "btc_listreceivedbyaddress incempty " << incempty << " incwatch " << incwatch << " addr " << addr;
 
@@ -1436,7 +1602,7 @@ void btc_listsinceblock(CP string& blockhash, bool incwatch, stdparams)		// impl
 				needs_comma[not_cleared] = true;
 				_btc_list_sent(tx, index, stream);
 				stream << ",";
-				_btc_list_tx(tx, index, btc_block, incwatch, stream);
+				_btc_list_tx(dbconn, tx, index, btc_block, incwatch, stream);
 				stream << "}";
 			}
 
@@ -1448,7 +1614,7 @@ void btc_listsinceblock(CP string& blockhash, bool incwatch, stdparams)		// impl
 				needs_comma[not_cleared] = true;
 				_btc_list_received(tx, index, btc_block, stream);
 				stream << ",";
-				_btc_list_tx(tx, index, btc_block, incwatch, stream);
+				_btc_list_tx(dbconn, tx, index, btc_block, incwatch, stream);
 				stream << "}";
 			}
 		}
@@ -1572,7 +1738,7 @@ void btc_listtransactions(CP string& acct, int count, int from, bool incwatch, s
 					needs_comma = true;
 					_btc_list_sent(tx, index, rstream);
 					rstream << ",";
-					_btc_list_tx(tx, index, btc_block, incwatch, rstream);
+					_btc_list_tx(dbconn, tx, index, btc_block, incwatch, rstream);
 					rstream << "}";
 				}
 			}
@@ -1589,7 +1755,7 @@ void btc_listtransactions(CP string& acct, int count, int from, bool incwatch, s
 					needs_comma = true;
 					_btc_list_received(tx, index, btc_block, rstream);
 					rstream << ",";
-					_btc_list_tx(tx, index, btc_block, incwatch, rstream);
+					_btc_list_tx(dbconn, tx, index, btc_block, incwatch, rstream);
 					rstream << "}";
 				}
 			}
@@ -1680,7 +1846,7 @@ void btc_listunspent(int minconf, int maxconf, CP Json::Value& addrs, stdparams)
 	}
 }
 
-void btc_move(CP string& fromacct, CP string& toacct, CP bigint_t& amount, CP string& comment, stdparamsaq)							// NOT_implemented
+void btc_move(CP string& fromacct, CP string& toacct, CP bigint_t& amount, CP string& comment, stdparamsaq)	// NOT_implemented
 {
 	if (TRACE_TX) BOOST_LOG_TRIVIAL(info) << "btc_move from acct " << fromacct << " to acct " << toacct << " amount " << amount << " comment " << comment;
 

@@ -23,10 +23,15 @@
 #define TXCONN_READ_MAX		20000	//@@!
 #define TXCONN_WRITE_MAX	8000	//@@!
 
-//!#define RTEST_CUZZ		32
+//!#define RTEST_TX_SUBMIT_ERRORS	1
+//!#define RTEST_CUZZ			32
+
+#ifndef RTEST_TX_SUBMIT_ERRORS
+#define RTEST_TX_SUBMIT_ERRORS	0	// don't test
+#endif
 
 #ifndef RTEST_CUZZ
-#define RTEST_CUZZ		0	// don't test
+#define RTEST_CUZZ				0	// don't test
 #endif
 
 // unsigned conn_nreadbuf, unsigned conn_nwritebuf, unsigned sock_nreadbuf, unsigned sock_nwritebuf, unsigned headersize, bool noclose, bool bregister
@@ -327,6 +332,15 @@ int TxQuery::SubmitTx(const TxPay& tx, uint64_t& next_commitnum)
 
 		auto rc = SubmitQuery(PowType_Tx, i);
 
+		if (!i && RandTest(RTEST_TX_SUBMIT_ERRORS))
+		{
+			BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " TxQuery::SubmitTx double submitting tx (simulating submit communication loss)";
+
+			ccsleep(20);
+
+			continue;
+		}
+
 		if (rc > 0)
 		{
 			if (!strncmp(m_pread, "OK:", 3))
@@ -344,7 +358,22 @@ int TxQuery::SubmitTx(const TxPay& tx, uint64_t& next_commitnum)
 				break;
 			}
 
-			if (!strncmp(m_pread, "INVALID:", 8))
+			if (!strncmp(m_pread, "INVALID:already spent", 21))
+			{
+				result_code = 0;
+
+				break;
+			}
+
+			if (!strncmp(m_pread, "ERROR:server not connected", 26))
+			{
+				m_possibly_sent = false;
+				result_code = -1;
+
+				break;
+			}
+
+			if (!strncmp(m_pread, "INVALID:", 8) || !strncmp(m_pread, "ERROR:", 6))
 			{
 				result_code = 1;
 
@@ -514,6 +543,14 @@ int TxQuery::ParseParams(Json::Value& root, TxParams& txparams)
 	if (rc) goto parse_error;
 	txparams.next_commitnum = BIG64(bigval);
 	if (TRACE_TXPARAMS) BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " TxQuery::ParseParams next_commitnum " << txparams.next_commitnum;
+
+	key = "connected-to-network";
+	if (!root.removeMember(key, &value))
+		goto missing_key;
+	rc = parse_int_value(fn, key, value.asString(), 1, 0UL, bigval, output, outsize);
+	if (rc) goto parse_error;
+	txparams.connected = BIG64(bigval);
+	if (TRACE_TXPARAMS) BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " TxQuery::ParseParams connected " << txparams.connected;
 
 	key = "asset-bits";
 	if (!root.removeMember(key, &value))
@@ -689,7 +726,7 @@ parse_error:
 	return -1;
 }
 
-int TxQuery::QuerySerialnums(uint64_t blockchain, const bigint_t *serialnums, unsigned nserials, uint16_t *statuses, bigint_t *hashkeys)
+int TxQuery::QuerySerialnums(uint64_t blockchain, const bigint_t *serialnums, unsigned nserials, uint16_t *statuses, bigint_t *hashkeys, uint64_t *tx_commitnums)
 {
 	if (TRACE_TXQUERY) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " TxQuery::QuerySerialnums nserials " << nserials;
 
@@ -788,6 +825,17 @@ int TxQuery::QuerySerialnums(uint64_t blockchain, const bigint_t *serialnums, un
 				if (rc) goto parse_error;
 				if (hashkeys)
 					hashkeys[i] = bigval;
+
+				key = "transaction-commitment-number";
+				if (root.removeMember(key, &value))	// !!! optional key for now; may be required in the future
+				{
+					rc = parse_int_value(fn, key, value.asString(), TX_COMMITNUM_BITS, 0UL, bigval, output, outsize);
+					if (rc) goto parse_error;
+					if (tx_commitnums)
+						tx_commitnums[i] = BIG64(bigval);
+				}
+				else if (tx_commitnums)
+					tx_commitnums[i] = 0;
 			}
 
 			if (root.size())

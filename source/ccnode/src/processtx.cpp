@@ -624,6 +624,7 @@ int ProcessTx::TxValidate(DbConn *dbconn, TxPay& tx, SmartBuf smartobj)
 
 	bool found_one_spent = false;
 	bool found_one_not_spent = false;
+	uint64_t tx_commitnum = 0;
 
 	for (unsigned i = 0; i < tx.nin; ++i)
 	{
@@ -644,8 +645,9 @@ int ProcessTx::TxValidate(DbConn *dbconn, TxPay& tx, SmartBuf smartobj)
 
 		bigint_t hashkey;
 		unsigned hashkey_size = sizeof(hashkey);
+		uint64_t commitnum;
 
-		auto rc = dbconn->SerialnumSelect(&tx.inputs[i].S_serialnum, TX_SERIALNUM_BYTES, &hashkey, &hashkey_size);
+		auto rc = dbconn->SerialnumSelect(&tx.inputs[i].S_serialnum, TX_SERIALNUM_BYTES, &hashkey, &hashkey_size, &commitnum);
 		if (rc < 0)
 		{
 			BOOST_LOG_TRIVIAL(error) << "DbConnProcessQ::TxValidate error checking persistent serialnums";
@@ -661,7 +663,12 @@ int ProcessTx::TxValidate(DbConn *dbconn, TxPay& tx, SmartBuf smartobj)
 			BOOST_LOG_TRIVIAL(info) << "DbConnProcessQ::TxValidate serialnum " << i << " of " << tx.nin << " already in persistent db";
 
 			if (hashkey_size && hashkey != tx.inputs[i].S_hashkey)
-					return TX_RESULT_ALREADY_SPENT;		// found a different tx with same serialnum
+				return TX_RESULT_ALREADY_SPENT;		// found a different tx with same serialnum
+
+			if (!found_one_spent)
+				tx_commitnum = commitnum;
+			else if (commitnum && commitnum != tx_commitnum)
+				return TX_RESULT_ALREADY_SPENT;		// found a different tx with same serialnum
 
 			found_one_spent = true;
 		}
@@ -671,7 +678,7 @@ int ProcessTx::TxValidate(DbConn *dbconn, TxPay& tx, SmartBuf smartobj)
 	}
 
 	if (found_one_spent)
-		return 1;			// don't flag this tx as invalid since all of the serialnums in tx have been spent using the same hashkeys, which likely means this tx has been re-submitted due to a dropped network connection
+		return 1;			// don't flag this tx as invalid since all of the serialnums in tx have been spent using the same hashkeys and tx_commitnum's, which likely means this tx has been re-submitted due to a dropped network connection
 
 	return 0;
 }

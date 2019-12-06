@@ -191,6 +191,5 @@ public:
 	int CreateTxFromAddressQueryResult(DbConn *dbconn, TxQuery& txquery, const Secret& destination, const Secret& address, QueryAddressResult &result, bool duplicate_txid);
 
 	int UpdateStatus(DbConn *dbconn, uint64_t bill_id, uint64_t commitnum);
-	int CheckConflicts(DbConn *dbconn);
 	static int SetConflicted(DbConn *dbconn, uint64_t tx_id);
 };

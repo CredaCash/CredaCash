@@ -143,36 +143,36 @@ static void try_one_rpc(const string& json, const string& method, Json::Value& p
 		"getmininginfo - mining not supported\\n"
 		"estimatefee nblocks - estimates donation for baseline 2-in 2-out transaction\\n"
 		"validateaddress \\\"destination\\\"\\n"
-		//"abandontransaction \\\"txid\\\"\\n"
+		"abandontransaction \\\"txid\\\"\\n"
 		//"backupwallet \\\"destination\\\"\\n"
 		//"dumpwallet \\\"filename\\\"\\n"
 		//"encryptwallet \\\"passphrase\\\"\\n"
 		//"walletpassphrase \\\"passphrase\\\"\\n"
 		//"walletlock\\n"
-		"getaccount \\\"destination\\\" - only default account currently supported\\n"									// DEPRECATED
-		//"getaccountaddress \\\"account\\\"\\n"																		// DEPRECATED
-		//"getaddressesbyaccount \\\"account\\\"\\n"																	// DEPRECATED
+		"getaccount \\\"destination\\\" - only default account currently supported\\n"									// DEPRECATED in bitcoin
+		//"getaccountaddress \\\"account\\\"\\n"																		// DEPRECATED in bitcoin
+		//"getaddressesbyaccount \\\"account\\\"\\n"																	// DEPRECATED in bitcoin
 		"getbalance ( \\\"account\\\" minconf includeWatchonly )\\n"
 		"getnewaddress ( \\\"account\\\" )\\n"
-		"getreceivedbyaccount \\\"account\\\" ( minconf )\\n"														// DEPRECATED
+		"getreceivedbyaccount \\\"account\\\" ( minconf )\\n"															// DEPRECATED in bitcoin
 		"getreceivedbyaddress \\\"destination\\\" ( minconf )\\n"
 		"gettransaction \\\"txid\\\" ( includeWatchonly )\\n"
 		"getunconfirmedbalance\\n"
 		"getwalletinfo\\n"
 		//"keypoolrefill ( newsize )\\n"
-		"listaccounts ( minconf includeWatchonly )\\n"																// DEPRECATED
+		"listaccounts ( minconf includeWatchonly )\\n"																	// DEPRECATED in bitcoin
 		//"listaddressgroupings\\n"
 		//"listlockunspent\\n"
-		"listreceivedbyaccount ( minconf includeempty includeWatchonly )\\n"											// DEPRECATED
+		"listreceivedbyaccount ( minconf includeempty includeWatchonly )\\n"											// DEPRECATED in bitcoin
 		"listreceivedbyaddress ( minconf includeempty includeWatchonly destination_filter )\\n"
 		"listsinceblock ( \\\"blockhash\\\" target-confirmations includeWatchonly )\\n"
 		"listtransactions ( \\\"account\\\" count from includeWatchonly )\\n"
 		"listunspent ( minconf maxconf [\\\"destination\\\",...] [include_unsafe] ) - for diagnostic purposes only\\n"
-		//"move \\\"fromaccount\\\" \\\"toaccount\\\" amount ( minconf \\\"comment\\\" )\\n"							// DEPRECATED
+		//"move \\\"fromaccount\\\" \\\"toaccount\\\" amount ( minconf \\\"comment\\\" )\\n"							// DEPRECATED in bitcoin
 		//"sendfrom \\\"fromaccount\\\" \\\"todestination\\\" amount ( minconf \\\"comment\\\" \\\"comment-to\\\" )\\n"
 		//"sendmany \\\"fromaccount\\\" {\\\"destination\\\":amount,...} ( minconf \\\"comment\\\" [\\\"destination\\\",...] )\\n"
 		"sendtoaddress \\\"destination\\\" amount ( \\\"comment\\\" \\\"comment-to\\\" subtractfeefromamount )\\n"
-		//"setaccount \\\"destination\\\" \\\"account\\\"\\n"																// DEPRECATED
+		//"setaccount \\\"destination\\\" \\\"account\\\"\\n"															// DEPRECATED in bitcoin
 		//"settxfee amount"
 		;
 	}
@@ -960,7 +960,7 @@ static void try_one_rpc(const string& json, const string& method, Json::Value& p
 
 static bool do_one_rpc(const string& json, Json::Value& root, DbConn *dbconn, TxQuery& txquery, ostringstream& response)
 {
-	if (0 && TRACE_JSONRPC) BOOST_LOG_TRIVIAL(info) << "do_one_rpc " << json;
+	if (0 && TRACE_JSONRPC) BOOST_LOG_TRIVIAL(info) << "do_one_rpc: " << json;
 
 	Json::Value value, params;
 	string key, id_value;
@@ -1028,12 +1028,19 @@ static bool do_one_rpc(const string& json, Json::Value& root, DbConn *dbconn, Tx
 
 		rc = false;
 	}
+	catch (const Json::Exception& e)
+	{
+		copy_error_to_response(RPC_INVALID_REQUEST, "Invalid request", version, id, null_result, notification, response);
+	}
 	catch (const RPC_Exception& e)
 	{
 		if (0 && TRACE_JSONRPC) BOOST_LOG_TRIVIAL(info) << "do_one_rpc " << json << " RPC_Exception code " << e.code << " " << e.what();
 		//cerr << "caught RPC_Exception code " << e.code << " " << e.what() << endl;
 
-		copy_error_to_response(e.code, e.what(), version, id, null_result, notification, response);
+		if (g_shutdown)
+			copy_error_to_response(txrpc_shutdown_error.code, txrpc_shutdown_error.what(), version, id, null_result, notification, response);
+		else
+			copy_error_to_response(e.code, e.what(), version, id, null_result, notification, response);
 	}
 
 done:

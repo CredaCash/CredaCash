@@ -32,7 +32,8 @@ using namespace snarkfront;
 #define stdparamsaq	stdparamsaq
 #define CP			const
 
-static RPC_Exception txrpc_invalid_destination_error(RPC_INVALID_ADDRESS_OR_KEY, "Invalid or non-wallet destination");
+static RPC_Exception txrpc_invalid_destination_error(RPC_INVALID_PARAMETER, "Invalid destination");
+static RPC_Exception txrpc_destination_not_found(RPC_INVALID_ADDRESS_OR_KEY, "Non-wallet destination");
 
 static FastSpinLock mint_thread_lock;
 static volatile unsigned mint_thread_lo = 1;
@@ -302,10 +303,10 @@ void cc_poll_destination(CP string& destination, unsigned polling_addresses, uin
 	Secret secret;
 	rc = dbconn->SecretSelectSecret(&dest, TX_INPUT_BYTES, secret);
 	if (rc < 0) throw txrpc_wallet_db_error;
-	if (rc) throw txrpc_invalid_destination_error;
+	if (rc) throw txrpc_destination_not_found;
 
 	if (secret.dest_chain != dest_chain)
-		throw txrpc_invalid_destination_error;
+		throw txrpc_destination_not_found;
 
 	//bool watchonly = secret.TypeIsWatchOnlyDestination();
 	//bool ismine = (watchonly || secret.type == SECRET_TYPE_SPENDABLE_DESTINATION);
@@ -443,14 +444,15 @@ void cc_dump_billets(uint64_t start, uint64_t count, bool show_spends, stdparams
 		while (show_spends && tx_id < INT64_MAX)
 		{
 			bigint_t hashkey;
+			uint64_t tx_commitnum;
 
-			auto rc = dbconn->BilletSpendSelectBillet(bill.id, tx_id, hashkey);
+			auto rc = dbconn->BilletSpendSelectBillet(bill.id, tx_id, &hashkey, &tx_commitnum);
 			if (rc < 0) throw txrpc_wallet_db_error;
 
 			if (rc)
 				break;
 
-			rstream << "---Spend Tx id " << tx_id << " hashkey " << hex << hashkey << dec << endl;
+			rstream << "---Spend Tx id " << tx_id << " hashkey " << hex << hashkey << dec << " tx_commitnum " << tx_commitnum << endl;
 
 			++tx_id;
 		}

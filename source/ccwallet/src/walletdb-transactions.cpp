@@ -166,6 +166,7 @@ int DbConn::TransactionSelect(sqlite3_stmt *select, Transaction& tx, bool expect
 	uint64_t create_time = sqlite3_column_int64(select, 6);
 	uint64_t btc_block = sqlite3_column_int64(select, 7);
 	auto donation_blob = sqlite3_column_blob(select, 8);
+	unsigned donation_size = sqlite3_column_bytes(select, 8);
 	auto body = sqlite3_column_text(select, 9);
 
 	if (id < TX_ID_MINIMUM)
@@ -190,7 +191,6 @@ int DbConn::TransactionSelect(sqlite3_stmt *select, Transaction& tx, bool expect
 		return -1;
 	}
 
-	unsigned donation_size = sqlite3_column_bytes(select, 8);
 	if (donation_size != TX_AMOUNT_DECODED_BYTES)
 	{
 		BOOST_LOG_TRIVIAL(error) << "DbConn::TransactionSelect select returned donation size " << donation_size << " != " << TX_AMOUNT_DECODED_BYTES;

@@ -147,6 +147,16 @@ static void check_config_values()
 	if (g_params.polling_threads < 0 || g_params.polling_threads > 1000)
 		throw range_error("Number of transaction polling threads not in valid range");
 
+	if (!g_params.polling_threads)
+	{
+		cerr <<
+
+R"(WARNING: The wallet is configured with tx-polling-threads = 0 and therefore will not detect when a transaction clears unless
+the gettransaction command is used, or the transaction send destination and change destination are both manually polled.)"
+
+		"\n" << endl;
+	}
+
 	if (g_params.base_port < 1 || g_params.base_port > 0xFFFF - TOR_PORT)
 		throw range_error("baseport value not in valid range");
 
