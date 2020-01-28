@@ -24,6 +24,12 @@
 #include <blake2/blake2.h>
 #include <ed25519/ed25519.h>
 
+//#define TEST_NO_DONATION	1
+
+#ifndef TEST_NO_DONATION
+#define TEST_NO_DONATION	0	// don't test
+#endif
+
 #define TRACE_BLOCKCHAIN		(g_params.trace_blockchain)
 #define TRACE_SERIALNUM_CHECK	(g_params.trace_serialnum_check)
 #define TRACE_DELIBLETX_CHECK	(g_params.trace_delibletx_check)
@@ -69,7 +75,7 @@ void BlockChain::Init()
 	SET_PROOF_PARAM(proof_params.donation_per_output, "20000000000000000000000000");
 	SET_PROOF_PARAM(proof_params.donation_per_input,  "10000000000000000000000000");
 
-	#if 0 // for testing
+	#if TEST_NO_DONATION
 	SET_PROOF_PARAM(proof_params.minimum_donation,		"0");
 	SET_PROOF_PARAM(proof_params.donation_per_tx,		"0");
 	SET_PROOF_PARAM(proof_params.donation_per_byte,		"0");

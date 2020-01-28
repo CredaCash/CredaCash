@@ -9,7 +9,7 @@
 #pragma once
 
 #define CCAPPNAME	"CredaCash node"
-#define CCVERSION	 "1.01 beta2" //@@!
+#define CCVERSION	 "1.01 beta3" //@@!
 #define CCEXENAME	"ccnode"
 #define CCAPPDIR	"CCNode-#"
 

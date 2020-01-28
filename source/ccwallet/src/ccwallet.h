@@ -9,9 +9,11 @@
 #pragma once
 
 #define CCAPPNAME	"CredaCash RPC Wallet"
-#define CCVERSION	 "1.01 beta2" //@@!
+#define CCVERSION	 "1.01 beta3" //@@!
 #define CCEXENAME	"ccwallet"
 #define CCAPPDIR	"CCWallet-#"
+
+#define WALLET_ID_BYTES		(128/8)
 
 #define WALLET_RPC_PORT		14
 #define TOR_CONTROL_PORT	15

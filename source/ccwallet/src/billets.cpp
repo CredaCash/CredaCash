@@ -93,7 +93,7 @@ bool Billet::HasSerialnum(unsigned status, unsigned flags)
 	return (flags & BILL_RECV_MASK_TRACK) && status >= BILL_STATUS_SENT;
 }
 
-void Billet::SetFromTxOut(const TxPay& tx, const TxOut& txout)
+void Billet::SetFromTxOut(const TxPay& ts, const TxOut& txout)
 {
 	if (TRACE_BILLETS) BOOST_LOG_TRIVIAL(trace) << "Billet::SetFromTxOut";
 
@@ -107,10 +107,10 @@ void Billet::SetFromTxOut(const TxPay& tx, const TxOut& txout)
 	asset = txout.__asset;
 	amount_fp = txout.__amount_fp;
 	delaytime = 0;	// eventually, compute this from destination and whether spend and/or trust secrets are known
-	commit_iv = tx.M_commitment_iv;
+	commit_iv = ts.M_commitment_iv;
 	commitment = txout.M_commitment;
 
-	tx_amount_decode(amount_fp, amount, false, tx.amount_bits, tx.exponent_bits);
+	tx_amount_decode(amount_fp, amount, false, ts.amount_bits, ts.exponent_bits);
 }
 
 int Billet::PollUnspent(DbConn *dbconn, TxQuery& txquery)
@@ -291,16 +291,19 @@ int Billet::SetStatusCleared(DbConn *dbconn, uint64_t _commitnum)
 {
 	// must be called from inside a BeginWrite
 
-	if (TRACE_BILLETS) BOOST_LOG_TRIVIAL(trace) << "Billet::SetStatusCleared commitnum " << _commitnum << " " << DebugString();
+	if (status == BILL_STATUS_ERROR) BOOST_LOG_TRIVIAL(error) << "Billet::SetStatusCleared with BILL_STATUS_ERROR; commitnum " << _commitnum << " " << DebugString();
+	else if (TRACE_BILLETS) BOOST_LOG_TRIVIAL(trace) << "Billet::SetStatusCleared commitnum " << _commitnum << " " << DebugString();
 
-	CCASSERT(status == BILL_STATUS_PENDING || status == BILL_STATUS_ABANDONED || status == BILL_STATUS_ERROR || status == BILL_STATUS_VOID);
+	CCASSERT(status == BILL_STATUS_PENDING || status == BILL_STATUS_ABANDONED || status == BILL_STATUS_VOID || status == BILL_STATUS_ERROR);
 
 	auto old_status = status;
 
-	if ((flags & BILL_RECV_MASK) == BILL_RECV_MASK)
-		status = BILL_STATUS_CLEARED;
-	else
+	if ((flags & BILL_RECV_MASK) != BILL_RECV_MASK)
 		status = BILL_STATUS_SENT;
+	else if (status == BILL_STATUS_PREALLOCATED)
+		status = BILL_STATUS_ALLOCATED;
+	else
+		status = BILL_STATUS_CLEARED;
 
 	commitnum = _commitnum;
 
@@ -337,7 +340,7 @@ int Billet::SetStatusCleared(DbConn *dbconn, uint64_t _commitnum)
 
 	auto rc = dbconn->BilletInsert(*this);
 
-	if (amount && status == BILL_STATUS_CLEARED)
+	if (amount && status >= BILL_STATUS_CLEARED)
 		NotifyNewBillet(true);
 
 	return rc;
@@ -347,7 +350,8 @@ int Billet::SetStatusSpent(DbConn *dbconn, const bigint_t& hashkey, uint64_t tx_
 {
 	// must be called from inside a BeginWrite
 
-	if (!hashkey) BOOST_LOG_TRIVIAL(info) << "Billet::SetStatusSpent hashkey is zero;" << DebugString() << " hashkey " << hex << hashkey << dec << " tx_commitnum " << tx_commitnum; // !!! this should maybe log at warning level
+	if (status == BILL_STATUS_ERROR) BOOST_LOG_TRIVIAL(error) << "Billet::SetStatusSpent with BILL_STATUS_ERROR;" << DebugString() << " hashkey " << hex << hashkey << dec << " tx_commitnum " << tx_commitnum; // !!! this should maybe log at warning level
+	else if (!hashkey) BOOST_LOG_TRIVIAL(info) << "Billet::SetStatusSpent hashkey is zero;" << DebugString() << " hashkey " << hex << hashkey << dec << " tx_commitnum " << tx_commitnum; // !!! this should maybe log at warning level
 	else if (TRACE_BILLETS) BOOST_LOG_TRIVIAL(trace) << "Billet::SetStatusSpent " << DebugString() << " hashkey " << hex << hashkey << dec << " tx_commitnum " << tx_commitnum;
 
 	if (status == BILL_STATUS_ALLOCATED)
@@ -454,8 +458,11 @@ int Billet::CheckIfBilletsSpent(DbConn *dbconn, TxQuery& txquery, Billet *billet
 			rc = dbconn->BilletSelectId(billets[i].id, billets[i]);
 			if (rc) throw txrpc_wallet_db_error;
 
-			rc = billets[i].SetStatusSpent(dbconn, hashkeys[i], tx_commitnums[i]);
-			if (rc) throw txrpc_wallet_db_error;
+			if (billets[i].status != BILL_STATUS_SPENT)
+			{
+				rc = billets[i].SetStatusSpent(dbconn, hashkeys[i], tx_commitnums[i]);
+				if (rc) throw txrpc_wallet_db_error;
+			}
 
 			// commit db writes
 

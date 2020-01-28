@@ -19,12 +19,12 @@
 #define TX_TYPE_INVALID			4
 
 #define TX_STATUS_VOID			0
-#define TX_STATUS_ERROR			1
-#define TX_STATUS_CONFLICTED	2
-#define TX_STATUS_ABANDONED		3
-#define TX_STATUS_MOVED			4
-#define TX_STATUS_PENDING		5
-#define TX_STATUS_CLEARED		6
+#define TX_STATUS_ERROR			1	// permanent: tx creation encountered an error
+#define TX_STATUS_CONFLICTED	2	// permanent: a conflicting tx included in indelible block
+#define TX_STATUS_ABANDONED		3	// transitory: abandoned tx may later clear or become conflicted
+#define TX_STATUS_MOVED			4	// not yet implemented
+#define TX_STATUS_PENDING		5	// transitory: pending tx may clear, become conflicted, or be abandoned
+#define TX_STATUS_CLEARED		6	// permanent: tx included in indelible block
 #define TX_STATUS_INVALID		7
 
 #define TX_ID_MINIMUM			2	// parent_id = 1 in a parent tx
@@ -47,7 +47,8 @@ class Transaction
 		TX_BUILD_TYPE_NULL = 0,
 		TX_BUILD_FINAL,
 		TX_BUILD_SPLIT,
-		TX_BUILD_CONSOLIDATE
+		TX_BUILD_CONSOLIDATE,
+		TX_BUILD_CANCEL_TX
 	};
 
 	enum build_state_t
@@ -104,8 +105,8 @@ private:
 
 	static void SetPendingBalances(DbConn *dbconn, uint64_t blockchain, const snarkfront::bigint_t& balance_allocated, const snarkfront::bigint_t& balance_pending);
 
-	int FillOutTx(DbConn *dbconn, TxQuery& txquery, TxParams& txparams, uint64_t dest_chain, TxPay& tx);
-	void SetAddresses(DbConn *dbconn, uint64_t dest_chain, Secret &destination, TxPay& tx);
+	int FillOutTx(DbConn *dbconn, TxQuery& txquery, TxParams& txparams, uint64_t dest_chain, TxPay& ts);
+	void SetAddresses(DbConn *dbconn, uint64_t dest_chain, Secret &destination, TxPay& ts);
 
 	bool SubTxIsActive(bool need_intermediate_txs) const;
 
@@ -165,7 +166,7 @@ public:
 
 	string GetBtcTxid() const;
 
-	void SetOutputsFromTx(const TxPay& tx);
+	void FinishCreateTx(TxPay& ts);
 	int SaveOutgoingTx(DbConn *dbconn);
 	int UpdatePolling(DbConn *dbconn, uint64_t next_commitnum);
 
@@ -187,6 +188,8 @@ public:
 
 	int CreateTxMint(DbConn *dbconn, TxQuery& txquery);
 	int CreateTxPay(DbConn *dbconn, TxQuery& txquery, bool async, string& ref_id, const string& encoded_dest, uint64_t dest_chain, const snarkfront::bigint_t& destination, const snarkfront::bigint_t& amount, const string& comment, const string& comment_to, const bool subfee);
+
+	int CreateConflictTx(DbConn *dbconn, TxQuery& txquery, const Billet& input);
 
 	int CreateTxFromAddressQueryResult(DbConn *dbconn, TxQuery& txquery, const Secret& destination, const Secret& address, QueryAddressResult &result, bool duplicate_txid);
 

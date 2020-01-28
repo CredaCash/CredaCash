@@ -24,6 +24,8 @@
 #include "walletutil.h"
 #include "walletdb.hpp"
 
+#include <siphash/siphash.h>
+
 #define TRACE_TX	(g_params.trace_txrpc)
 
 using namespace snarkfront;
@@ -291,9 +293,75 @@ void cc_send(bool async, CP string& ref_id_req, CP string& dest, CP bigint_t& am
 		rstream << tx.GetBtcTxid();
 }
 
-void cc_poll_destination(CP string& destination, unsigned polling_addresses, uint64_t last_receive_max, stdparams)
+void cc_transaction_cancel(CP string& txid, stdparams)
 {
-	if (TRACE_TX) BOOST_LOG_TRIVIAL(info) << "cc_poll_destination destination " << destination << " polling_addresses " << polling_addresses << " last_receive_max " << last_receive_max;
+	if (TRACE_TX) BOOST_LOG_TRIVIAL(info) << "cc_transaction_cancel txid " << txid;
+
+	bigint_t address, commitment;
+	uint64_t dest_chain;
+
+	auto rc = Transaction::DecodeBtcTxid(txid, dest_chain, address, commitment);
+	if (rc) throw txrpc_invalid_txid_error;
+
+	Billet bill;
+
+	rc = dbconn->BilletSelectTxid(&address, &commitment, bill);
+	if (rc < 0) throw txrpc_txid_not_found;
+
+	Transaction tx;
+
+	rc = tx.BeginAndReadTx(dbconn, bill.create_tx);
+	if (rc) throw txrpc_wallet_db_error;
+
+	if (tx.status == TX_STATUS_CONFLICTED)
+		throw RPC_Exception(RPC_INVALID_ADDRESS_OR_KEY, "Transaction already conflicted");
+
+	if (!tx.nin || (tx.status != TX_STATUS_PENDING && tx.status != TX_STATUS_ABANDONED))
+		throw RPC_Exception(RPC_INVALID_ADDRESS_OR_KEY, "Transaction cannot be cancelled");
+
+	for (unsigned i = 0; i < tx.nin; ++i)
+	{
+		Billet& bill = tx.input_bills[i];
+
+		//cout << "input bill " << i << " " << bill.DebugString();
+
+		if (bill.status == BILL_STATUS_SPENT)
+			throw RPC_Exception(RPC_INVALID_ADDRESS_OR_KEY, "Transaction cannot be cancelled");
+	}
+
+	for (unsigned i = 0; i < tx.nout; ++i)
+	{
+		Billet& bill = tx.output_bills[i];
+
+		//cout << "output bill " << i << " " << bill.DebugString();
+
+		if (bill.status != BILL_STATUS_PENDING && bill.status != BILL_STATUS_ABANDONED)
+			throw RPC_Exception(RPC_INVALID_ADDRESS_OR_KEY, "Transaction cannot be cancelled");
+	}
+
+	// pick a deterministic pseudorandom input
+
+	#if WALLET_ID_BYTES < 16
+	#error WALLET_ID_BYTES < 16
+	#endif
+
+	uint64_t hash = siphash_keyed((uint8_t*)&g_params.wallet_id, (uint8_t*)&tx.id, sizeof(tx.id));
+
+	Billet input;
+	input.Copy(tx.input_bills[hash % tx.nin]);
+
+	tx.Clear();
+
+	rc = tx.CreateConflictTx(dbconn, txquery, input);
+
+	if (rc) throw RPC_Exception(RPC_INVALID_ADDRESS_OR_KEY, "Transaction cannot be cancelled");
+
+	rstream << tx.GetBtcTxid();
+}
+
+void cc_destination_poll(CP string& destination, unsigned polling_addresses, uint64_t last_receive_max, stdparams)
+{
+	if (TRACE_TX) BOOST_LOG_TRIVIAL(info) << "cc_destination_poll destination " << destination << " polling_addresses " << polling_addresses << " last_receive_max " << last_receive_max;
 
 	bigint_t dest;
 	uint64_t dest_chain;
@@ -323,9 +391,9 @@ void cc_poll_destination(CP string& destination, unsigned polling_addresses, uin
 	//rstream << "done";
 }
 
-void cc_poll_mint(stdparams)
+void cc_mint_poll(stdparams)
 {
-	if (TRACE_TX) BOOST_LOG_TRIVIAL(info) << "cc_poll_mint";
+	if (TRACE_TX) BOOST_LOG_TRIVIAL(info) << "cc_mint_poll";
 
 	TxParams txparams;
 

@@ -26,7 +26,7 @@
 #include <jsonutil.h>
 #include <blake2/blake2.h>
 
-#define WALLET_VERSION	1
+#define WALLET_VERSION	1	// !!!!! change this?
 
 #define TRACE_TX	(g_params.trace_txrpc)
 
@@ -571,8 +571,6 @@ void btc_abandontransaction(CP string& txid, stdparams)						// implemented
 {
 	if (TRACE_TX) BOOST_LOG_TRIVIAL(info) << "btc_abandontransaction " << txid;
 
-	// !!! automatically abandon tx's based on command line param?
-
 	if (0 && TEST_STUB_BTC)
 	{
 		if (txid.length() < 10)
@@ -606,6 +604,9 @@ void btc_abandontransaction(CP string& txid, stdparams)						// implemented
 
 	rc = tx.ReadTx(dbconn, bill.create_tx);
 	if (rc) throw txrpc_wallet_db_error;
+
+	if (tx.status != TX_STATUS_PENDING)
+		throw RPC_Exception(RPC_INVALID_ADDRESS_OR_KEY, "Transaction not eligible for abandonment");
 
 	/*
 	For reference, this is the input billet handling elsewhere in the wallet:

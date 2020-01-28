@@ -14,14 +14,14 @@
 // when a bill's status or flags are changed, the bill's balance may need to be reallocated.
 
 #define BILL_STATUS_VOID			0
-#define BILL_STATUS_ERROR			1
-#define BILL_STATUS_ABANDONED		2
-#define BILL_STATUS_PENDING			3
-#define BILL_STATUS_PREALLOCATED	4	// pending and pre-allocated
-#define BILL_STATUS_SENT			5
-#define BILL_STATUS_CLEARED			6	// only for spendable billets
-#define BILL_STATUS_ALLOCATED		7
-#define BILL_STATUS_SPENT			8
+#define BILL_STATUS_ERROR			1	// permanent; output bills only: tx creation encountered an error
+#define BILL_STATUS_ABANDONED		2	// transitory; output bills only: may later clear
+#define BILL_STATUS_PENDING			3	// transitory; output bills only: may later clear or become abandoned
+#define BILL_STATUS_PREALLOCATED	4	// transitory; output bills only: indicates a pre-allocated pending output bill
+#define BILL_STATUS_SENT			5	// semi-permanent; unspendable output bills only: bill is an output in tx that cleared; future: status may change if spend secrets are added to wallet and bill becomes spendable
+#define BILL_STATUS_CLEARED			6	// transitory; spendable output bills only: bill is an output in tx that cleared; status will change when bill used as a tx input
+#define BILL_STATUS_ALLOCATED		7	// transitory: cleared bill is allocated for use in a future or pending tx
+#define BILL_STATUS_SPENT			8	// permanent: cleared or spendable bill was used as in input in a tx that has cleared
 #define BILL_STATUS_INVALID			9
 
 #define BILL_RECV_MASK_WATCH		(1 << 0)
@@ -94,7 +94,7 @@ public:
 		return HasSerialnum(status, flags);
 	}
 
-	void SetFromTxOut(const TxPay& tx, const TxOut& txout);
+	void SetFromTxOut(const TxPay& ts, const TxOut& txout);
 
 	static int PollUnspent(DbConn *dbconn, TxQuery& txquery);
 	static int ResetAllocated(DbConn *dbconn, bool reset_balance);

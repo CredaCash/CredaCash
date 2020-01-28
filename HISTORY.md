@@ -4,6 +4,10 @@
 
 ## Release History
 
+### 2020-01-28 v1.1 Beta3
+
+Third beta release for enterprise readiness.
+
 ### 2019-12-04 v1.1 Beta2
 
 Second beta release for enterprise readiness.

@@ -50,7 +50,8 @@ import pprint
 
 TEST_THREAD_SLEEP = False
 TEST_RELEASE_ALLOCATED = False
-TEST_ABANDON_TXS = False
+TEST_ABANDON_TXS = True
+TEST_CANCEL_TXS = True
 TEST_POLL_DESTINATION = False
 
 # CRITICAL, ERROR, WARNING, INFO, DEBUG
@@ -92,9 +93,9 @@ def poll_thread(tnum):
 		dt = stime - time.time()
 		if dt > 0:
 			time.sleep(dt)
-		print 'time', int(time.time()+0.5), 'thread', tnum, 'polling destination'
 		destination = destinations[0]
-		do_rpc(s, 'cc.poll_destination', (destination, '200'))
+		print 'time', int(time.time()+0.5), 'thread', tnum, 'polling destination'
+		do_rpc(s, 'cc.destination_poll', (destination, '200'))
 
 def wallet_thread(tnum):
 	logging.debug('wallet_thread start tnum %d tgroup %d port %s' % (tnum, tgroup, rpc_port))
@@ -108,7 +109,9 @@ def wallet_thread(tnum):
 		return
 	sleep_num = 1
 	sleep_period = 500
+	iter = 0
 	while True:
+		iter += 1
 		now = time.time()
 		sleep_start = start_time + (sleep_num*2 - tgroup) * sleep_period
 		if tnum > 1 and now >= sleep_start and TEST_THREAD_SLEEP:
@@ -121,26 +124,38 @@ def wallet_thread(tnum):
 			sleep_num += 1
 			if tnum == 2:
 				print 'time', int(time.time()),'thread', tnum, 'group', tgroup, 'done sleeping'
-		method = random.randrange(5)
-		if not random.randrange(10 * nthreads) and tgroup and TEST_RELEASE_ALLOCATED:
+		method = random.randrange(7)
+		if not random.randrange(50 * nthreads) and tgroup and TEST_RELEASE_ALLOCATED:
+			print 'time', int(time.time()),'thread', tnum, 'group', tgroup, 'cc.billets_release_allocated'
 			do_rpc(s, 'cc.billets_release_allocated', ())	# will cause "BilletSpendInsert constraint violation" warnings
 		elif random.random() < prob_tx:
 			destination = destinations[random.randrange(len(destinations))]
 			amount = random.randrange(15*1000) + 1
 			#amount = random.randrange(10) + 1	# for testing
+			#amount = random.randrange(100)		# for testing
 			amount = str(amount) + '.'
 			digits = random.randrange(40) + 1
 			#digits = random.randrange(10) + 1	# for testing
+			#digits = 4							# for testing
 			for i in range(digits):
 				amount += str(random.randrange(10))
 			exponent = random.randrange(1 - min_exponent)
+			#exponent = 0						# for testing
 			amount += 'e-' + str(exponent)
 			if random.random() < 0.5:
 				amount = '1'
-			#amount = '5000' # for testing
+			#amount = '1' # for testing
+			#amount = str((iter*10 + tnum) / 1000000.)
+			#print amount
 			txid = do_rpc(s, 'sendtoaddress', (destination, amount))
-			if txid and random.random() < 0.5 and TEST_ABANDON_TXS:
-				do_rpc(s, 'abandontransaction', ('"' + txid + '"', ))
+			#if txid: do_rpc(s, 'cc.transaction_cancel', ('"' + txid + '"', )) # for testing
+			for i in range(10):
+				if not txid or random.random() < 0.4:
+					break
+				if txid and random.random() < 0.5 and TEST_ABANDON_TXS:
+					do_rpc(s, 'abandontransaction', ('"' + txid + '"', ))
+				if txid and random.random() < 0.5 and TEST_CANCEL_TXS:
+					do_rpc(s, 'cc.transaction_cancel', ('"' + txid + '"', ))
 		elif method == 0:
 			do_rpc(s, 'getbalance', ())
 		elif method == 1:
@@ -150,6 +165,10 @@ def wallet_thread(tnum):
 		elif method == 3:
 			do_rpc(s, 'cc.billets_poll_unspent', ())
 		elif method == 4:
+			do_rpc(s, 'cc.dump_transactions', ('0', '100', 'true'))
+		elif method == 5:
+			do_rpc(s, 'cc.dump_billets', ('0', '100', 'true'))
+		elif method == 6:
 			do_rpc(s, 'cc.dump_tx_build', ())
 		else:
 			raise Exception

@@ -16,6 +16,8 @@
 #define TOTAL_TYPE_DA_DESTINATION	0
 #define TOTAL_TYPE_DA_ACCOUNT		TOTAL_TYPE_DA_BIT
 
+// note: balance reported by wallet is sum of (cleared - allocated + pending to a trusted and spendable destination)
+
 // note: ALLOCATED	= 8
 // note: PENDING	= 16
 

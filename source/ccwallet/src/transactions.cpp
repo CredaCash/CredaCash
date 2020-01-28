@@ -376,23 +376,41 @@ string Transaction::GetBtcTxid() const
 		return EncodeInternalTxid();
 }
 
-void Transaction::SetOutputsFromTx(const TxPay& tx)
+void Transaction::FinishCreateTx(TxPay& ts)
 {
-	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "Transaction::SetOutputsFromTx";
+	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "Transaction::FinishCreateTx " << DebugString();
 
-	// adds output billets to this Transaction object
-	// first output should always be change
+	string fn;
+	char output[128];
+	uint32_t outsize = sizeof(output);
 
-	type = (tx.tag_type == CC_TYPE_MINT ? TX_TYPE_MINT : TX_TYPE_SEND);
-	status = TX_STATUS_PENDING;
-	param_level = tx.param_level;
+	auto rc = txpay_create_finish(fn, ts, output, outsize);
+	if (rc)
+	{
+		BOOST_LOG_TRIVIAL(error) << "Transaction::FinishCreateTx txpay_create_finish failed: " << output;
 
-	tx_amount_decode(tx.donation_fp, donation, true, tx.donation_bits, tx.exponent_bits);
+		//tx_dump_stream(cout, ts);
 
-	nout = tx.nout;
+		if (output[0])
+			throw RPC_Exception(RPCErrorCode(-32001), output);
+		else
+			throw txrpc_wallet_error;
+	}
+
+	if (build_type == TX_BUILD_CANCEL_TX)
+		status = TX_STATUS_ABANDONED;
+	else
+		status = TX_STATUS_PENDING;
+
+	type = (ts.tag_type == CC_TYPE_MINT ? TX_TYPE_MINT : TX_TYPE_SEND);
+	param_level = ts.param_level;
+
+	tx_amount_decode(ts.donation_fp, donation, true, ts.donation_bits, ts.exponent_bits);
+
+	nout = ts.nout;
 
 	for (unsigned i = 0; i < nout; ++i)
-		output_bills[i].SetFromTxOut(tx, tx.outputs[i]);
+		output_bills[i].SetFromTxOut(ts, ts.outputs[i]);
 }
 
 int Transaction::SaveOutgoingTx(DbConn *dbconn)
@@ -444,7 +462,7 @@ int Transaction::SaveOutgoingTx(DbConn *dbconn)
 			return 1;
 		}
 
-		if (check.status == BILL_STATUS_CLEARED)
+		if (build_type != TX_BUILD_CANCEL_TX && check.status == BILL_STATUS_CLEARED)
 		{
 			if (!blockchain)
 				blockchain = check.blockchain;
@@ -461,7 +479,7 @@ int Transaction::SaveOutgoingTx(DbConn *dbconn)
 			balance_allocated = balance_allocated + check.amount;
 		}
 
-		CCASSERT(check.status == BILL_STATUS_ALLOCATED);
+		CCASSERT(build_type == TX_BUILD_CANCEL_TX || check.status == BILL_STATUS_ALLOCATED);
 
 		rc = dbconn->BilletSpendInsert(tx_id, bill.id, &bill.spend_hashkey);
 		if (rc) return rc;	// if billets were deallocated while tx was being built, the same billet could have been used twice
@@ -494,7 +512,10 @@ int Transaction::SaveOutgoingTx(DbConn *dbconn)
 		else
 			CCASSERT(bill.create_tx == tx_id);
 
-		bill.status = BILL_STATUS_PENDING;
+		if (build_type == TX_BUILD_CANCEL_TX)
+			bill.status = BILL_STATUS_ABANDONED;
+		else
+			bill.status = BILL_STATUS_PENDING;
 
 		CCASSERTZ(bill.id);
 
@@ -1077,6 +1098,8 @@ int Transaction::CreateTxMint(DbConn *dbconn, TxQuery& txquery) // throws RPC_Ex
 
 	// returns -1 if mint tx's are not allowed
 
+	Clear();
+
 	TxParams txparams;
 	QueryInputResults inputs;
 
@@ -1139,26 +1162,9 @@ int Transaction::CreateTxMint(DbConn *dbconn, TxQuery& txquery) // throws RPC_Ex
 	amount = amount - donation;
 	txout.__amount_fp = tx_amount_encode(amount, false, txparams.amount_bits, txparams.exponent_bits, txparams.outvalmin, txparams.outvalmax);
 
-	string fn;
-	char output[128];
-	uint32_t outsize = sizeof(output);
-
-	rc = txpay_create_finish(fn, ts, output, outsize);
-	if (rc)
-	{
-		BOOST_LOG_TRIVIAL(error) << "Transaction::CreateTxMint txpay_create_finish failed: " << output;
-
-		//tx_dump_stream(cout, ts);
-
-		if (output[0])
-			throw RPC_Exception(RPCErrorCode(-32001), output);
-		else
-			throw txrpc_wallet_error;
-	}
+	FinishCreateTx(ts);
 
 	CCASSERT(txout.M_address == address.value);
-
-	SetOutputsFromTx(ts);
 
 	// Save ts in db before submitting
 	// (If tx submitted first, Poll thread could detect and save billets before this thread, and that would have to be sorted out...)
@@ -1521,7 +1527,7 @@ int Transaction::ComputeChange(TxParams& txparams, const bigint_t& input_total)
 {
 	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(debug) << "Transaction::ComputeChange build_type " << build_type << " nin " << nin << " input_total " << input_total << " send amount " << SUBTX_AMOUNT;
 
-	if (input_total < SUBTX_AMOUNT && build_type != TX_BUILD_CONSOLIDATE)
+	if (input_total < SUBTX_AMOUNT && build_type != TX_BUILD_CONSOLIDATE && build_type != TX_BUILD_CANCEL_TX)
 	{
 		if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(debug) << "Transaction::ComputeChange build_type " << build_type << " nin " << nin << " input_total " << input_total << " < send amount " << SUBTX_AMOUNT;
 
@@ -1530,7 +1536,7 @@ int Transaction::ComputeChange(TxParams& txparams, const bigint_t& input_total)
 
 	auto remainder = input_total;
 
-	if (build_type != TX_BUILD_CONSOLIDATE)
+	if (build_type != TX_BUILD_CONSOLIDATE && build_type != TX_BUILD_CANCEL_TX)
 		remainder = remainder - SUBTX_AMOUNT;
 
 	// set donation and change
@@ -1559,7 +1565,7 @@ int Transaction::ComputeChange(TxParams& txparams, const bigint_t& input_total)
 
 		bigint_t change = 0UL;
 
-		for (unsigned i = (build_type != TX_BUILD_CONSOLIDATE); i < nout; ++i)
+		for (unsigned i = (build_type != TX_BUILD_CONSOLIDATE && build_type != TX_BUILD_CANCEL_TX); i < nout; ++i)
 		{
 			Billet& bill = output_bills[i];
 
@@ -1587,7 +1593,7 @@ int Transaction::ComputeChange(TxParams& txparams, const bigint_t& input_total)
 	return 0;
 }
 
-int Transaction::FillOutTx(DbConn *dbconn, TxQuery& txquery, TxParams& txparams, uint64_t dest_chain, TxPay& tx)
+int Transaction::FillOutTx(DbConn *dbconn, TxQuery& txquery, TxParams& txparams, uint64_t dest_chain, TxPay& ts)
 {
 	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "Transaction::FillOutTx build_type " << build_type << " nin " << nin << " nout " << nout;
 
@@ -1605,18 +1611,21 @@ int Transaction::FillOutTx(DbConn *dbconn, TxQuery& txquery, TxParams& txparams,
 	if (rc) throw txrpc_server_error;
 	if (txparams.NotConnected()) throw txrpc_server_error;
 
-	if (Implement_CCMint(txparams.blockchain) && inputs.param_level < CC_MINT_COUNT + CC_MINT_ACCEPT_SPAN)
+	if (!dest_chain)
+		dest_chain = txparams.blockchain;
+
+	if (Implement_CCMint(dest_chain) && inputs.param_level < CC_MINT_COUNT + CC_MINT_ACCEPT_SPAN)
 		throw txrpc_tx_rejected;
 
 	// compute and recheck encoded amounts using txparams returned by QueryInputs
 
-	tx_init(tx);
+	tx_init(ts);
 
 	bigint_t check;
 	txparams.ComputeDonation(nout, nin, check);
-	tx.donation_fp = tx_amount_encode(check, true, txparams.donation_bits, txparams.exponent_bits);
-	tx_amount_decode(tx.donation_fp, check, true, txparams.donation_bits, txparams.exponent_bits);
-	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "Transaction::FillOutTx donation " << donation << " check " << check << " donation_fp " << tx.donation_fp << " donation_bits " << txparams.donation_bits << " exponent_bits " << txparams.exponent_bits;
+	ts.donation_fp = tx_amount_encode(check, true, txparams.donation_bits, txparams.exponent_bits);
+	tx_amount_decode(ts.donation_fp, check, true, txparams.donation_bits, txparams.exponent_bits);
+	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "Transaction::FillOutTx donation " << donation << " check " << check << " donation_fp " << ts.donation_fp << " donation_bits " << txparams.donation_bits << " exponent_bits " << txparams.exponent_bits;
 	if (donation != check)
 	{
 		BOOST_LOG_TRIVIAL(warning) << "Transaction::FillOutTx donation encoding mismatch " << donation << " != " << check;
@@ -1626,7 +1635,7 @@ int Transaction::FillOutTx(DbConn *dbconn, TxQuery& txquery, TxParams& txparams,
 
 	for (unsigned i = 0; i < nout; ++i)
 	{
-		TxOut& txout = tx.outputs[i];
+		TxOut& txout = ts.outputs[i];
 		Billet& bill = output_bills[i];
 
 		// TODO: ignore outvalmin and outvalmax when asset > 0
@@ -1641,31 +1650,31 @@ int Transaction::FillOutTx(DbConn *dbconn, TxQuery& txquery, TxParams& txparams,
 		}
 	}
 
-	// set the tx values
+	// set the ts values
 
-	tx.tag_type = CC_TYPE_TXPAY;
+	ts.tag_type = CC_TYPE_TXPAY;
 
-	tx.source_chain = txparams.blockchain;
-	tx.param_level = inputs.param_level;
-	tx.param_time = inputs.param_time;
-	tx.amount_bits = txparams.amount_bits;
-	tx.donation_bits = txparams.donation_bits;
-	tx.exponent_bits = txparams.exponent_bits;
-	tx.outvalmin = txparams.outvalmin;
-	tx.outvalmax = txparams.outvalmax;
-	tx.allow_restricted_addresses = true;
-	tx.tx_merkle_root = inputs.merkle_root;
+	ts.source_chain = txparams.blockchain;
+	ts.param_level = inputs.param_level;
+	ts.param_time = inputs.param_time;
+	ts.amount_bits = txparams.amount_bits;
+	ts.donation_bits = txparams.donation_bits;
+	ts.exponent_bits = txparams.exponent_bits;
+	ts.outvalmin = txparams.outvalmin;
+	ts.outvalmax = txparams.outvalmax;
+	ts.allow_restricted_addresses = true;
+	ts.tx_merkle_root = inputs.merkle_root;
 
-	tx.nout = nout;
-	tx.nin = nin;
-	tx.nin_with_path = nin;
+	ts.nout = nout;
+	ts.nin = nin;
+	ts.nin_with_path = nin;
 
 	uint64_t asset_mask = (txparams.asset_bits < 64 ? ((uint64_t)1 << txparams.asset_bits) - 1 : -1);
 	uint64_t amount_mask = (txparams.amount_bits < 64 ? ((uint64_t)1 << txparams.amount_bits) - 1 : -1);
 
 	for (unsigned i = 0; i < nout; ++i)
 	{
-		TxOut& txout = tx.outputs[i];
+		TxOut& txout = ts.outputs[i];
 
 		txout.M_pool = txparams.default_output_pool;
 		txout.asset_mask = asset_mask;
@@ -1675,7 +1684,7 @@ int Transaction::FillOutTx(DbConn *dbconn, TxQuery& txquery, TxParams& txparams,
 	for (unsigned i = 0; i < nin; ++i)
 	{
 		Billet& bill = input_bills[i];
-		TxIn& txin = tx.inputs[i];
+		TxIn& txin = ts.inputs[i];
 
 		if (bill.blockchain != dest_chain)
 		{
@@ -1726,7 +1735,7 @@ int Transaction::FillOutTx(DbConn *dbconn, TxQuery& txquery, TxParams& txparams,
 		txin._M_commitment = bill.commitment;
 		txin._M_commitnum = bill.commitnum;
 
-		txin.merkle_root = tx.tx_merkle_root;
+		txin.merkle_root = ts.tx_merkle_root;
 		txin.enforce_trust_secrets = 1;
 
 		txin.S_hashkey = bill.spend_hashkey;
@@ -1734,13 +1743,13 @@ int Transaction::FillOutTx(DbConn *dbconn, TxQuery& txquery, TxParams& txparams,
 		txin.pathnum = i + 1;
 
 		for (unsigned j = 0; j < TX_MERKLE_DEPTH; ++j)
-			tx.inpaths[i].__M_merkle_path[j] = inputs.merkle_paths[i][j];
+			ts.inpaths[i].__M_merkle_path[j] = inputs.merkle_paths[i][j];
 	}
 
 	return 0;
 }
 
-void Transaction::SetAddresses(DbConn *dbconn, uint64_t dest_chain, Secret &destination, TxPay& tx)
+void Transaction::SetAddresses(DbConn *dbconn, uint64_t dest_chain, Secret &destination, TxPay& ts)
 {
 	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "Transaction::SetAddresses build_type " << build_type << " nin " << nin << " nout " << nout << " dest_chain " << dest_chain << " destination id " << destination.id;
 
@@ -1753,7 +1762,7 @@ void Transaction::SetAddresses(DbConn *dbconn, uint64_t dest_chain, Secret &dest
 		auto rc = secret.CreateNewSecret(dbconn, SECRET_TYPE_SELF_ADDRESS, SELF_DESTINATION_ID, dest_chain, params);
 		if (rc) throw txrpc_wallet_error;
 
-		TxOut& txout = tx.outputs[i];
+		TxOut& txout = ts.outputs[i];
 		memcpy(&txout.addrparams, &params.addrparams, sizeof(txout.addrparams));
 
 		txout.addrparams.__flags |= BILL_RECV_MASK | BILL_FLAG_TRUSTED | BILL_IS_CHANGE;
@@ -1770,7 +1779,7 @@ void Transaction::SetAddresses(DbConn *dbconn, uint64_t dest_chain, Secret &dest
 		auto rc = secret.CreateNewSecret(dbconn, SECRET_TYPE_SEND_ADDRESS, destination.id, dest_chain, params);
 		if (rc) throw txrpc_wallet_error;
 
-		TxOut& txout = tx.outputs[0];
+		TxOut& txout = ts.outputs[0];
 		memcpy(&txout.addrparams, &params.addrparams, sizeof(txout.addrparams));
 
 		txout.addrparams.__flags |= Billet::FlagsFromDestinationType(destination.type) | BILL_FLAG_TRUSTED;
@@ -1827,6 +1836,8 @@ int Transaction::CreateTxPay(DbConn *dbconn, TxQuery& txquery, bool async, strin
 			as many input bills as needed, but no more
 	*/
 
+	Clear();
+
 	TxParams txparams;
 
 	auto rc = g_txparams.GetParams(txparams, txquery);
@@ -1834,8 +1845,7 @@ int Transaction::CreateTxPay(DbConn *dbconn, TxQuery& txquery, bool async, strin
 	if (txparams.NotConnected())
 	{
 		rc = g_txparams.UpdateParams(txparams, txquery);
-		if (rc) throw txrpc_server_error;
-		if (txparams.NotConnected()) throw txrpc_server_error;
+		if (rc || txparams.NotConnected()) throw txrpc_server_error;
 	}
 
 	// check dest_chain
@@ -2173,7 +2183,7 @@ void Transaction::CleanupSubTxs(DbConn *dbconn, uint64_t dest_chain, const Secre
 
 	finally.Clear();
 
-	Billet::NotifyNewBillet(false);	// wake up other threads to check if amounts pending are no longer sufficient
+	Billet::NotifyNewBillet(false);	// wake up other threads to check if amounts pending are now sufficient
 }
 
 void Transaction::CleanupSubTx(DbConn *dbconn, const Secret &destination, bool need_intermediate_txs, bigint_t& balance_allocated, bigint_t& balance_pending)
@@ -2734,10 +2744,6 @@ int Transaction::TryCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& txpa
 			cerr << "Constructing " << active_subtx_count << " transaction" << (active_subtx_count > 1 ? "s" : "") << "...\n" << endl;
 	}
 
-	string fn;
-	char output[128];
-	uint32_t outsize = sizeof(output);
-
 	uint64_t parent_id = 0;
 
 	si = 0;
@@ -2747,21 +2753,7 @@ int Transaction::TryCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& txpa
 		{
 			TxPay& ts = tx_structs[si++];
 
-			auto rc = txpay_create_finish(fn, ts, output, outsize);
-			if (rc)
-			{
-				BOOST_LOG_TRIVIAL(error) << "Transaction::TryCreateTxPay txpay_create_finish failed for subtx " << si << " of " << active_subtx_count << "; output " << output;
-
-				//cerr << "txpay_create_finish failed: " << output << endl;
-				//tx_dump_stream(cout, ts);
-
-				if (output[0])
-					throw RPC_Exception(RPCErrorCode(-32001), output);
-				else
-					throw txrpc_wallet_error;
-			}
-
-			tx->SetOutputsFromTx(ts);
+			tx->FinishCreateTx(ts);
 
 			if (si < 2 && g_shutdown)
 				throw txrpc_shutdown_error;
@@ -2787,7 +2779,7 @@ int Transaction::TryCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& txpa
 
 			if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(debug) << "Transaction::TryCreateTxPay subtx " << si << " of " << active_subtx_count << " need_intermediate_txs " << need_intermediate_txs << " parent_id " << tx->parent_id;
 
-			rc = tx->SaveOutgoingTx(dbconn);
+			auto rc = tx->SaveOutgoingTx(dbconn);
 			if (rc < 0)
 				throw txrpc_wallet_db_error;
 			if (rc)
@@ -2817,11 +2809,21 @@ int Transaction::TryCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& txpa
 				throw txrpc_simulated_error;
 			}
 
-			if (RandTest(RTEST_TX_ERRORS+8*0))
+			if (RandTest(RTEST_TX_ERRORS + 8*0))
 			{
-				BOOST_LOG_TRIVIAL(warning) << "Transaction::TryCreateTxPay ref id " << entry->ref_id << " simulating a tx (that may need to be abandoned) that was not submitted but return code was ambiguous for subtx " << si << " of " << active_subtx_count << " need_intermediate_txs " << need_intermediate_txs;
+				rc = rand() % 3 - 1;
+				txquery.m_possibly_sent = rand() & 1;
 
-				rc = 1;
+				cerr << "simulating SubmitTx rc " << rc << " WasPossiblySent " << txquery.WasPossiblySent() << endl;
+
+				if (!rc)
+					BOOST_LOG_TRIVIAL(warning) << "Transaction::TryCreateTxPay ref id " << entry->ref_id << " simulating a tx (that will need to be abandoned) that was not submitted but return code was ok for subtx " << si << " of " << active_subtx_count << " need_intermediate_txs " << need_intermediate_txs;
+				else if (rc > 0)
+					BOOST_LOG_TRIVIAL(warning) << "Transaction::TryCreateTxPay ref id " << entry->ref_id << " simulating a tx for which submit failed for subtx " << si << " of " << active_subtx_count << " need_intermediate_txs " << need_intermediate_txs;
+				else if (txquery.WasPossiblySent())
+					BOOST_LOG_TRIVIAL(warning) << "Transaction::TryCreateTxPay ref id " << entry->ref_id << " simulating a tx (that will need to be abandoned) that was not submitted but return code was ambiguous for subtx " << si << " of " << active_subtx_count << " need_intermediate_txs " << need_intermediate_txs;
+				else
+					BOOST_LOG_TRIVIAL(warning) << "Transaction::TryCreateTxPay ref id " << entry->ref_id << " simulating a tx that was not submitted and return code indicated failure for subtx " << si << " of " << active_subtx_count << " need_intermediate_txs " << need_intermediate_txs;
 			}
 			else
 				rc = txquery.SubmitTx(ts, next_commitnum);
@@ -2940,6 +2942,111 @@ int Transaction::TryCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& txpa
 	}
 
 	return need_intermediate_txs;	// retry if need_intermediate_txs is true
+}
+
+int Transaction::CreateConflictTx(DbConn *dbconn, TxQuery& txquery, const Billet& input) // throws RPC_Exception
+{
+	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(debug) << "Transaction::CreateConflictTx " << input.DebugString();
+
+	Clear();
+
+	build_type = TX_BUILD_CANCEL_TX;
+
+	nin = 1;
+	input_bills[0].Copy(input);
+
+	TxParams txparams;
+	TxPay ts;
+	Secret null_destination;
+
+	auto rc = g_txparams.GetParams(txparams, txquery);
+	if (rc) throw txrpc_server_error;
+	if (txparams.NotConnected())
+	{
+		rc = g_txparams.UpdateParams(txparams, txquery);
+		if (rc || txparams.NotConnected()) throw txrpc_server_error;
+	}
+
+	rc = ComputeChange(txparams, input_bills[0].amount);
+	if (rc) throw txrpc_wallet_error;
+
+	rc = FillOutTx(dbconn, txquery, txparams, 0, ts);
+	if (rc) throw txrpc_wallet_error;
+
+	if (g_shutdown)
+		throw txrpc_shutdown_error;
+
+	SetAddresses(dbconn, txparams.blockchain, null_destination, ts);		// do this last to minimize chance of unused addresses
+
+	FinishCreateTx(ts);
+
+	if (g_shutdown)
+		throw txrpc_shutdown_error;
+
+	// Save tx in db before submitting
+	// (If tx submitted first, Poll thread could detect and save billets before this thread, and that would have to be sorted out...)
+
+	rc = SaveOutgoingTx(dbconn);
+	if (rc < 0)
+		throw txrpc_wallet_db_error;
+	if (rc)
+		return rc;
+
+	// Submit tx to network
+
+	uint64_t next_commitnum = 0;
+
+	rc = txquery.SubmitTx(ts, next_commitnum);
+
+	if (rc < 0)
+		BOOST_LOG_TRIVIAL(warning) << "Transaction::CreateConflictTx SubmitTx failed";
+	else if (rc)
+		BOOST_LOG_TRIVIAL(warning) << "Transaction::CreateConflictTx SubmitTx returned error: " << txquery.ReadBuf();
+
+	if (rc)
+	{
+		auto rc = dbconn->BeginWrite();
+		if (rc)
+		{
+			dbconn->DoDbFinishTx(-1);
+
+			throw txrpc_wallet_db_error;
+		}
+
+		Finally finally(boost::bind(&DbConn::DoDbFinishTx, dbconn, 1));		// 1 = rollback
+
+		status = TX_STATUS_ERROR;
+
+		rc = dbconn->TransactionInsert(*this);
+		if (rc) throw txrpc_wallet_db_error;
+
+		for (unsigned i = 0; i < nout; ++i)
+		{
+			Billet& bill = output_bills[i];
+
+			bill.status = BILL_STATUS_ERROR;
+
+			rc = dbconn->BilletInsert(bill);
+			if (rc) throw txrpc_wallet_db_error;
+		}
+
+		rc = dbconn->Commit();
+		if (rc) throw txrpc_wallet_db_error;
+
+		dbconn->DoDbFinishTx();
+
+		finally.Clear();
+	}
+
+	if (rc < 0)
+		throw txrpc_server_error;
+	else if (rc)
+		throw txrpc_tx_rejected;
+
+	rc = UpdatePolling(dbconn, next_commitnum);
+	(void)rc;
+
+	return 0;
 }
 
 int Transaction::CreateTxFromAddressQueryResult(DbConn *dbconn, TxQuery& txquery, const Secret& destination, const Secret& address, QueryAddressResult &result, bool duplicate_txid)

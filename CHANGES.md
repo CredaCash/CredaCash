@@ -2,7 +2,7 @@
 ---
 <!--- NOTE: This file is in Markdown format, and is intended to be viewed in a Markdown viewer. -->
 
-## v1.1 Beta2 2019-12-04
+## v1.1 Beta3 2020-01-28
 
 ### ccnode
 
@@ -12,7 +12,7 @@
 
 #### - Minor Changes
 
-- Version identifier changed to "1.01 beta2".
+- Version identifier changed to "1.01 beta3".
 - Added block timestamp to console output.
 - Changed the default port assignments to allow more services in the future.
 - To make configuration easier, if a "#" character is used in the value of the command line options "datadir", "rendezvous-file" or "genesis-file", it is now replaced by the blockchain number.
@@ -33,15 +33,16 @@
 - To reduce timeout errors when sending transactions, the command line option "tx-create-timeout" was added with a default value of 24 hours, and the default of value the command line option "tx-new-billet-wait-sec" was increased from 90 to 300.
 - The operation of the wallet is now more robust if the wallet data file is copied and used simultaneously on two computers, however this still remains unsupported and not recommended (instead, a new wallet should be created on the second computer and funds sent between the two wallets as needed).
 - Added the bitcoin-compatible command "abandontransaction".
+- Added the command "cc.transaction\_cancel" which attempts to cancel a transaction by creating a conflicting transaction.
 - Added the command "cc.billets\_release\_allocated" which frees all allocated billets, effectively abandoning all uncleared transactions, and then resets the balance to match the total of the unspent billets.
 - Added the command "cc.billets\_poll\_unspent" which can be used to adjust the wallet balance for billets spent externally, for example, by another wallet that has control over the same funds.
 
 #### - Minor Changes
 
-- Version identifier changed to "1.01 beta2".
+- Version identifier changed to "1.01 beta3".
 - Fixed the command "gettransaction" to report a transaction amount of zero when the amount is sent to one of the wallet's own destinations.
-- In bitcoin, some functions such as "gettransaction" and "getreceivedbyaddress" will return the same error message for an invalid transaction id or address, and for a transaction id or address that is valid but not found in the wallet. In order to make troubleshooting easier, these functions have been changed in the CredaCash wallet to return different error codes and messages for an invalid transaction id or address, as opposed to a transaction id or address that is valid but not in the wallet. 
-- In the command "cc.poll\_destination", added a parameter to generate additional polling addresses, and made the default maximum receive time unlimited.
+- In bitcoin, some functions such as "gettransaction" and "getreceivedbyaddress" will return the same error message for an invalid transaction id or address, and for a transaction id or address that is valid but not found in the wallet. In order to make troubleshooting easier, these functions have been changed in the CredaCash wallet to return different error codes and messages for an invalid transaction id or address, as opposed to a transaction id or address that is valid but not in the wallet.
+- Renamed the command "cc.poll\_destination" to "cc.destination\_poll", and added a parameter to generate additional polling addresses and made the default maximum receive time unlimited.
 - Modified the command "listunspent" to no longer list billets with zero amounts, and to remove the polling of unspent billets since that is now performed by the command "cc.billets\_poll\_unspent".
 - Added the commands "cc.dump\_transactions", "cc.dump\_billets" and "cc.dump\_tx\_build".
 - Changed the default port assignments to allow more services in the future.

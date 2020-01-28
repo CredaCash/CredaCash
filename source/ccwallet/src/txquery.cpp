@@ -301,7 +301,7 @@ int TxQuery::SubmitQuery(PowType powtype, bool is_retry, Json::Value *root, vect
 	return result_code;
 }
 
-int TxQuery::SubmitTx(const TxPay& tx, uint64_t& next_commitnum)
+int TxQuery::SubmitTx(const TxPay& ts, uint64_t& next_commitnum)
 {
 	if (TRACE_TXQUERY) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " TxQuery::SubmitTx";
 
@@ -313,9 +313,9 @@ int TxQuery::SubmitTx(const TxPay& tx, uint64_t& next_commitnum)
 	char output[128];
 	uint32_t outsize = sizeof(output);
 
-	//tx_dump_stream(cerr, tx);
+	//tx_dump_stream(cerr, ts);
 
-	auto rc = txpay_to_wire(fn, tx, -1, output, outsize, m_writebuf.data(), m_writebuf.size());
+	auto rc = txpay_to_wire(fn, ts, -1, output, outsize, m_writebuf.data(), m_writebuf.size());
 	if (rc)
 	{
 		BOOST_LOG_TRIVIAL(error) << Name() << " Conn " << m_conn_index << " TxQuery::SubmitTx txpay_to_wire failed: " << output;

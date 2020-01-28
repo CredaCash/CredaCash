@@ -26,7 +26,7 @@
 #include <boost/program_options/options_description.hpp>
 #include <boost/program_options/parsers.hpp>
 
-//!#define TEST_TX_DIFFICULTY_ZERO			1
+//#define TEST_TX_DIFFICULTY_ZERO			1
 //#define TEST_SKIP_RELAY_CONNS_CHECK		1
 
 #ifndef TEST_TX_DIFFICULTY_ZERO
