@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2019 Creda Software, Inc.
+ * Copyright (C) 2015-2020 Creda Software, Inc.
  *
  * txparams.cpp
 */
@@ -27,7 +27,7 @@ TxParams::TxParams()
 
 bool TxParams::NotConnected() const
 {
-	if (!connected) BOOST_LOG_TRIVIAL(warning) << "Transaction server is not connected to the blockchain network";
+	if (!connected) BOOST_LOG_TRIVIAL(warning) << "Transaction server is not synced to the blockchain";
 
 	return !connected;
 }

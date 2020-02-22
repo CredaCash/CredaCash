@@ -4,17 +4,9 @@
 
 ## Release History
 
-### 2020-01-28 v1.1 Beta3
+### 2020-02-22 v1.1
 
-Third beta release for enterprise readiness.
-
-### 2019-12-04 v1.1 Beta2
-
-Second beta release for enterprise readiness.
-
-### 2019-10-15 v1.1 Beta
-
-Beta release to enhance wallet robustness.
+Ease-of-use updates to make software ready for deployment by merchants and exchanges.
 
 ### 2019-08-15 v1.0
 

@@ -2,7 +2,7 @@
 ---
 <!--- NOTE: This file is in Markdown format, and is intended to be viewed in a Markdown viewer. -->
 
-## v1.1 Beta3 2020-01-28
+## v1.1 2020-02-22
 
 ### ccnode
 
@@ -12,7 +12,7 @@
 
 #### - Minor Changes
 
-- Version identifier changed to "1.01 beta3".
+- Version identifier changed to "1.01".
 - Added block timestamp to console output.
 - Changed the default port assignments to allow more services in the future.
 - To make configuration easier, if a "#" character is used in the value of the command line options "datadir", "rendezvous-file" or "genesis-file", it is now replaced by the blockchain number.
@@ -39,10 +39,11 @@
 
 #### - Minor Changes
 
-- Version identifier changed to "1.01 beta3".
+- Version identifier changed to "1.01".
 - Fixed the command "gettransaction" to report a transaction amount of zero when the amount is sent to one of the wallet's own destinations.
 - In bitcoin, some functions such as "gettransaction" and "getreceivedbyaddress" will return the same error message for an invalid transaction id or address, and for a transaction id or address that is valid but not found in the wallet. In order to make troubleshooting easier, these functions have been changed in the CredaCash wallet to return different error codes and messages for an invalid transaction id or address, as opposed to a transaction id or address that is valid but not in the wallet.
 - Renamed the command "cc.poll\_destination" to "cc.destination\_poll", and added a parameter to generate additional polling addresses and made the default maximum receive time unlimited.
+- Added the command "cc.list\_change\_destinations" to get a list of change destinations used by the wallet, allowing these destinations to be manually polled if necessary.
 - Modified the command "listunspent" to no longer list billets with zero amounts, and to remove the polling of unspent billets since that is now performed by the command "cc.billets\_poll\_unspent".
 - Added the commands "cc.dump\_transactions", "cc.dump\_billets" and "cc.dump\_tx\_build".
 - Changed the default port assignments to allow more services in the future.

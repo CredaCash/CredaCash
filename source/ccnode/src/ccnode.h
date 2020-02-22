@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2019 Creda Software, Inc.
+ * Copyright (C) 2015-2020 Creda Software, Inc.
  *
  * ccnode.h
 */
@@ -9,7 +9,7 @@
 #pragma once
 
 #define CCAPPNAME	"CredaCash node"
-#define CCVERSION	 "1.01 beta3" //@@!
+#define CCVERSION	 "1.01" //@@!
 #define CCEXENAME	"ccnode"
 #define CCAPPDIR	"CCNode-#"
 

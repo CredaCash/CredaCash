@@ -3,7 +3,7 @@ CredaCash(TM) Wallet Test Script
 
 Part of the CredaCash (TM) cryptocurrency and blockchain
 
-Copyright (C) 2015-2019 Creda Software, Inc.
+Copyright (C) 2015-2020 Creda Software, Inc.
 
 This script runs "burn-in" tests against the CredaCash wallet
 
@@ -161,7 +161,7 @@ def wallet_thread(tnum):
 		elif method == 1:
 			do_rpc(s, 'getblockcount', ())
 		elif method == 2:
-			do_rpc(s, 'listransactions', ())
+			do_rpc(s, 'listtransactions', ())
 		elif method == 3:
 			do_rpc(s, 'cc.billets_poll_unspent', ())
 		elif method == 4:

@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2019 Creda Software, Inc.
+ * Copyright (C) 2015-2020 Creda Software, Inc.
  *
  * jsonrpc.cpp
 */
@@ -120,6 +120,7 @@ static void try_one_rpc(const string& json, const string& method, Json::Value& p
 		"cc.send_async \\\"reference_id\\\" \\\"destination\\\" asset amount\\n"
 		"cc.transaction_cancel \\\"txid\\\" - cancel transaction\\n"
 		"cc.destination_poll \\\"destination\\\" (polling_addresses last_received_max ) - check destination for incoming payments\\n"
+		"cc.list_change_destinations - Diagnostic - list destinations used for change\\n"
 		"cc.billets_poll_unspent - Diagnostic - poll and update unspent billets\\n"
 		"cc.billets_release_allocated ( reset_balance ) - Diagnostic - release all billets allocated to transactions\\n"
 		"cc.dump_transactions (start count include_billets) - Diagnostic - dump transactions in internal format\\n"
@@ -901,6 +902,13 @@ static void try_one_rpc(const string& json, const string& method, Json::Value& p
 			throw RPC_Exception(RPC_MISC_ERROR, method);
 
 		cc_mint_poll(dbconn, txquery, rstream);
+	}
+	else if (method == "cc.list_change_destinations")
+	{
+		if (params.size() != 0)
+			throw RPC_Exception(RPC_MISC_ERROR, method);
+
+		cc_list_change_destinations(dbconn, txquery, rstream);
 	}
 	else if (method == "cc.billets_poll_unspent")
 	{

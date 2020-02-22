@@ -3,7 +3,7 @@ CredaCash(TM) Wallet Simulation Script
 
 Part of the CredaCash (TM) cryptocurrency and blockchain
 
-Copyright (C) 2015-2019 Creda Software, Inc.
+Copyright (C) 2015-2020 Creda Software, Inc.
 
 This program exercises the CredaCash network by simulating a wallet that sends
 and receives transactions. The differences between what this script does and

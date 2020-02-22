@@ -3,7 +3,7 @@ CredaCash(TM) Transaction Library Test Script
 
 Part of the CredaCash (TM) cryptocurrency and blockchain
 
-Copyright (C) 2015-2019 Creda Software, Inc.
+Copyright (C) 2015-2020 Creda Software, Inc.
 
 This script runs several tests against the CredaCash transaction library:
 

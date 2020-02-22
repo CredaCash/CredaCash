@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2019 Creda Software, Inc.
+ * Copyright (C) 2015-2020 Creda Software, Inc.
  *
  * ccwallet.h
 */
@@ -9,7 +9,7 @@
 #pragma once
 
 #define CCAPPNAME	"CredaCash RPC Wallet"
-#define CCVERSION	 "1.01 beta3" //@@!
+#define CCVERSION	 "1.01" //@@!
 #define CCEXENAME	"ccwallet"
 #define CCAPPDIR	"CCWallet-#"
 

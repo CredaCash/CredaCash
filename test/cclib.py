@@ -3,7 +3,7 @@ CredaCash(TM) Library Functions for Python
 
 Part of the CredaCash (TM) cryptocurrency and blockchain
 
-Copyright (C) 2015-2019 Creda Software, Inc.
+Copyright (C) 2015-2020 Creda Software, Inc.
 
 '''
 

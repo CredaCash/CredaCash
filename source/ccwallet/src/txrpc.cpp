@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2019 Creda Software, Inc.
+ * Copyright (C) 2015-2020 Creda Software, Inc.
  *
  * txrpc.cpp
 */
@@ -433,6 +433,18 @@ void cc_mint_poll(stdparams)
 	}
 
 	//rstream << "done";
+}
+
+void cc_list_change_destinations(stdparams)
+{
+	if (TRACE_TX) BOOST_LOG_TRIVIAL(info) << "cc_list_change_destinations";
+
+	Secret destination;
+
+	auto rc = dbconn->SecretSelectId(SELF_DESTINATION_ID, destination);
+	if (rc) throw txrpc_wallet_db_error;
+
+	rstream << "[\"" << destination.EncodeDestination() << "\"]";
 }
 
 void cc_dump_transactions(uint64_t start, uint64_t count, bool include_billets, stdparams)
