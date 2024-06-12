@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * transaction.cpp
 */
@@ -11,10 +11,12 @@
 #include <jsoncpp/json/json.h>
 #include <blake2/blake2.h>
 #include <siphash/siphash.h>
+#include <SpinLock.hpp>
 
 #include "transaction.hpp"
 #include "transaction-json.hpp"
 #include "transaction.h"
+#include "xtransaction.hpp"
 #include "jsoninternal.h"
 #include "jsonutil.h"
 #include "CChash.hpp"
@@ -22,7 +24,7 @@
 
 #include <CCobjects.hpp>
 
-#define TEST_SHOW_WIRE_ERRORS	0	// for debugging
+//#define TEST_SHOW_WIRE_ERRORS	1	// for debugging
 
 #ifndef TEST_SHOW_WIRE_ERRORS
 #define TEST_SHOW_WIRE_ERRORS	0	// don't debug
@@ -59,9 +61,9 @@ static void _tx_init_input(const TxPay& tx, TxIn& txin)
 
 void tx_init(TxPay& tx)
 {
-	memset((void*)&tx, 0, sizeof(tx));
+	tx.Clear();
 
-	tx.tag = CC_TAG_TX_STRUCT;	// tag the structure
+	tx.struct_tag = CC_TAG_TX_STRUCT;	// tag the structure
 
 	for (unsigned i = 0; i < TX_MAXOUT; ++i)
 		_tx_init_output(tx, tx.outputs[i]);
@@ -70,7 +72,7 @@ void tx_init(TxPay& tx)
 		_tx_init_input(tx, tx.inputs[i]);
 }
 
-static unsigned amount_mantissa_bits(bool is_donation)
+static unsigned amount_mantissa_bits(bool is_donation = false)
 {
 	if (is_donation)
 		return TX_DONATION_BITS - TX_AMOUNT_EXPONENT_BITS;
@@ -112,14 +114,14 @@ void tx_get_amount_factor(bigint_t& factor, unsigned exponent)
 
 void tx_amount_factors_init()
 {
-	static FastSpinLock init_lock;
+	static FastSpinLock init_lock(__FILE__, __LINE__);
 
 	lock_guard<FastSpinLock> lock(init_lock);
 
 	static bool binited = false;
 
 	if (binited)
-			return;
+		return;
 
 	binited = true;
 
@@ -128,7 +130,7 @@ void tx_amount_factors_init()
 		amount_factors[i] = (i ? bigint_t(10UL) * amount_factors[i-1] : bigint_t(1UL));
 
 		amount_factors_limbs[i] = 1;
-		for (unsigned j = 1; j < amount_factors[i].numberLimbs() && BIGWORD(amount_factors[i], j); ++j)
+		for (int j = 1; j < amount_factors[i].numberLimbs() && BIGWORD(amount_factors[i], j); ++j)
 			++amount_factors_limbs[i];
 
 		// 2 = donation round up (always)
@@ -348,6 +350,23 @@ uint64_t tx_amount_encode(const bigint_t& amount, bool is_donation, unsigned amo
 	return rv;
 }
 
+uint64_t tx_amount_max(unsigned amount_bits, unsigned exponent_bits, unsigned max_exponent)
+{
+	if (!max_exponent || max_exponent > TX_AMOUNT_EXPONENT_MASK)
+		max_exponent = TX_AMOUNT_EXPONENT_MASK;
+
+	return ((((uint64_t)1 << amount_mantissa_bits()) - 1) << TX_AMOUNT_EXPONENT_BITS) | max_exponent;
+}
+
+void tx_amount_max(bigint_t& result, unsigned amount_bits, unsigned exponent_bits, unsigned max_exponent)
+{
+	auto amount = tx_amount_max(amount_bits, exponent_bits, max_exponent);
+
+	//cerr << "tx_amount_max " << amount_bits << " " << exponent_bits << " " << max_exponent << " 0x" << hex << amount << dec << " " << (amount >> TX_AMOUNT_EXPONENT_BITS) << endl;
+
+	tx_amount_decode(amount, result, false, amount_bits, exponent_bits);
+}
+
 static CCRESULT parse_amount_common(const string& fn, Json::Value& root, bool& is_donation, unsigned& amount_bits, unsigned& exponent_bits, char *output, const uint32_t outsize)
 {
 	string key;
@@ -519,14 +538,16 @@ void txout_dump_stream(ostream& os, const TxOut& txout, const char *prefix)
 	os << prefix << "acceptance_required "	<< txout.acceptance_required << endl;
 	os << prefix << "repeat_count "			<< txout.repeat_count << endl;
 
-	os << prefix << "M_pool "				<< txout.M_pool << endl;
+	os << prefix << "M_domain "				<< txout.M_domain << endl;
 	os << prefix << "__asset "				<< txout.__asset << endl;
 	os << prefix << "no_asset "				<< txout.no_asset << endl;
 	os << prefix << "asset_mask "			<< txout.asset_mask << endl;
 	os << prefix << "__asset_pad "			<< txout.__asset_pad << endl;
 	os << prefix << "M_asset_enc "			<< txout.M_asset_enc << endl;
 
-	os << prefix << "__amount_fp "			<< txout.__amount_fp << endl;
+	bigint_t bigval;
+	tx_amount_decode(txout.__amount_fp, bigval, false, TX_AMOUNT_BITS, TX_AMOUNT_EXPONENT_BITS);
+	os << prefix << "__amount_fp "			<< txout.__amount_fp << " (" << dec << bigval << hex << ")" << endl;
 	os << prefix << "no_amount "			<< txout.no_amount << endl;
 	os << prefix << "amount_mask "			<< txout.amount_mask << endl;
 	os << prefix << "__amount_pad "			<< txout.__amount_pad << endl;
@@ -624,9 +645,11 @@ void txin_dump_stream(ostream& os, const TxIn& txin, const TxInPath *path, const
 	os << prefix << "invalmax "				<< txin.invalmax << endl;
 	os << prefix << "delaytime "				<< txin.delaytime << endl;
 
-	os << prefix << "M_pool "				<< txin.M_pool << endl;
+	os << prefix << "M_domain "				<< txin.M_domain << endl;
 	os << prefix << "__asset "				<< txin.__asset << endl;
-	os << prefix << "__amount_fp "			<< txin.__amount_fp << endl;
+	bigint_t bigval;
+	tx_amount_decode(txin.__amount_fp, bigval, false, TX_AMOUNT_BITS, TX_AMOUNT_EXPONENT_BITS);
+	os << prefix << "__amount_fp "			<< txin.__amount_fp << " (" << dec << bigval << hex << ")" << endl;
 	os << prefix << "__M_commitment_iv "	<< txin.__M_commitment_iv << endl;
 	//os << prefix << "__M_commitment_index "	<< txin.__M_commitment_index << endl;
 	os << prefix << "_M_commitment "		<< txin._M_commitment << endl;
@@ -654,6 +677,7 @@ void tx_dump_stream(ostream& os, const TxPay& tx, const char *prefix)
 	os << prefix << "----Transaction Dump----" << endl;
 
 	os << prefix << "zero "							<< tx.zero << endl;
+	os << prefix << "struct_tag "					<< tx.struct_tag << endl;
 	os << prefix << "no_precheck "					<< tx.no_precheck << endl;
 	os << prefix << "no_proof "						<< tx.no_proof << endl;
 	os << prefix << "no_verify "					<< tx.no_verify << endl;
@@ -663,8 +687,8 @@ void tx_dump_stream(ostream& os, const TxPay& tx, const char *prefix)
 
 	os << prefix << "have_dest_chain__ "			<< tx.have_dest_chain__ << endl;
 	os << prefix << "dest_chain__ "					<< tx.dest_chain__ << endl;
-	os << prefix << "have_output_pool__ "			<< tx.have_output_pool__ << endl;
-	os << prefix << "output_pool__ "				<< tx.output_pool__ << endl;
+	os << prefix << "have_default_domain__ "			<< tx.have_default_domain__ << endl;
+	os << prefix << "default_domain__ "				<< tx.default_domain__ << endl;
 	os << prefix << "have_acceptance_required__ "	<< tx.have_acceptance_required__ << endl;
 	os << prefix << "acceptance_required__ "		<< tx.acceptance_required__ << endl;
 	os << prefix << "have_invalmax__ "				<< tx.have_invalmax__ << endl;
@@ -672,11 +696,21 @@ void tx_dump_stream(ostream& os, const TxPay& tx, const char *prefix)
 	os << prefix << "have_delaytime__ "				<< tx.have_delaytime__ << endl;
 	os << prefix << "delaytime__ "					<< tx.delaytime__ << endl;
 
-	os << prefix << "tag "							<< tx.tag << endl;
+	os << prefix << "wire_tag "						<< tx.wire_tag << endl;
 	os << prefix << "tag_type "						<< tx.tag_type << endl;
 	os << prefix << "zkkeyid "						<< tx.zkkeyid << endl;
 	for (unsigned i = 0; i < tx.zkproof.size(); ++i)
 		os << prefix << "zkproof[" << i << "] "		<< tx.zkproof[i] << endl;
+
+	os << prefix << "amount_carry_in "				<< tx.amount_carry_in << endl;
+	os << prefix << "amount_carry_out "				<< tx.amount_carry_out << endl;
+
+	os << prefix << "append_wire_offset "			<< tx.append_wire_offset << endl;
+	os << prefix << "append_data_length "			<< tx.append_data_length << endl;
+	os << prefix << "append_data "					<< buf2hex(tx.append_data.data(), (tx.append_data_length < 16 ? tx.append_data_length : 16)) << endl;
+
+	os << prefix << "have_objid "					<< tx.have_objid << endl;
+	os << prefix << "objid "						<< buf2hex(&tx.objid, CC_OID_TRACE_SIZE) << endl;
 
 	os << prefix << "tx_type "						<< tx.tx_type << endl;
 	os << prefix << "source_chain "					<< tx.source_chain << endl;
@@ -686,7 +720,9 @@ void tx_dump_stream(ostream& os, const TxPay& tx, const char *prefix)
 	os << prefix << "expiration "					<< tx.expiration << endl;
 	os << prefix << "refhash "						<< tx.refhash << endl;
 	os << prefix << "reserved "						<< tx.reserved << endl;
-	os << prefix << "donation_fp "					<< tx.donation_fp << endl;
+	bigint_t bigval;
+	tx_amount_decode(tx.donation_fp, bigval, true, TX_DONATION_BITS, TX_AMOUNT_EXPONENT_BITS);
+	os << prefix << "donation_fp "					<< tx.donation_fp << " (" << dec << bigval << hex << ")" << endl;
 	os << prefix << "outvalmin "					<< tx.outvalmin << endl;
 	os << prefix << "outvalmax "					<< tx.outvalmax << endl;
 	os << prefix << "have_allow_restricted_addresses__ " << tx.have_allow_restricted_addresses__ << endl;
@@ -760,7 +796,7 @@ static void txpay_output_to_json(const string& fn, const TxOut& txout, ostream& 
 	os << ",\"acceptance-required\":\"0x"	<< txout.acceptance_required << "\"" JSON_ENDL
 	os << ",\"repeat-count\":\"0x"			<< txout.repeat_count << "\"" JSON_ENDL
 
-	os << ",\"pool\":\"0x"					<< txout.M_pool << "\"" JSON_ENDL
+	os << ",\"domain\":\"0x"					<< txout.M_domain << "\"" JSON_ENDL
 	os << ",\"asset\":\"0x"					<< txout.__asset << "\"" JSON_ENDL
 	os << ",\"no-asset\":\"0x"				<< txout.no_asset << "\"" JSON_ENDL
 	os << ",\"asset-mask\":\"0x"			<< txout.asset_mask << "\"" JSON_ENDL
@@ -867,7 +903,7 @@ static void txpay_input_to_json(const string& fn, const TxIn& txin, const TxInPa
 	os << ",\"maximum-input-exponent\":\"0x"	<< txin.invalmax << "\"" JSON_ENDL
 	os << ",\"delaytime\":\"0x"				<< txin.delaytime << "\"" JSON_ENDL
 
-	os << ",\"pool\":\"0x"					<< txin.M_pool << "\"" JSON_ENDL
+	os << ",\"domain\":\"0x"					<< txin.M_domain << "\"" JSON_ENDL
 	os << ",\"asset\":\"0x"					<< txin.__asset << "\"" JSON_ENDL
 	os << ",\"amount\":\"0x"				<< txin.__amount_fp << "\"" JSON_ENDL
 	os << ",\"commitment-iv\":\"0x"			<< txin.__M_commitment_iv << "\"" JSON_ENDL
@@ -937,9 +973,9 @@ static CCRESULT txpay_to_json(const string& fn, const TxPay& tx, char *output, c
 		os << ",\"destination-chain\":\"0x"	<< tx.dest_chain__ << "\"" JSON_ENDL
 
 	if (tx.nout)
-		os << ",\"default-output-pool\":\"0x"	<< tx.outputs[0].M_pool << "\"" JSON_ENDL
+		os << ",\"default-domain\":\"0x"		<< tx.outputs[0].M_domain << "\"" JSON_ENDL
 	else
-		os << ",\"default-output-pool\":\"0x"	<< tx.output_pool__ << "\"" JSON_ENDL
+		os << ",\"default-domain\":\"0x"		<< tx.default_domain__ << "\"" JSON_ENDL
 
 	if (tx.nout)
 		os << ",\"acceptance-required\":\"0x" << tx.outputs[0].acceptance_required << "\"" JSON_ENDL
@@ -1414,16 +1450,16 @@ void compute_amount_pad(const bigint_t& commit_iv, const bigint_t& dest, const u
 	#endif
 }
 
-void compute_commitment(const bigint_t& commit_iv, const bigint_t& dest, const uint32_t paynum, const uint32_t pool, const uint64_t asset, const uint64_t amount_fp, bigint_t& commitment)
+void compute_commitment(const bigint_t& commit_iv, const bigint_t& dest, const uint32_t paynum, const uint32_t domain, const uint64_t asset, const uint64_t amount_fp, bigint_t& commitment)
 {
-	// set RULE tx output: M_commitment = zkhash(M_commitment_iv, #dest, #paynum, M_pool, #asset, #amount)
+	// set RULE tx output: M_commitment = zkhash(M_commitment_iv, #dest, #paynum, M_domain, #asset, #amount)
 
 	vector<CCHashInput> hashin(6);
 	hashin[0].SetValue(commit_iv, TX_COMMIT_IV_BITS);
 	//hashin[1].SetValue(i, TX_COMMIT_INDEX_BITS);
 	hashin[1].SetValue(dest, TX_FIELD_BITS);
 	hashin[2].SetValue(paynum, TX_PAYNUM_BITS);
-	hashin[3].SetValue(pool, TX_POOL_BITS);
+	hashin[3].SetValue(domain, TX_DOMAIN_BITS);
 	hashin[4].SetValue(asset, TX_ASSET_BITS);
 	hashin[5].SetValue(amount_fp, TX_AMOUNT_BITS);
 	commitment = CCHash::Hash(hashin, HASH_BASES_COMMITMENT, TX_FIELD_BITS);
@@ -1485,7 +1521,7 @@ static void set_output_iv_dependents(const TxPay& tx, TxOut& txout)
 	#endif
 
 	compute_commitment(tx.M_commitment_iv, txout.addrparams.__dest, txout.addrparams.__paynum,
-			txout.M_pool, txout.__asset, txout.__amount_fp, txout.M_commitment);
+			txout.M_domain, txout.__asset, txout.__amount_fp, txout.M_commitment);
 }
 
 static CCRESULT txpay_precheck_output(const string& fn, const TxPay& tx, unsigned index, const TxOut& txout, char *output, const uint32_t outsize)
@@ -1516,7 +1552,7 @@ static CCRESULT txpay_precheck_output(const string& fn, const TxPay& tx, unsigne
 	// not checked RULE tx output: if enforce_amount, then M_amount_enc = #amount ^ #amount_xor
 	// not checked RULE tx output:	where #amount_xor = amount_mask & (zkhash(M_encrypt_iv, #dest, #paynum) >> TX_ASSET_BITS)
 	// not checked RULE tx output: if enforce_address, then M_address = zkhash(#dest, dest_chain, #paynum)
-	// not checked RULE tx output: M_commitment = zkhash(M_commitment_iv, #dest, #paynum, M_pool, #asset, #amount)
+	// not checked RULE tx output: M_commitment = zkhash(M_commitment_iv, #dest, #paynum, M_domain, #asset, #amount)
 
 	return 0;
 }
@@ -1591,8 +1627,7 @@ static void set_input_dependents(const TxPay& tx, TxIn& txin)
 
 	// test adding the prime to the commitment to see if a valid proof can be created that has a different serialnum
 
-	bigint_t prime = 0UL;
-	prime = prime - bigint_t(1UL);
+	bigint_t prime = bigint_t(0UL) - bigint_t(1UL);
 	addBigInt(prime, bigint_t(1UL), prime, false);
 	//cerr << "prime = " << hex << prime << dec << endl;
 	cerr << "old _M_commitment = " << hex << txin._M_commitment << dec << endl;
@@ -1721,7 +1756,7 @@ static CCRESULT txpay_precheck_input(const string& fn, const TxPay& tx, unsigned
 	//		return copy_error_to_output(fn, string("error: " + errmsg + " for secret " + to_string(j) + " of input ") + to_string(index), output, outsize);
 	}
 
-	// check RULE tx input: M_commitment = zkhash(M_commitment_iv, #dest, #paynum, M_pool, #asset, #amount)
+	// check RULE tx input: M_commitment = zkhash(M_commitment_iv, #dest, #paynum, M_domain, #asset, #amount)
 	// check RULE tx input:	where #dest = zkhash(@receive_secret, @monitor_secret[1..R], @use_spend_secret[0..Q], @use_trust_secret[0..Q], @required_spend_secrets, @required_trust_secrets, @destnum)
 	// not checked RULE tx input:	where @receive_secret = zkhash(@monitor_secret[0], @enforce_spendspec_with_spend_secret, @enforce_spendspec_with_trust_secret, @required_spendspec_hash, @allow_master_secret, @allow_freeze, @allow_trust_unfreeze, @require_public_hashkey, @restrict_addresses, @spend_locktime, @trust_locktime, @spend_delaytime, @trust_delaytime)
 
@@ -1729,7 +1764,9 @@ static CCRESULT txpay_precheck_input(const string& fn, const TxPay& tx, unsigned
 	compute_destination(txin.params, txin.secrets, destination);
 
 	compute_commitment(txin.__M_commitment_iv, destination, txin.params.addrparams.__paynum,
-			txin.M_pool, txin.__asset, txin.__amount_fp, commitment);
+			txin.M_domain, txin.__asset, txin.__amount_fp, commitment);
+
+	//cerr << "commitment " << index << " = " << commitment << endl;
 
 	if (commitment != txin._M_commitment)
 		return copy_error_to_output(fn, string("error: inputs do not hash to the commitment for input ") + to_string(index), output, outsize);
@@ -1803,12 +1840,21 @@ static void set_unused_asset_list(TxPay& tx)
 	}
 }
 
+static void set_refhash_from_append_data(TxPay& tx)
+{
+	if (!tx.refhash && tx.append_data_length)
+	{
+		auto rc = blake2s(&tx.refhash, sizeof(tx.refhash), NULL, 0, tx.append_data.data(), tx.append_data_length);
+		CCASSERTZ(rc);
+	}
+}
+
 static void set_dependents(TxPay& tx)
 {
 	#if 0 // test hash
 	bigint_t tx_type;
 	subBigInt(bigint_t(0UL), bigint_t(1UL), tx_type, false);
-	//tx_type = TX_FIELD_MAX;
+	//tx_type = bigint_t(0UL) - bigint_t(1UL);
 	//addBigInt(tx_type, bigint_t(1UL + 0xfe), tx_type, false);
 
 	unsigned nbits = TX_INPUT_BITS;
@@ -1822,6 +1868,8 @@ static void set_dependents(TxPay& tx)
 	cerr << "test_hash hash " << hex << hash << dec << endl;
 	return;
 	#endif
+
+	set_refhash_from_append_data(tx);
 
 	// get max # secrets
 
@@ -1902,8 +1950,9 @@ static CCRESULT txpay_precheck(const string& fn, const TxPay& tx, char *output, 
 		if (asset == 0)
 		{
 			tx_amount_decode(tx.donation_fp, bigval, true, TX_DONATION_BITS, TX_AMOUNT_EXPONENT_BITS);
-			valsum = bigval;
-			//cerr << "donation_fp " << hex << tx.donation_fp << dec << " decoded " << bigval << " valsum " << valsum << endl;
+			valsum = bigval + tx.amount_carry_out - tx.amount_carry_in;
+			//cerr << "donation_fp " << hex << tx.donation_fp << dec << " decoded " << bigval << endl;
+			//cerr << "amount_carry_out " << tx.amount_carry_out << " amount_carry_in " << tx.amount_carry_in << " valsum " << valsum << endl;
 		}
 
 		for (unsigned i = 0; i < tx.nout; ++i)
@@ -1951,6 +2000,9 @@ static CCRESULT proof_error(const string& fn, int rc, char *output, const uint32
 
 static CCRESULT set_proof(const string& fn, TxPay& tx, char *output, const uint32_t outsize)
 {
+	if (Xtx::TypeHasBareMsg(tx.tag_type))
+		return 0;
+
 	auto rc = CCProof_GenProof(tx);
 
 	return proof_error(fn, rc, output, outsize);
@@ -1958,6 +2010,9 @@ static CCRESULT set_proof(const string& fn, TxPay& tx, char *output, const uint3
 
 static CCRESULT check_proof(const string& fn, TxPay& tx, char *output, const uint32_t outsize)
 {
+	if (Xtx::TypeHasBareMsg(tx.tag_type))
+		return 0;
+
 	auto rc = CCProof_VerifyProof(tx);
 
 	return proof_error(fn, rc, output, outsize);
@@ -1987,8 +2042,8 @@ static CCRESULT set_mint_inputs(TxPay& tx)
 	bigval = TX_CC_MINT_AMOUNT;
 	txin.invalmax = TX_CC_MINT_EXPONENT;
 	txin.__amount_fp = tx_amount_encode(bigval, false, TX_AMOUNT_BITS, TX_AMOUNT_EXPONENT_BITS, TX_CC_MINT_EXPONENT, TX_CC_MINT_EXPONENT);
-	txin._M_commitment = "17001882429967903773100989557462178497740410097909483058299851875380585795018";
-
+	//txin._M_commitment = "17001882429967903773100989557462178497740410097909483058299851875380585795018"; // 50K input
+	txin._M_commitment = "973184326264892349829845330310452310635714594783699009126090380917429859595";	// 1K input
 	txin.merkle_root = tx.tx_merkle_root;
 	txin.enforce_trust_secrets = 1;
 
@@ -2059,15 +2114,15 @@ static CCRESULT txpay_output_from_json(const string& fn, Json::Value& root, cons
 		txout.repeat_count = BIG64(bigval);
 	}
 
-	key = "pool";
+	key = "domain";
 	if (root.removeMember(key, &value))
 	{
-		auto rc = parse_int_value(fn, key, value.asString(), TX_POOL_BITS, 0UL, bigval, output, outsize);
+		auto rc = parse_int_value(fn, key, value.asString(), TX_DOMAIN_BITS, 0UL, bigval, output, outsize);
 		if (rc) return rc;
-		txout.M_pool = BIG64(bigval);
+		txout.M_domain = BIG64(bigval);
 	}
-	else if (tx.have_output_pool__)
-		txout.M_pool = tx.output_pool__;
+	else if (tx.have_default_domain__)
+		txout.M_domain = tx.default_domain__;
 	else
 		return error_missing_key(fn, key, output, outsize);
 
@@ -2587,12 +2642,12 @@ CCRESULT tx_input_common_from_json(const string& fn, Json::Value& root, TxIn& tx
 	if (rc) return rc;
 	txin.params.addrparams.__paynum = BIG64(bigval);
 
-	key = "pool";
+	key = "domain";
 	if (!root.removeMember(key, &value))
 		return error_missing_key(fn, key, output, outsize);
-	rc = parse_int_value(fn, key, value.asString(), TX_POOL_BITS, 0UL, bigval, output, outsize);
+	rc = parse_int_value(fn, key, value.asString(), TX_DOMAIN_BITS, 0UL, bigval, output, outsize);
 	if (rc) return rc;
-	txin.M_pool = BIG64(bigval);
+	txin.M_domain = BIG64(bigval);
 
 	key = "asset";
 	if (root.removeMember(key, &value))
@@ -2807,7 +2862,7 @@ static CCRESULT txpay_input_from_json(const string& fn, Json::Value& root, const
 
 static CCRESULT txpay_outputs_from_json(const string& fn, const string& key, Json::Value& root, TxPay& tx, char *output, const uint32_t outsize)
 {
-	//cerr << "txpay_outputs_from_json " << root.size()<< endl;
+	//cerr << "txpay_outputs_from_json " << root.size() << endl;
 
 	if (!root.isArray())
 		return error_not_array_objs(fn, key, output, outsize);
@@ -2921,14 +2976,14 @@ static CCRESULT tx_common_from_json(const string& fn, Json::Value& root, bool fr
 		tx.dest_chain__ = BIG64(bigval);
 	}
 
-	key = "default-output-pool";
+	key = "default-domain";
 	if (root.removeMember(key, &value))
 	{
-		tx.have_output_pool__ = true;
+		tx.have_default_domain__ = true;
 
-		auto rc = parse_int_value(fn, key, value.asString(), TX_POOL_BITS, 0UL, bigval, output, outsize);
+		auto rc = parse_int_value(fn, key, value.asString(), TX_DOMAIN_BITS, 0UL, bigval, output, outsize);
 		if (rc) return rc;
-		tx.output_pool__ = BIG64(bigval);
+		tx.default_domain__ = BIG64(bigval);
 	}
 
 	key = "acceptance-required";
@@ -3231,7 +3286,7 @@ CCRESULT json_tx_verify(const string& fn, Json::Value& root, char *output, const
 
 	struct TxPay& tx = *ptx;
 
-	if (tx.tag != CC_TAG_TX_STRUCT)
+	if (tx.struct_tag != CC_TAG_TX_STRUCT)
 		return error_invalid_tx_type(fn, output, outsize);
 
 	if (tx.tag_type == CC_TYPE_TXPAY || tx.tag_type == CC_TYPE_MINT)
@@ -3249,7 +3304,7 @@ CCRESULT json_tx_to_json(const string& fn, Json::Value& root, char *output, cons
 
 	struct TxPay& tx = *ptx;
 
-	if (tx.tag != CC_TAG_TX_STRUCT)
+	if (tx.struct_tag != CC_TAG_TX_STRUCT)
 		return error_invalid_tx_type(fn, output, outsize);
 
 	if (tx.tag_type == CC_TYPE_TXPAY || tx.tag_type == CC_TYPE_MINT)
@@ -3258,7 +3313,7 @@ CCRESULT json_tx_to_json(const string& fn, Json::Value& root, char *output, cons
 	return error_invalid_tx_type(fn, output, outsize);
 }
 
-static CCRESULT txpay_output_to_wire(const string& fn, const TxPay& tx, const TxOut& txout, unsigned err_check, char *output, const uint32_t outsize, uint32_t& bufpos, char *binbuf, const uint32_t binsize)
+static CCRESULT txpay_output_to_wire(const string& fn, const TxPay& tx, const TxOut& txout, unsigned err_check, char *output, const uint32_t outsize, uint32_t &bufpos, char *binbuf, const uint32_t binsize)
 {
 	const bool bhex = false;
 
@@ -3279,7 +3334,7 @@ static CCRESULT txpay_output_to_wire(const string& fn, const TxPay& tx, const Tx
 	#if TEST_EXTRA_ON_WIRE
 	/*X*/ copy_to_buf(txout.acceptance_required, 1, bufpos, binbuf, binsize, bhex);
 	/*X*/ copy_to_buf(txout.repeat_count, sizeof(txout.repeat_count), bufpos, binbuf, binsize, bhex);
-	/*X*/ copy_to_buf(txout.M_pool, TX_POOL_BYTES, bufpos, binbuf, binsize, bhex);
+	/*X*/ copy_to_buf(txout.M_domain, TX_DOMAIN_BYTES, bufpos, binbuf, binsize, bhex);
 	#else
 	if (txout.acceptance_required != tx.outputs[0].acceptance_required && err_check)
 		return error_invalid_binary_tx_value(fn, "acceptance-required values do not all match", output, outsize);
@@ -3287,8 +3342,10 @@ static CCRESULT txpay_output_to_wire(const string& fn, const TxPay& tx, const Tx
 		return error_invalid_binary_tx_value(fn, "acceptance-required != 0", output, outsize);
 	if (txout.repeat_count && err_check)
 		return error_invalid_binary_tx_value(fn, "repeat-count != 0", output, outsize);
-	if (txout.M_pool != tx.outputs[0].M_pool && err_check)
-		return error_invalid_binary_tx_value(fn, "output pool values do not all match", output, outsize);
+	if (tx.wire_tag == CC_TAG_TX_XDOMAIN)
+		copy_to_buf(txout.M_domain, TX_DOMAIN_BYTES, bufpos, binbuf, binsize, bhex);
+	else
+		CCASSERT(txout.M_domain == tx.default_domain__);
 	#endif
 
 	#if TEST_EXTRA_ON_WIRE
@@ -3311,8 +3368,10 @@ static CCRESULT txpay_output_to_wire(const string& fn, const TxPay& tx, const Tx
 	if (txout.no_amount && err_check)
 		return error_invalid_binary_tx_value(fn, "no-amount != 0", output, outsize);
 
-	if (tx.tag_type == CC_TYPE_MINT)
+	switch (tx.tag_type)
 	{
+	case CC_TYPE_MINT:
+
 		if (txout.asset_mask && err_check)
 			return error_invalid_binary_tx_value(fn, "asset-mask != 0 in mint transaction", output, outsize);
 		if (txout.amount_mask && err_check)
@@ -3320,9 +3379,15 @@ static CCRESULT txpay_output_to_wire(const string& fn, const TxPay& tx, const Tx
 
 		if (txout.M_asset_enc && err_check)
 			return error_invalid_binary_tx_value(fn, "encrypted-asset != 0 in mint transaction", output, outsize);
-	}
-	else
-	{
+
+		break;
+
+	case CC_TYPE_TXPAY:
+	case CC_TYPE_XCX_SIMPLE_BUY:
+	case CC_TYPE_XCX_SIMPLE_SELL:
+	case CC_TYPE_XCX_NAKED_BUY:
+	case CC_TYPE_XCX_NAKED_SELL:
+
 		if (txout.asset_mask != TX_ASSET_WIRE_MASK && err_check)
 			return error_invalid_binary_tx_value(fn, "asset-mask != all 1's", output, outsize);
 		if (txout.amount_mask != TX_AMOUNT_MASK && err_check)
@@ -3332,6 +3397,11 @@ static CCRESULT txpay_output_to_wire(const string& fn, const TxPay& tx, const Tx
 			return error_invalid_binary_tx_value(fn, "encrypted-asset upper bits != all 0's", output, outsize);
 
 		copy_to_buf(txout.M_asset_enc, TX_ASSET_WIRE_BYTES, bufpos, binbuf, binsize, bhex);
+
+		break;
+
+	default:
+		return error_invalid_tx_type(fn, output, outsize);
 	}
 
 	if ((txout.M_amount_enc & ~TX_AMOUNT_MASK) && err_check)
@@ -3345,7 +3415,7 @@ static CCRESULT txpay_output_to_wire(const string& fn, const TxPay& tx, const Tx
 	return 0;
 }
 
-static CCRESULT txpay_output_from_wire(const TxPay& tx, TxOut& txout, uint32_t& bufpos, char *binbuf, const uint32_t binsize)
+static CCRESULT txpay_output_from_wire(const TxPay& tx, TxOut& txout, uint32_t &bufpos, char *binbuf, const uint32_t binsize)
 {
 	const bool bhex = false;
 
@@ -3363,10 +3433,13 @@ static CCRESULT txpay_output_from_wire(const TxPay& tx, TxOut& txout, uint32_t& 
 	#if TEST_EXTRA_ON_WIRE
 	/*X*/ copy_from_buf(txout.acceptance_required, 1, bufpos, binbuf, binsize, bhex);
 	/*X*/ copy_from_buf(txout.repeat_count, sizeof(txout.repeat_count), bufpos, binbuf, binsize, bhex);
-	/*X*/ copy_from_buf(txout.M_pool, TX_POOL_BYTES, bufpos, binbuf, binsize, bhex);
+	/*X*/ copy_from_buf(txout.M_domain, TX_DOMAIN_BYTES, bufpos, binbuf, binsize, bhex);
 	#else
 	txout.acceptance_required = tx.acceptance_required__;
-	txout.M_pool = tx.output_pool__;
+	if (tx.wire_tag == CC_TAG_TX_XDOMAIN)
+		copy_from_buf(txout.M_domain, TX_DOMAIN_BYTES, bufpos, binbuf, binsize, bhex);
+	else
+		txout.M_domain = tx.default_domain__;
 	#endif
 
 	#if TEST_EXTRA_ON_WIRE
@@ -3400,7 +3473,7 @@ static CCRESULT txpay_output_from_wire(const TxPay& tx, TxOut& txout, uint32_t& 
 	return 0;
 }
 
-static CCRESULT txpay_input_to_wire(const string& fn, const TxPay& tx, const TxIn& txin, unsigned err_check, char *output, const uint32_t outsize, uint32_t& bufpos, char *binbuf, const uint32_t binsize)
+static CCRESULT txpay_input_to_wire(const string& fn, const TxPay& tx, const TxIn& txin, unsigned err_check, char *output, const uint32_t outsize, uint32_t &bufpos, char *binbuf, const uint32_t binsize)
 {
 	const bool bhex = false;
 
@@ -3428,7 +3501,7 @@ static CCRESULT txpay_input_to_wire(const string& fn, const TxPay& tx, const TxI
 		/*X*/ copy_to_buf(txin.merkle_root, TX_MERKLE_BYTES, bufpos, binbuf, binsize, bhex);
 	/*X*/ copy_to_buf(txin.invalmax, TX_AMOUNT_EXPONENT_BYTES, bufpos, binbuf, binsize, bhex);
 	/*X*/ copy_to_buf(txin.delaytime, TX_DELAYTIME_BYTES, bufpos, binbuf, binsize, bhex);
-	/*X*/ copy_to_buf(txin.M_pool, TX_POOL_BYTES, bufpos, binbuf, binsize, bhex);
+	/*X*/ copy_to_buf(txin.M_domain, TX_DOMAIN_BYTES, bufpos, binbuf, binsize, bhex);
 	/*X*/ copy_to_buf(txin.no_serialnum, 1, bufpos, binbuf, binsize, bhex);
 	/*X*/ copy_to_buf(txin.S_spendspec_hashed, sizeof(txin.S_spendspec_hashed), bufpos, binbuf, binsize, bhex);
 	#else
@@ -3440,8 +3513,10 @@ static CCRESULT txpay_input_to_wire(const string& fn, const TxPay& tx, const TxI
 		return error_invalid_binary_tx_value(fn, "delaytime values do not all match", output, outsize);
 	if (txin.delaytime && err_check > 1)
 		return error_invalid_binary_tx_value(fn, "delaytime != 0", output, outsize);
-	if (txin.M_pool != tx.inputs[0].M_pool && err_check)
-		return error_invalid_binary_tx_value(fn, "input pool values do not all match", output, outsize);
+	if (tx.wire_tag == CC_TAG_TX_XDOMAIN)
+		copy_to_buf(txin.M_domain, TX_DOMAIN_BYTES, bufpos, binbuf, binsize, bhex);
+	else
+		CCASSERT(txin.M_domain == tx.default_domain__);
 	if (txin.no_serialnum && err_check)
 		return error_invalid_binary_tx_value(fn, "no-serialnum != 0", output, outsize);
 	if (txin.S_spendspec_hashed && err_check)
@@ -3464,6 +3539,8 @@ static CCRESULT txpay_input_to_wire(const string& fn, const TxPay& tx, const TxI
 		return error_invalid_binary_tx_value(fn, "hashkey exceeds wire bytes", output, outsize);
 	copy_to_buf(txin.S_hashkey, TX_HASHKEY_WIRE_BYTES, bufpos, binbuf, binsize, bhex);
 
+	//cout << "published hashkey = " << hex << txin.S_hashkey << dec << endl;
+
 	#if 0
 	static uint16_t nsigkeys = 0;	// always zero for now
 	copy_to_buf(nsigkeys, 1, bufpos, binbuf, binsize, bhex);
@@ -3472,7 +3549,7 @@ static CCRESULT txpay_input_to_wire(const string& fn, const TxPay& tx, const TxI
 	return 0;
 }
 
-static CCRESULT txpay_input_from_wire(const TxPay& tx, TxIn& txin, uint32_t& bufpos, char *binbuf, const uint32_t binsize)
+static CCRESULT txpay_input_from_wire(const TxPay& tx, TxIn& txin, uint32_t &bufpos, char *binbuf, const uint32_t binsize)
 {
 	const bool bhex = false;
 
@@ -3486,7 +3563,7 @@ static CCRESULT txpay_input_from_wire(const TxPay& tx, TxIn& txin, uint32_t& buf
 		/*X*/ copy_from_buf(txin.merkle_root, TX_MERKLE_BYTES, bufpos, binbuf, binsize, bhex);
 	/*X*/ copy_from_buf(txin.invalmax, TX_AMOUNT_EXPONENT_BYTES, bufpos, binbuf, binsize, bhex);
 	/*X*/ copy_from_buf(txin.delaytime, TX_DELAYTIME_BYTES, bufpos, binbuf, binsize, bhex);
-	/*X*/ copy_from_buf(txin.M_pool, TX_POOL_BYTES, bufpos, binbuf, binsize, bhex);
+	/*X*/ copy_from_buf(txin.M_domain, TX_DOMAIN_BYTES, bufpos, binbuf, binsize, bhex);
 	/*X*/ copy_from_buf(txin.no_serialnum, 1, bufpos, binbuf, binsize, bhex);
 	/*X*/ copy_from_buf(txin.S_spendspec_hashed, sizeof(txin.S_spendspec_hashed), bufpos, binbuf, binsize, bhex);
 	#else
@@ -3494,6 +3571,10 @@ static CCRESULT txpay_input_from_wire(const TxPay& tx, TxIn& txin, uint32_t& buf
 	txin.merkle_root = tx.tx_merkle_root;
 	txin.invalmax = tx.invalmax__;
 	txin.delaytime = tx.delaytime__;
+	if (tx.wire_tag == CC_TAG_TX_XDOMAIN)
+		copy_from_buf(txin.M_domain, TX_DOMAIN_BYTES, bufpos, binbuf, binsize, bhex);
+	else
+		txin.M_domain = tx.default_domain__;
 	#endif
 
 	if (!txin.pathnum)
@@ -3527,9 +3608,12 @@ uint64_t txpay_param_level_from_wire(const CCObject *obj)
 	if (!obj->IsValid())
 		return -1;
 
-	unsigned param_level_offset = sizeof(((TxPay*)0)->zkproof) - 1;
+	if (Xtx::TypeHasBareMsg(obj->ObjType()))
+		return 0;
 
-	if (obj->BodySize() < param_level_offset + sizeof(uint64_t))
+	unsigned param_level_offset = 0;
+
+	if (obj->BodySize() < param_level_offset + TX_BLOCKLEVEL_BYTES)
 		return -1;
 
 	uint64_t param_level = *(const uint64_t*)(obj->BodyPtr() + param_level_offset);
@@ -3539,36 +3623,16 @@ uint64_t txpay_param_level_from_wire(const CCObject *obj)
 	return param_level;
 }
 
-CCRESULT txpay_to_wire(const string& fn, const TxPay& tx, unsigned err_check, char *output, const uint32_t outsize, char *binbuf, const uint32_t binsize)
+static CCRESULT txpay_body_to_wire(const string& fn, TxPay& tx, unsigned err_check, char *output, const uint32_t outsize, uint32_t &bufpos, char *binbuf, const uint32_t binsize)
 {
-	uint32_t bufpos = 0;
 	const bool bhex = false;
 
-	CCASSERT(sizeof(bufpos) + sizeof(tx.tag) == sizeof(CCObject::Header));
-
-	copy_to_buf(bufpos, sizeof(bufpos), bufpos, binbuf, binsize, bhex);  // save space for size word
-
-	auto tag = tx.tag;
-	if (tx.tag_type == CC_TYPE_TXPAY)
-		tag = CC_TAG_TX_WIRE;
-	else if (tx.tag_type == CC_TYPE_MINT)
-		tag = CC_TAG_MINT_WIRE;
-	else
-		return error_invalid_tx_type(fn, output, outsize);
-
-	copy_to_buf(tag, sizeof(tx.tag), bufpos, binbuf, binsize, bhex);
-	//cerr << "txpay_to_wire output tag " << tag << endl;
-
-	CCASSERT(bufpos == sizeof(CCObject::Header));
-
-	copy_to_buf(zero_pow, sizeof(zero_pow), bufpos, binbuf, binsize, bhex);
+	// param_level must come first because txpay_param_level_from_wire() looks for it there
+	copy_to_buf(tx.param_level, TX_BLOCKLEVEL_BYTES, bufpos, binbuf, binsize, bhex);
 
 	copy_to_buf(tx.zkproof, sizeof(tx.zkproof) - 1, bufpos, binbuf, binsize, bhex);
 
-	// param_level must immediately follow zkproof because txpay_param_level_from_wire() looks for it there
-	copy_to_buf(tx.param_level, TX_BLOCKLEVEL_BYTES, bufpos, binbuf, binsize, bhex);
-
-	if (tx.tag_type == CC_TYPE_TXPAY)
+	if (tx.tag_type != CC_TYPE_MINT)
 		copy_to_buf(tx.zkkeyid, 1, bufpos, binbuf, binsize, bhex);
 	else if (tx.zkkeyid != TX_MINT_ZKKEY_ID && err_check)
 		return error_invalid_binary_tx_value(fn, "invalid proof key id for mint transaction", output, outsize);
@@ -3592,8 +3656,16 @@ CCRESULT txpay_to_wire(const string& fn, const TxPay& tx, unsigned err_check, ch
 
 	// TODO: make special tag for 2-in 2-out
 
-	if (tx.tag_type == CC_TYPE_TXPAY)
+	uint8_t nadj;
+
+	switch (tx.tag_type)
 	{
+	case CC_TYPE_TXPAY:
+	case CC_TYPE_XCX_SIMPLE_BUY:
+	case CC_TYPE_XCX_SIMPLE_SELL:
+	case CC_TYPE_XCX_NAKED_BUY:
+	case CC_TYPE_XCX_NAKED_SELL:
+
 		#if TEST_EXTRA_ON_WIRE
 		/*X*/ copy_to_buf(tx.nout, 1, bufpos, binbuf, binsize, bhex);
 		/*X*/ copy_to_buf(tx.nin_with_path, 1, bufpos, binbuf, binsize, bhex);
@@ -3612,16 +3684,23 @@ CCRESULT txpay_to_wire(const string& fn, const TxPay& tx, unsigned err_check, ch
 		CCASSERT(nin_without_path == 0);
 		CCASSERT(tx.nout <= 16);
 		CCASSERT(tx.nin_with_path <= 16);
-		uint8_t nadj = ((tx.nout - 1) << 4) | (tx.nin_with_path - 1);
+		nadj = ((tx.nout - 1) << 4) | (tx.nin_with_path - 1);
 		copy_to_buf(nadj, 1, bufpos, binbuf, binsize, bhex);
 		#endif
-	}
-	else
-	{
+
+		break;
+
+	case CC_TYPE_MINT:
+
 		if (tx.nout != TX_MINT_NOUT && err_check)
 			return error_invalid_binary_tx_value(fn, "invalid # outputs for mint transaction", output, outsize);
 		if (tx.nin != 1 && err_check)
 			return error_invalid_binary_tx_value(fn, "# inputs != 1 for mint transaction", output, outsize);
+
+		break;
+
+	default:
+		return error_invalid_tx_type(fn, output, outsize);
 	}
 
 	#if TEST_EXTRA_ON_WIRE
@@ -3646,7 +3725,7 @@ CCRESULT txpay_to_wire(const string& fn, const TxPay& tx, unsigned err_check, ch
 
 	unsigned i, count;
 
-	if (tx.tag_type == CC_TYPE_TXPAY)
+	if (tx.tag_type != CC_TYPE_MINT)
 	{
 		for (i = count = 0; i < tx.nin; ++i)
 		{
@@ -3677,36 +3756,97 @@ CCRESULT txpay_to_wire(const string& fn, const TxPay& tx, unsigned err_check, ch
 		CCASSERT(count == nin_without_path);
 	}
 
+	return 0;
+}
+
+CCRESULT txpay_to_wire(const string& fn, TxPay& tx, unsigned err_check, char *output, const uint32_t outsize, char *binbuf, const uint32_t binsize, uint32_t *pbufpos)
+{
+	uint32_t lpos;
+	uint32_t& bufpos = (pbufpos ? *pbufpos : lpos);
+
+	bufpos = 0;
+	const bool bhex = false;
+
+	CCASSERT(sizeof(bufpos) == sizeof(CCObject::Header::size));
+
+	copy_to_buf(bufpos, sizeof(bufpos), bufpos, binbuf, binsize, bhex);  // save space for size word
+
+	tx.wire_tag = CCObject::TypeToWireTag(tx.tag_type);
+
+	if (!tx.wire_tag || tx.wire_tag == CC_TAG_BLOCK)
+		return error_invalid_tx_type(fn, output, outsize);
+
+	for (unsigned i = 0; i < tx.nout; ++i)
+	{
+		if (tx.wire_tag == CC_TAG_TX && tx.outputs[i].M_domain != tx.default_domain__)
+			tx.wire_tag = CC_TAG_TX_XDOMAIN;
+	}
+
+	for (unsigned i = 0; i < tx.nin; ++i)
+	{
+		if (tx.wire_tag == CC_TAG_TX && tx.inputs[i].M_domain != tx.default_domain__)
+			tx.wire_tag = CC_TAG_TX_XDOMAIN;
+	}
+
+	copy_to_buf(tx.wire_tag, sizeof(tx.wire_tag), bufpos, binbuf, binsize, bhex);
+	//cerr << "txpay_to_wire wire_tag " << hex << tx.wire_tag << dec << endl;
+
+	CCASSERT(bufpos == sizeof(CCObject::Header));
+
+	copy_to_buf(zero_pow, sizeof(zero_pow), bufpos, binbuf, binsize, bhex);
+
+	if (!Xtx::TypeHasBareMsg(tx.tag_type))
+	{
+		auto rc = txpay_body_to_wire(fn, tx, err_check, output, outsize, bufpos, binbuf, binsize);
+		if (rc) return rc;
+	}
+
+	if (tx.append_data_length)
+	{
+		tx.append_wire_offset = bufpos;
+
+		copy_to_bufp(tx.append_data.data(), tx.append_data_length, bufpos, binbuf, binsize, bhex);
+	}
+
+	//cerr << "txpay_to_wire append_data_length " << tx.append_data_length << " total nbytes " << bufpos << endl;
+
 	if (bufpos > binsize)
-		return error_buffer_overflow(fn, output, outsize);
+		return error_buffer_overflow(fn, output, outsize, bufpos);
 
 	memcpy(binbuf, &bufpos, sizeof(bufpos));
 
-	//cerr << "txpay_to_wire nbytes " << bufpos << " data " << buf2hex(output, bufpos) << endl;
-
 #if TEST_SKIP_ZKPROOFS
-	// replace the zkproof with a hash of the binary tx
-	unsigned zoff = sizeof(CCObject::Header) + sizeof(zero_pow);
-	unsigned hstart = zoff + 2*64;
-	//cerr << "hashing " << bufpos - hstart << " bytes " << buf2hex(binbuf + hstart, bufpos - hstart, 0) << endl;
-	blake2b(binbuf + zoff, 64, NULL, 0, binbuf + hstart, bufpos - hstart);
+	if (!Xtx::TypeHasBareMsg(tx.tag_type))
+	{
+		// replace the zkproof with a hash of the binary tx
+		unsigned plevel = sizeof(CCObject::Header) + sizeof(zero_pow);
+		unsigned zoff = plevel + TX_BLOCKLEVEL_BYTES;
+		unsigned hstart = zoff + 2*64;
+		//cerr << "hashing " << bufpos - hstart << " bytes " << buf2hex(binbuf + hstart, bufpos - hstart) << endl;
+		blake2b(binbuf + zoff, 64, binbuf + plevel, TX_BLOCKLEVEL_BYTES, binbuf + hstart, bufpos - hstart);
+	}
 #endif
+
+	tx.have_objid = true;
+	CCObject::ComputeMessageObjId(binbuf, &tx.objid);
+
+	//cerr << "txpay_to_wire nbytes " << bufpos << " data " << buf2hex(binbuf, bufpos) << endl;
 
 	return 0;
 }
 
-static CCRESULT txpay_from_wire(TxPay& tx, uint32_t& bufpos, char *binbuf, const uint32_t binsize)
+static CCRESULT txpay_body_from_wire(TxPay& tx, uint32_t &bufpos, char *binbuf, const uint32_t binsize)
 {
 	const bool bhex = false;
 
-	copy_from_buf(tx.zkproof, sizeof(tx.zkproof) - 1, bufpos, binbuf, binsize, bhex);
-
 	copy_from_buf(tx.param_level, TX_BLOCKLEVEL_BYTES, bufpos, binbuf, binsize, bhex);
 
-	if (tx.tag_type == CC_TYPE_TXPAY)
-		copy_from_buf(tx.zkkeyid, 1, bufpos, binbuf, binsize, bhex);
+	copy_from_buf(tx.zkproof, sizeof(tx.zkproof) - 1, bufpos, binbuf, binsize, bhex);
+
 	if (tx.tag_type == CC_TYPE_MINT)
 		tx.zkkeyid = TX_MINT_ZKKEY_ID;
+	else
+		copy_from_buf(tx.zkkeyid, 1, bufpos, binbuf, binsize, bhex);
 
 	#if TEST_EXTRA_ON_WIRE
 	/*X*/ copy_from_buf(tx.param_time, TX_TIME_BYTES, bufpos, binbuf, binsize, bhex);
@@ -3722,8 +3862,14 @@ static CCRESULT txpay_from_wire(TxPay& tx, uint32_t& bufpos, char *binbuf, const
 
 	uint16_t nin_without_path = 0;
 
-	if (tx.tag_type == CC_TYPE_TXPAY)
+	switch (tx.tag_type)
 	{
+	case CC_TYPE_TXPAY:
+	case CC_TYPE_XCX_SIMPLE_BUY:
+	case CC_TYPE_XCX_SIMPLE_SELL:
+	case CC_TYPE_XCX_NAKED_BUY:
+	case CC_TYPE_XCX_NAKED_SELL:
+
 		#if TEST_EXTRA_ON_WIRE
 		/*X*/ copy_from_buf(tx.nout, 1, bufpos, binbuf, binsize, bhex);
 		/*X*/ copy_from_buf(tx.nin_with_path, 1, bufpos, binbuf, binsize, bhex);
@@ -3736,10 +3882,17 @@ static CCRESULT txpay_from_wire(TxPay& tx, uint32_t& bufpos, char *binbuf, const
 		tx.nin_with_path = (nadj & 15) + 1;
 		#endif
 		tx.nin = tx.nin_with_path + nin_without_path;
-	}
+		break;
 
-	if (tx.tag_type == CC_TYPE_MINT)
+	case CC_TYPE_MINT:
 		tx.nout = TX_MINT_NOUT;
+		break;
+
+	default:
+		if (TEST_SHOW_WIRE_ERRORS) cerr << "invalid transaction type " << tx.tag_type << endl;
+
+		return -1;
+	}
 
 	if (tx.nout > TX_MAXOUT)
 	{
@@ -3847,7 +4000,7 @@ CCRESULT json_tx_to_wire(const string& fn, Json::Value& root, char *output, cons
 
 	struct TxPay& tx = *ptx;
 
-	if (tx.tag != CC_TAG_TX_STRUCT)
+	if (tx.struct_tag != CC_TAG_TX_STRUCT)
 		return error_invalid_tx_type(fn, output, outsize);
 
 	if (tx.tag_type == CC_TYPE_TXPAY || tx.tag_type == CC_TYPE_MINT)
@@ -3862,7 +4015,7 @@ static CCRESULT tx_add_from_wire(TxPay& tx, char *binbuf, const uint32_t binsize
 	uint32_t bufpos = 0;
 	const bool bhex = false;
 
-	//cerr << "tx_add_from_wire buf start: " << (unsigned)binbuf[0] << " " << (unsigned)binbuf[1] << " " << (unsigned)binbuf[2] << " " << (unsigned)binbuf[3] << endl;
+	//cerr << "tx_add_from_wire nbytes " << binsize << " data " << buf2hex(binbuf, binsize) << endl;
 
 	copy_from_buf(wiresize, sizeof(wiresize), bufpos, binbuf, binsize, bhex);
 	if (wiresize > binsize)
@@ -3872,38 +4025,64 @@ static CCRESULT tx_add_from_wire(TxPay& tx, char *binbuf, const uint32_t binsize
 		return -1;
 	}
 
-	copy_from_buf(tx.tag, sizeof(tx.tag), bufpos, binbuf, binsize, bhex);
+	copy_from_buf(tx.wire_tag, sizeof(tx.wire_tag), bufpos, binbuf, binsize, bhex);
 
-	if (tx.tag == CC_TAG_TX_WIRE || tx.tag == CC_TAG_TX_BLOCK)
-		tx.tag_type = CC_TYPE_TXPAY;
-	else if (tx.tag == CC_TAG_MINT_WIRE || tx.tag == CC_TAG_MINT_BLOCK)
-		tx.tag_type = CC_TYPE_MINT;
-	else
+	tx.tag_type = CCObject::ObjType(tx.wire_tag);
+
+	if (!tx.tag_type || tx.tag_type == CC_TYPE_BLOCK || tx.tag_type == CC_TYPE_VOID)
 	{
-		//cerr << "error tx.tag " << tx.tag << endl;
-
-		tx.tag_type = -1;
+		tx.tag_type = CC_TYPE_VOID;
 
 		return -1;
 	}
 
+	tx.tx_type = tx.tag_type;
+
+	//cerr << "wire_tag " << hex << tx.wire_tag << dec << " tag_type " << tx.tag_type << " tx_type " << tx.tx_type << endl;
+
 	CCASSERT(bufpos == sizeof(CCObject::Header));
 
-	if (tx.tag == CC_TAG_TX_WIRE || tx.tag == CC_TAG_MINT_WIRE)
+	if (CCObject::HasPOW(tx.wire_tag))
 		bufpos += TX_POW_SIZE;
 
+	tx.wire_tag = CCObject::WireTag(tx.wire_tag);
+
 #if TEST_SKIP_ZKPROOFS
-	unsigned hstart = bufpos + 2*64;
+	unsigned plevel = bufpos;
 #endif
 
-	tx.tag = CC_TAG_TX_STRUCT;
-
-	auto rc = txpay_from_wire(tx, bufpos, binbuf, binsize);
-	if (rc)
+	if (!Xtx::TypeHasBareMsg(tx.tag_type))
 	{
-		if (TEST_SHOW_WIRE_ERRORS) cerr << "error txpay_from_wire " << rc << endl;
+		auto rc = txpay_body_from_wire(tx, bufpos, binbuf, binsize);
+		if (rc)
+		{
+			if (TEST_SHOW_WIRE_ERRORS) cerr << "error txpay_body_from_wire " << rc << endl;
 
-		return rc;
+			return rc;
+		}
+	}
+
+	auto nappend = wiresize - bufpos;
+
+	//cerr << "tx_add_from_wire end bufpos " << bufpos << " wiresize " << wiresize << " nappend " << nappend << endl;
+
+	if (nappend)
+	{
+		if (!Xtx::TypeIsXtx(tx.tag_type))
+		{
+			if (TEST_SHOW_WIRE_ERRORS) cerr << "error tag_type " << tx.tag_type << " bufpos " << bufpos << " != binsize " << binsize << endl;
+
+			return -1;
+		}
+
+		tx.append_wire_offset = bufpos;
+		tx.append_data_length = nappend;
+
+		//cerr << "tx_add_from_wire append_wire_offset " << tx.append_wire_offset << " append_data_length " << tx.append_data_length << " wiresize " << wiresize << " binsize " << binsize << endl;
+
+		copy_from_bufp(tx.append_data.data(), tx.append_data.size(), nappend, bufpos, binbuf, binsize, bhex);
+
+		set_refhash_from_append_data(tx);
 	}
 
 	//cerr << "tx_add_from_wire end bufpos " << bufpos << " wiresize " << wiresize << " binsize " << binsize << endl;
@@ -3915,25 +4094,22 @@ static CCRESULT tx_add_from_wire(TxPay& tx, char *binbuf, const uint32_t binsize
 		return 1;
 	}
 
-	if (bufpos != wiresize)
-	{
-		if (TEST_SHOW_WIRE_ERRORS) cerr << "error bufpos " << bufpos << " != wiresize " << wiresize << endl;
-
-		return -1;
-	}
-
 #if TEST_SKIP_ZKPROOFS
-	// place hash of the binary tx into the zkproof
-	for (unsigned i = 0; i < 64; ++i)
+	if (!Xtx::TypeHasBareMsg(tx.tag_type))
 	{
-		if (*((char*)&tx.zkproof + 64 + i))
-			return 0;	// "proof" has been tampered with, so don't fill in with tx hash
+		// place hash of the binary tx into the zkproof
+		for (unsigned i = 0; i < 64; ++i)
+		{
+			if (*((char*)&tx.zkproof + 64 + i))
+				return 0;	// "proof" has been tampered with, so don't fill in with tx hash
+		}
+		unsigned hstart = plevel + TX_BLOCKLEVEL_BYTES + 2*64;
+		//cerr << "hashing " << bufpos - hstart << " bytes " << buf2hex(binbuf + hstart, bufpos - hstart) << endl;
+		blake2b((char*)&tx.zkproof + 64, 64, binbuf + plevel, TX_BLOCKLEVEL_BYTES, binbuf + hstart, bufpos - hstart);
+		//cerr << buf2hex((char*)&tx.zkproof + 0*64, 64) << endl;
+		//cerr << buf2hex((char*)&tx.zkproof + 1*64, 64) << endl;
+		//cerr << "-- " << buf2hex((char*)&tx.zkproof + 2*64,  8) << endl;
 	}
-	//cerr << "hashing " << bufpos - hstart << " bytes " << buf2hex(binbuf + hstart, bufpos - hstart, 0) << endl;
-	blake2b((char*)&tx.zkproof + 64, 64, NULL, 0, binbuf + hstart, bufpos - hstart);
-	//cerr << buf2hex((char*)&tx.zkproof + 0*64, 64) << endl;
-	//cerr << buf2hex((char*)&tx.zkproof + 1*64, 64) << endl;
-	//cerr << "-- " << buf2hex((char*)&tx.zkproof + 2*64,  8) << endl;
 #endif
 
 	return 0;
@@ -4068,7 +4244,7 @@ CCRESULT tx_reset_work(const string& fn, uint64_t timestamp, char *binbuf, const
 
 CCRESULT tx_check_timestamp(uint64_t timestamp, unsigned allowance)
 {
-	uint64_t now = time(NULL);
+	uint64_t now = unixtime();
 
 	int64_t age = now - timestamp;
 
@@ -4089,7 +4265,7 @@ CCRESULT tx_set_work(const string& fn, unsigned proof_start, unsigned proof_coun
 	auto pheader = (const CCObject::Header *)binbuf;
 	const unsigned data_offset = sizeof(CCObject::Header) + TX_POW_SIZE;
 
-	//cerr << hex << "tx_set_work binsize " << binsize << " tx size " << pheader->size << " tag " << pheader->tag << dec << endl;
+	//cerr << "tx_set_work binsize " << binsize << " tx size " << pheader->size << " tag " << pheader->tag << dec << endl;
 
 	if (pheader->size > binsize)
 		return -1;
@@ -4102,7 +4278,7 @@ CCRESULT tx_set_work(const string& fn, unsigned proof_start, unsigned proof_coun
 	auto rc = blake2b(&txhash, sizeof(txhash), &pheader->tag, sizeof(pheader->tag), binbuf + data_offset, pheader->size - data_offset);
 	CCASSERTZ(rc);
 
-	//cerr << "tx_set_work hashed " << pheader->size - data_offset << " bytes starting with " << hex << *(uint64_t*)(binbuf + data_offset) << " result " << *(uint64_t*)(txhash) << dec << endl;
+	//cerr << "tx_set_work hashed " << pheader->size - data_offset << " bytes starting with " << hex << *(uint64_t*)(binbuf + data_offset) << " result " << *(uint64_t*)(&txhash) << dec << endl;
 
 	return tx_set_work_internal(binbuf, &txhash, proof_start, proof_count, iter_count, proof_difficulty);
 }
@@ -4114,12 +4290,15 @@ CCRESULT tx_set_work_internal(char *binbuf, const void *txhash, unsigned proof_s
 #endif
 
 	//auto t0 = ccticks();
-	//cerr << "tx_set_work " << buf2hex(txhash, sizeof(ccoid_t)) << endl;
+	//cerr << "tx_set_work " << buf2hex(txhash, CC_OID_TRACE_SIZE) << endl;
 
 	CCRESULT result = 0;
 
 	if (!proof_difficulty)
 		return result;
+
+	uint64_t hashkey[2];
+	hashkey[0] = *(uint64_t*)(binbuf + sizeof(CCObject::Header));	// hashkey[0] = the timestamp
 
 	for (unsigned proof_index = proof_start; proof_index < proof_start + proof_count; ++proof_index)
 	{
@@ -4135,22 +4314,25 @@ CCRESULT tx_set_work_internal(char *binbuf, const void *txhash, unsigned proof_s
 
 		//cerr << hex << "tx_set_work proof_index " << proof_index << " iter_start " << iter_start << " iter_count " << iter_count << " iter_end " << iter_end << " proof_difficulty " << proof_difficulty << dec << endl;
 
-		array<uint64_t, 2> hashkey;
-		hashkey[0] = *(uint64_t*)(binbuf + sizeof(CCObject::Header));
+		if (proof_index)
+			hashkey[0] = *(pnonce - 1);	// hashkey[0] = 64 bits that includes the prior nonce, to prevent computing nonces in parallel
 
 		uint64_t nonce;
 		for (nonce = iter_start; nonce <= iter_end; ++nonce)
 		{
+			if (g_shutdown)
+				return -3;
+
 			hashkey[1] = ((uint64_t)proof_index << TX_POW_NONCE_BITS) | nonce;
 
-			uint64_t hash = siphash_keyed((uint8_t*)&hashkey, (uint8_t*)txhash, sizeof(ccoid_t));
+			auto hash = siphash(txhash, sizeof(ccoid_t), hashkey, sizeof(hashkey));
 
-			if (nonce == iter_end || hash <= proof_difficulty)
+			if (nonce == iter_end || hash < proof_difficulty)
 			{
 				//cerr << hex << "tx_set_work nonce " << nonce << " hash " << hash << " proof_difficulty " << proof_difficulty << dec << endl;
 			}
 
-			if (hash <= proof_difficulty)
+			if (hash < proof_difficulty)
 				break;
 		}
 
@@ -4165,7 +4347,8 @@ CCRESULT tx_set_work_internal(char *binbuf, const void *txhash, unsigned proof_s
 			result = 1;
 	}
 
-	//lock_guard<FastSpinLock> lock(g_cout_lock);
+	//lock_guard<mutex> lock(g_cerr_lock);
+	//check_cerr_newline();
 	//cerr << "tx_set_work result " << result << " difficulty " << proof_difficulty << " elapsed time " << ccticks_elapsed(t0, ccticks()) << endl;
 
 	return result;
@@ -4227,7 +4410,7 @@ CCRESULT json_test_parse_number(const string& fn, Json::Value& root, char *outpu
 
 	bool negative = (value.asString().substr(0, 1) == "-" || value.asString().substr(0, 2) == "\"-");
 
-	//cerr << "negative " << negative << " nbits " << nbits << " value "<< bigval << " 0x" << hex << bigval << dec << endl;
+	//cerr << "negative " << negative << " nbits " << nbits << " value " << bigval << " 0x" << hex << bigval << dec << endl;
 
 	ostringstream os;
 

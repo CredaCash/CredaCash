@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * PackedInt.hpp
 */
@@ -15,6 +15,20 @@ class PackedUnsigned
 
 public:
 
+	uint64_t ExtractValue()
+	{
+		uint64_t v = 0;
+
+		memcpy(&v, &value, sizeof(value));
+
+		return v;
+	}
+
+	void ImplantValue(const void *v)
+	{
+		memcpy(&value, v, sizeof(value));
+	}
+
 	void SetValue(uint64_t v)
 	{
 		v /= div;
@@ -24,7 +38,7 @@ public:
 		else
 			v = 0;
 
-		memcpy(&value, &v, sizeof(value));
+		ImplantValue(&v);
 	}
 
 	uint64_t GetValue() const

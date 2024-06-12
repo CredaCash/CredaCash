@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * dbconn.cpp
 */
@@ -9,36 +9,39 @@
 #include "ccnode.h"
 #include "dbconn.hpp"
 #include "dbparamkeys.h"
+#include "witness.hpp"
 
 #include <CCobjdefs.h>
+#include <xtransaction-xreq.hpp>
 #include <dblog.h>
 
-#define TRACE_DBCONN	1
+//#define TRACE_DBCONN	1
 
 //#define TEST_DECORATE_DB_FILENAMES		1
 
 //#define TEST_ENABLE_SQLITE_BUSY			1	// when enabled, mutex problems will result in SQLITE_BUSY errors
 
-#define DB_TAG			"CredaCash Node Database"
-#define DB_SCHEMA		3
+#define DB_TAG			"CredaCash v2 Node Database"
+#define DB_SCHEMA		1
 
 #define DB_OPEN_WAL_PARAMS	".db?cache=private"
 
 #define DB_OPEN_TEMP_PARAMS	".db?cache=shared&mode=memory"
 //#define DB_OPEN_TEMP_PARAMS	".db?cache=shared"	// for testing
 
-static const char* Persistent_Data = "CCdata";
-static const char* Temp_Serials = "Temp_Serials";
-static const char* Relay_Objs = "Relay_Objs";
-static const char* Process_Q[PROCESS_Q_N] = {"Process_Q_Tx", "Process_Q_Blocks"};
-static const char* Valid_Objs = "Valid_Objs";
+static const char* Persistent_Data = "CCNode";
+static const char* Temp_Serials = "__Temp_Serials";
+static const char* Relay_Objs = "__Relay_Objs";
+static const char* Process_Q[PROCESS_Q_N] = {"__Process_Q_Tx", "__Process_Q_Blocks"};
+static const char* Valid_Objs = "__Valid_Objs";
+static const char* Xreqs = "__Xreqs";
 
 #define IF_NOT_EXISTS_SQL		"if not exists "
-
 #define CREATE_TABLE_SQL		"create table " IF_NOT_EXISTS_SQL
 #define ALTER_TABLE_SQL			"alter table "
 #define CREATE_INDEX_SQL		"create index " IF_NOT_EXISTS_SQL
 #define CREATE_INDEX_UNIQUE_SQL	"create unique index " IF_NOT_EXISTS_SQL
+#define DROP_INDEX_SQL			"drop index if exists "
 
 #ifndef TEST_DECORATE_DB_FILENAMES
 #define TEST_DECORATE_DB_FILENAMES	0	// don't enable
@@ -56,7 +59,7 @@ static void OpenDbFile(const char *name, sqlite3** db, bool create, bool wal = f
 
 	file += PATH_DELIMITER;
 
-	if (TEST_DECORATE_DB_FILENAMES)	// && g_witness.IsWitness())
+	if (TEST_DECORATE_DB_FILENAMES)	// && IsWitness())
 	{
 		file += to_string(g_params.base_port);
 		file += "-";
@@ -69,7 +72,8 @@ static void OpenDbFile(const char *name, sqlite3** db, bool create, bool wal = f
 	else
 		file += DB_OPEN_TEMP_PARAMS;
 
-	//if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "OpenDbFile wal " << wal << << " sync " << sync << " file " << file;
+	//if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "OpenDbFile wal " << wal << " sync " << sync << " file " << file;
+	//cerr << "OpenDbFile wal " << wal << " sync " << sync << " file " << file << endl;
 
 	CCASSERTZ(dblog(sqlite3_open(file.c_str(), db)));
 
@@ -78,6 +82,7 @@ static void OpenDbFile(const char *name, sqlite3** db, bool create, bool wal = f
 	const int infinity = 0x70000000;
 	CCASSERTZ(dblog(sqlite3_busy_timeout(*db, infinity)));	// so we never get an SQLITE_BUSY error
 
+	CCASSERTZ(dbexec(*db, "PRAGMA encoding = 'UTF-8';"));
 	CCASSERTZ(dbexec(*db, "PRAGMA foreign_keys = ON;"));
 
 	if (wal)
@@ -130,6 +135,11 @@ void DbConnBaseValidObjs::OpenDb(bool create)
 	OpenDbFile(Valid_Objs, &Valid_Objs_db, create);
 }
 
+void DbConnBaseXreqs::OpenDb(bool create)
+{
+	OpenDbFile(Xreqs, &Xreqs_db, create);
+}
+
 void DbConnBasePersistData::DeInit()
 {
 	if (Persistent_db)
@@ -168,6 +178,13 @@ void DbConnBaseValidObjs::DeInit()
 	Valid_Objs_db = NULL;
 }
 
+void DbConnBaseXreqs::DeInit()
+{
+	if (Xreqs_db)
+		dblog(sqlite3_close_v2(Xreqs_db));
+	Xreqs_db = NULL;
+}
+
 void DbInit::DeInit()
 {
 	BOOST_LOG_TRIVIAL(debug) << "DbInit::DeInit";
@@ -177,6 +194,7 @@ void DbInit::DeInit()
 	DbConnBaseRelayObjs::DeInit();
 	DbConnBaseProcessQ::DeInit();
 	DbConnBaseValidObjs::DeInit();
+	DbConnBaseXreqs::DeInit();
 
 	BOOST_LOG_TRIVIAL(debug) << "DbInit::DeInit done";
 }
@@ -189,6 +207,7 @@ void DbInit::OpenDbs()
 	for (unsigned i = 0; i < PROCESS_Q_N; ++i)
 		DbConnBaseProcessQ::OpenDb(i);
 	DbConnBaseValidObjs::OpenDb();
+	DbConnBaseXreqs::OpenDb();
 }
 
 void DbInit::CreateDBs()
@@ -212,9 +231,7 @@ void DbInit::CreateDBs()
 	CCASSERTZ(dbexec(Persistent_db, CREATE_TABLE_SQL "Blockchain (Level integer primary key not null, Block blob not null) --without rowid;")); // integer primary key is rowid
 
 	// this table contains the spent serialnums from indelible transactions
-	CCASSERTZ(dbexec(Persistent_db, CREATE_TABLE_SQL "Serialnums (Serialnum blob primary key not null, HashKey blob) without rowid;"));
-	if (SQLITE_OK != sqlite3_table_column_metadata(Persistent_db, NULL, "Serialnums", "TxCommitnum", NULL, NULL, NULL, NULL, NULL))
-		CCASSERTZ(dbexec(Persistent_db, ALTER_TABLE_SQL "Serialnums add column TxCommitnum integer;"));
+	CCASSERTZ(dbexec(Persistent_db, CREATE_TABLE_SQL "Serialnums (Serialnum blob primary key not null, HashKey blob, TxCommitnum integer) without rowid;"));
 
 	// this table contains the Merkle tree of all commitments
 	// note: tree entries are stored in (Height, Offset) sort order, so updating the Merkle tree should take about 40 disk seeks, one
@@ -239,7 +256,65 @@ void DbInit::CreateDBs()
 	// lookup is by Address, Commitnum
 	// ParamLevel corresponds to the Level key in the Commit_Roots table, i.e., the commitment_iv used to generate the Commitment can be looked up in Commit_Roots at Level = ParamLevel
 	// Commitnum corresponds to the Offset key in the Commit_Tree table, i.e., the Commitment's Merkle path can be looked up in Commit_Tree starting at Offset=Commitnum
-	CCASSERTZ(dbexec(Persistent_db, CREATE_TABLE_SQL "Tx_Outputs (Address blob not null, Pool integer, AssetEnc integer, AmountEnc integer, ParamLevel integer not null, Commitnum integer not null, primary key (Address, Commitnum)) without rowid;"));
+	CCASSERTZ(dbexec(Persistent_db, CREATE_TABLE_SQL "Tx_Outputs (Address blob not null, Domain integer, AssetEnc integer, AmountEnc integer, ParamLevel integer not null, Commitnum integer not null, primary key (Address, Commitnum)) without rowid;"));
+
+	// this table contains exchange xreqnum's and xmatchnum's by block level
+	// it can be used to look up which block contains a given xreqnum
+	// it is also used to restore state by retreiving the most recent num's
+	// TODO?: prune this table if it's only used to restore state?
+	CCASSERTZ(dbexec(Persistent_db, CREATE_TABLE_SQL "Exchange_Nums (Level integer primary key not null, Timestamp integer not null, NextXreqnum integer not null, NextXmatchnum integer not null) --without rowid;")); // integer primary key is rowid
+	if (!IsWitness())
+	{
+		//CCASSERTZ(dbexec(Persistent_db, CREATE_INDEX_SQL "Exchange_Nums_Timestamp_Index on Exchange_Nums (Timestamp);"));
+		//CCASSERTZ(dbexec(Persistent_db, CREATE_INDEX_SQL "Exchange_Nums_NextXreqnum_Index on Exchange_Nums (NextXreqnum);"));
+		//CCASSERTZ(dbexec(Persistent_db, CREATE_INDEX_SQL "Exchange_Nums_NextXmatchnum_Index on Exchange_Nums (NextXmatchnum);"));
+	}
+	// The following 3 tables contain exchange match info needed to (a) provide data to the wallets and (b) complete exchange transactions and resync state when node is restarted
+	// It is split into 3 tables so that the data needed to complete a trade and resync (table Exchange_Matching_Reqs) can be removed when no longer needed,
+	//		while a record of completed trades (tables Exchange_Matches and Exchange_Match_Reqs) can be optionally archived and used for example to report historical trade data
+	// Note that an Xreq is inserted only once and can be shared by multiple Xmatch's (i.e., entries in Exchange_Match_Reqs and Exchange_Matching_Reqs can be referenced by more than one entry in Exchange_Matches)
+	// NextDeadline is not needed for matching, but it must be in the Exchange_Matches table because its value is not shared (i.e., it is unique for each Xmatch)
+	// Notes: BaseAmount excludes fees; FinalTimestamp is block time that paid/cancelled is recorded
+	CCASSERTZ(dbexec(Persistent_db, CREATE_TABLE_SQL "Exchange_Matches (Xmatchnum integer primary key not null, "
+		"BuyXreqnum integer not null, SellXreqnum integer not null, "
+		"Type integer not null, Status integer not null, NextDeadline integer not null, "
+		"MatchTimestamp integer not null, AcceptTimestamp integer not null, FinalTimestamp integer not null, "
+		"BaseAmount blob not null, Rate numeric not null, AmountPaid numeric not null, MiningAmount numeric not null, "
+		"AcceptTime integer not null, BuyerConsideration integer not null, SellerConsideration integer not null, "
+		"BuyerPledge integer not null) --without rowid;")); // integer primary key is rowid
+	if (!IsWitness())
+	{
+		//CCASSERTZ(dbexec(Persistent_db, CREATE_INDEX_SQL "Exchange_Matches_MatchTimestamp_Index on Exchange_Matches (MatchTimestamp);"));
+		//CCASSERTZ(dbexec(Persistent_db, CREATE_INDEX_SQL "Exchange_Matches_AcceptTimestamp_Index on Exchange_Matches (AcceptTimestamp);"));
+		//CCASSERTZ(dbexec(Persistent_db, CREATE_INDEX_SQL "Exchange_Matches_FinalTimestamp_Index on Exchange_Matches (FinalTimestamp);"));
+	}
+	CCASSERTZ(dbexec(Persistent_db, CREATE_TABLE_SQL "Exchange_Match_Reqs (Xreqnum integer primary key not null, "
+		"Disposition integer not null, ExpireTime integer not null, "
+		"ObjId blob not null, Type integer not null, "
+		"BaseAsset integer not null, QuoteAsset integer not null, ForeignAsset string, "
+		"MinAmount integer not null, MaxAmount integer not null, "
+		"NetRateRequired numeric not null, WaitDiscount numeric not null, BaseCosts numeric not null, QuoteCosts numeric not null, "
+		"PackedFlags integer not null, "
+		"ConsiderationRequired integer not null, ConsiderationOffered integer not null, Pledge integer not null, "
+		"HoldTime integer not null, HoldTimeRequired integer not null, MinWaitTime integer not null, "
+		"AcceptTimeRequired integer not null, AcceptTimeOffered integer not null, "
+		"PaymentTime integer not null, Confirmations integer not null) --without rowid;")); // integer primary key is rowid
+	if (!IsWitness())
+	{
+		//CCASSERTZ(dbexec(Persistent_db, CREATE_INDEX_SQL "Exchange_Match_Reqs_ExpireTime_Index on Exchange_Match_Reqs (ExpireTime);"));
+	}
+	CCASSERTZ(dbexec(Persistent_db, CREATE_TABLE_SQL "Exchange_Matching_Reqs (Xreqnum integer primary key not null, "
+		"DeleteTime integer not null check (DeleteTime > 0), "
+		"QuoteAsset integer not null, ForeignAddressUnique boolean, ForeignAddress blob, Destination blob not null, PubSigningKey blob, OpenAmount blob) --without rowid;")); // integer primary key is rowid
+	CCASSERTZ(dbexec(Persistent_db, CREATE_INDEX_SQL "Exchange_Matches_BuyXreqnum_Index on Exchange_Matches (BuyXreqnum);"));
+	CCASSERTZ(dbexec(Persistent_db, CREATE_INDEX_SQL "Exchange_Matches_SellXreqnum_Index on Exchange_Matches (SellXreqnum);"));
+	CCASSERTZ(dbexec(Persistent_db, CREATE_INDEX_SQL "Exchange_Matches_Deadline_Index on Exchange_Matches (NextDeadline, Xmatchnum) where NextDeadline > 0;"));
+	CCASSERTZ(dbexec(Persistent_db, CREATE_INDEX_SQL "Exchange_Match_Reqs_ObjId_Index on Exchange_Match_Reqs (ObjId, Xreqnum);"));
+	CCASSERTZ(dbexec(Persistent_db, CREATE_INDEX_SQL "Exchange_Matching_Reqs_Delete_Index on Exchange_Matching_Reqs (DeleteTime);"));
+	CCASSERTZ(dbexec(Persistent_db, CREATE_INDEX_SQL "Exchange_Matching_Reqs_ForeignAddress_Index on Exchange_Matching_Reqs (ForeignAddress) where ForeignAddressUnique and ForeignAddress is not null;"));
+
+	// this table contains invalid exchange foreign addresses
+	CCASSERTZ(dbexec(Persistent_db, CREATE_TABLE_SQL "Exchange_Blocked_Foreign_Addresses (Blockchain integer not null, ForeignAddress blob not null, primary key (Blockchain, ForeignAddress)) without rowid;"));
 
 	// this table contains the spent serialnums from delible blocks and the delible blocks in which they appear
 	// the same serialnum can exist in more than one delible block, so (Serialnum, Blockp) is used to make the primary key unique
@@ -263,8 +338,6 @@ void DbInit::CreateDBs()
 	//	note that a malicious peer could misrepresent the object params, so the object params announced by each peer are stored separately so one peer can't affect the data sent by others
 	// Seqnum primary key facilitates updating and deleting entries by Seqnum
 	// Peer_Index facilitates finding objects to download, and deleting all entries from a particular peer
-	//	it also prevents a malicious peer from overwhelming us with block announcements since it is a unque index on (Level, Witness, Peer)
-	//	note that by rule, each witness can create no more than one block at each level
 	CCASSERTZ(dbexec(Relay_Objs_db, CREATE_TABLE_SQL "Relay_Peers (Seqnum integer primary key not null, Peer integer not null, Size integer not null, Level integer not null, PeerStatus integer not null, PriorOid blob, Witness integer) --without rowid;")); // integer primary key is rowid
 	CCASSERTZ(dbexec(Relay_Objs_db, CREATE_INDEX_SQL "Relay_Peers_Peer_Index on Relay_Peers (Peer, PeerStatus, Seqnum, Level);"));
 
@@ -278,8 +351,8 @@ void DbInit::CreateDBs()
 	// AuxInt is used by the witness to hold the block score
 	for (unsigned i = 0; i < PROCESS_Q_N; ++i)
 	{
-		CCASSERTZ(dbexec(Process_Q_db[i], CREATE_TABLE_SQL "Process_Q (ObjId blob primary key not null, PriorOid blob, Level integer, AuxInt integer, ConnId integer, CallbackId integer, Bufp blob not null, Status integer not null, Priority integer not null) without rowid;"));
-		CCASSERTZ(dbexec(Process_Q_db[i], CREATE_INDEX_SQL "Process_Q_Priority_Index on Process_Q (Status, Priority, Level desc);"));
+		CCASSERTZ(dbexec(Process_Q_db[i], CREATE_TABLE_SQL "Process_Q (ObjId blob primary key not null, PriorOid blob, Level integer, AuxInt integer, ConnId integer, CallbackId integer, Bufp blob not null, Status integer not null, Priority integer not null, Seqnum integer not null) without rowid;"));
+		CCASSERTZ(dbexec(Process_Q_db[i], CREATE_INDEX_SQL "Process_Q_Priority_Index on Process_Q (Status, Priority, Level desc, Seqnum);"));
 		CCASSERTZ(dbexec(Process_Q_db[i], CREATE_INDEX_SQL "Process_Q_PriorObj_Index on Process_Q (PriorOid) where Status = " STRINGIFY(PROCESS_Q_STATUS_HOLD) ";"));
 		CCASSERTZ(dbexec(Process_Q_db[i], CREATE_INDEX_SQL "Process_Q_Level_Index on Process_Q (Level) where Level not null;"));
 	}
@@ -289,16 +362,56 @@ void DbInit::CreateDBs()
 	// the Obj_Index facilitates retrieval when a peer requests an object by ObjId
 	CCASSERTZ(dbexec(Valid_Objs_db, CREATE_TABLE_SQL "Valid_Objs (Seqnum integer primary key not null, Time integer not null, ObjId blob not null, Bufp blob not null) --without rowid;")); // integer primary key is rowid
 	CCASSERTZ(dbexec(Valid_Objs_db, CREATE_INDEX_UNIQUE_SQL "Valid_Objs_ObjId_Index on Valid_Objs (ObjId);"));
+
+	// this table holds Exchange Requests
+	// the foreign key contraint is commented out below because it would require the two tables to be in the same DB and that would increase lock contention
+	// note we want OpenRateRequired sorted in order of most attractive rate to least attractive rate
+	//		 Buyer wants a  lower rate, so Seller reqs with a  lower rate are more attractive
+	//		Seller wants a higher rate, so  Buyer reqs with a higher rate are more attractive
+	//			--> Buyer's OpenRateRequired is stored as a negative value
+
+	// !!! must ensure deletion is identical on all nodes in case there is an ObjId collision?
+	// !!! add blocklevel to Validobjs and don't delete until blocklevel is indelible?
+	// !!! is ValidObjs resistant to ObjId collision?
+	// !!! if ObjId collision in Validobjs, favor object that is being added from a block?
+	// note:
+	//	PendingMatchRate == 0 -> no pending match
+	//	PendingMatchRate > 0 and PendingMatchHoldTime = 0 -> immediate match pending
+	//	PendingMatchRate > 0 and PendingMatchHoldTime > 0 -> possible future match on hold
+	CCASSERTZ(dbexec(Xreqs_db, CREATE_TABLE_SQL "Xreqs (Seqnum integer primary key not null, "
+		"ObjId blob not null, Type integer not null, IsBuyer integer check (IsBuyer = 0 or IsBuyer = 1), ExpireTime integer not null check (ExpireTime > 0), "
+		"BaseAsset integer not null, QuoteAsset integer not null, ForeignAsset string, MinAmount blob not null, MaxAmount blob not null, "
+		"NetRateRequired numeric not null, WaitDiscount numeric not null, BaseCosts numeric not null, QuoteCosts numeric not null, "
+		"AddImmediatelyToBlockchain integer not null, AutoAcceptMatches integer not null, NoMinimumAfterFirstMatch integer not null, MustLiquidateCrossingMinimum integer not null, MustLiquidateBelowMinimum integer not null, "
+		"ConsiderationRequired integer not null, ConsiderationOffered integer not null, Pledge integer not null, "
+		"HoldTime integer not null, HoldTimeRequired integer not null, MinWaitTime integer not null, "
+		"AcceptTimeRequired integer not null, AcceptTimeOffered integer not null, "
+		"PaymentTime integer not null, Confirmations integer not null, "
+		"ForeignAddressUnique boolean, ForeignAddress blob, Destination blob not null, PubSigningKey blob, "
+		"OpenAmount blob, OpenRateRequired numeric not null, "
+		"PendingMatchEpoch integer, PendingMatchOrder integer, PendingMatchAmount blob, PendingMatchRate numeric, PendingMatchHoldTime integer, "
+		"Xreqnum  integer not null, BlockTime  integer not null, MatchingAmount  blob, MatchingRateRequired  numeric not null, RecalcTime  integer not null, Recalc  integer not null, LastMatched  integer not null, BestAmount  blob, BestRate  numeric, BestNetRate  numeric, BestOtherSeqnum  integer, BestOtherXreqnum  integer, BestOtherMatchingAmount  blob, BestOtherNetRate  numeric, "
+		"XreqnumW integer not null, BlockTimeW integer not null, MatchingAmountW blob, MatchingRateRequiredW numeric not null, RecalcTimeW integer not null, RecalcW integer not null, LastMatchedW integer not null, BestAmountW blob, BestRateW numeric, BestNetRateW numeric, BestOtherSeqnumW integer, BestOtherXreqnumW integer, BestOtherMatchingAmountW blob, BestOtherNetRateW numeric) --without rowid;")); // integer primary key is rowid
+	CCASSERTZ(dbexec(Xreqs_db, CREATE_INDEX_SQL "Xreqs_Xreqnum_Index on Xreqs (Xreqnum, Seqnum);"));
+	CCASSERTZ(dbexec(Xreqs_db, CREATE_INDEX_SQL "Xreqs_ObjId_Index on Xreqs (ObjId, Seqnum);"));
+	CCASSERTZ(dbexec(Xreqs_db, CREATE_INDEX_SQL "Xreqs_ForeignAddress_Index on Xreqs (ForeignAddress) where ForeignAddressUnique and ForeignAddress is not null;"));
+	CCASSERTZ(dbexec(Xreqs_db, CREATE_INDEX_SQL "Xreqs_OpenRateRequired_Index on Xreqs (BaseAsset, QuoteAsset, ForeignAsset, IsBuyer, OpenRateRequired, Xreqnum, Seqnum) where OpenAmount is not null;"));
+	CCASSERTZ(dbexec(Xreqs_db, CREATE_INDEX_SQL "Xreqs_PendingMatchRate_Index on Xreqs (BaseAsset, QuoteAsset, ForeignAsset, IsBuyer, PendingMatchRate, Xreqnum, Seqnum) where PendingMatchRate > 0 and PendingMatchHoldTime > 0;"));
+	CCASSERTZ(dbexec(Xreqs_db, CREATE_INDEX_SQL "Xreqs_PendingMatchOrder_Index on Xreqs (PendingMatchOrder) where PendingMatchOrder > 0;"));
+	CCASSERTZ(dbexec(Xreqs_db, CREATE_INDEX_SQL "Xreqs_Expire_Index on Xreqs (ExpireTime, Xreqnum);"));
 }
 
 void DbInit::InitDb()
 {
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(debug) << "DbInit::InitDb";
+	BOOST_LOG_TRIVIAL(debug) << "DbInit::InitDb";
 
 	string sql("insert or ignore into Parameters values (" STRINGIFY(DB_KEY_SCHEMA));
 
 	CCASSERTZ(dbexec(Persistent_db, (sql + ", 0, '" DB_TAG "');").c_str()));
 	CCASSERTZ(dbexec(Persistent_db, (sql + ", 1, " STRINGIFY(DB_SCHEMA) ");").c_str()));
+
+	CCASSERTZ(dbexec(Persistent_db, "insert or ignore into Exchange_Blocked_Foreign_Addresses values (" STRINGIFY(XREQ_BLOCKCHAIN_BTC) ", cast('INVALID_ADDRESS' as blob));"));
+	CCASSERTZ(dbexec(Persistent_db, "insert or ignore into Exchange_Blocked_Foreign_Addresses values (" STRINGIFY(XREQ_BLOCKCHAIN_BCH) ", cast('INVALID_ADDRESS' as blob));"));
 }
 
 #define CHECKDATA_BUFSIZE 100
@@ -338,7 +451,7 @@ void DbInit::CheckDb()
 	if (rc)
 		throw runtime_error("unable to read database schema");
 
-	//cerr << "tag " << buf2hex(tag, sizeof(db_tag)) << endl;
+	//cerr << "db_tag " << buf2hex(tag, sizeof(db_tag)) << endl;
 
 	if (strcmp(tag, db_tag) || strcmp(schema, db_schema))
 		throw runtime_error("not a valid node database file");

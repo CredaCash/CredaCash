@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * cctracker.cpp
 */
@@ -73,19 +73,27 @@ static int process_options(int argc, char **argv)
 		("help", "Display this message.")
 		("trace", po::value<int>(&g_trace_level)->default_value(DEFAULT_TRACE_LEVEL), "Trace level (0=none; 6=all).")
 		("config", po::wvalue<wstring>(), "Path to file with additional configuration options.")
+		("datadir", po::wvalue<wstring>(&g_datadir), "Path to tor data directory (used to read tor onion hostname for this server).")
 		("port", po::value<int>(&g_port)->default_value(9180), "Port for server.")
 		("threads", po::value<int>(&g_nthreads), "Number of threads;"
 				" default is the value returned by std::thread::hardware_concurrency,"
 				" or " DEFAULT_THREADS_PER_SERVICE " if that result is indeterminate.")
 		("conns", po::value<int>(&g_nconns)->default_value(100), "Number of connections per thread.")
-		("datamem", po::value<int>(&g_datamem)->default_value(1), "Memory for directory data, in units of 8MB ~= 125K directory entries.")
-		("blockfrac", po::value<int>(&g_blockfrac)->default_value(5), "Percentage of memory for blockserver directory.")
+		("timestamp-allowance", po::value<int>(&g_time_allowance)->default_value(65), "Request timestamp allowance.")
+		("pow-difficulty", po::value<long long>(&g_difficulty)->default_value(360000), "Proof of work difficulty.")
+		("datamem", po::value<int>(&g_datamem)->default_value(1), "Memory for rendezvous data, in units of 8MB ~= 125K rendezvous entries.")
+		("blockfrac", po::value<int>(&g_blockfrac)->default_value(5), "Percentage of memory for blockserver entries.")
 		("hashfill", po::value<int>(&g_hashfill)->default_value(70), "Hash table fill percentage.")
-		("expire", po::value<int>(&g_expire)->default_value(35), "Number of minutes until a directory entry expires.")
+		("expire", po::value<int>(&g_expire)->default_value(30), "Number of minutes until a rendezvous entry expires.")
+	;
+
+	po::options_description hidden_options("");
+	hidden_options.add_options()
+		("magic-nonce", po::value<long long>(&g_magic_nonce)->default_value(0))
 	;
 
 	po::options_description all;
-	all.add(basic_options); //.add(advanced_options).add(hidden_options);
+	all.add(basic_options).add(hidden_options);
 
 	po::store(po::parse_command_line(argc, argv, all), g_config_options);
 
@@ -125,32 +133,86 @@ static int process_options(int argc, char **argv)
 	return 0;
 }
 
+static bool read_tor_hostname()
+{
+	if (!g_datadir.length())
+	{
+		BOOST_LOG_TRIVIAL(fatal) << "--datadir must be specified";
+
+		return true;
+	}
+
+	wstring fname = g_datadir + s2w(PATH_DELIMITER) + L"hostname";
+
+	int fd = open_file(fname, O_RDONLY);
+
+	if (fd == -1)
+	{
+		BOOST_LOG_TRIVIAL(fatal) << "Unable to read " << fname;
+
+		return true;
+	}
+
+	g_tor_hostname.resize(88);
+
+	auto rc = read(fd, &g_tor_hostname[0], g_tor_hostname.length()-1);
+	(void)rc;
+	close(fd);
+
+	for (unsigned i = 0; i < g_tor_hostname.length(); ++i)
+	{
+		if (	(g_tor_hostname[i] < '0' || g_tor_hostname[i] > '9')
+			 && (g_tor_hostname[i] < 'A' || g_tor_hostname[i] > 'Z')
+			 && (g_tor_hostname[i] < 'a' || g_tor_hostname[i] > 'z'))
+
+			g_tor_hostname[i] = 0;
+	}
+
+	g_tor_hostname.resize(strlen(g_tor_hostname.c_str()));
+
+	if (!g_tor_hostname.length())
+	{
+		BOOST_LOG_TRIVIAL(fatal) << "Empty tor hostname " << fname;
+
+		return true;
+	}
+
+	BOOST_LOG_TRIVIAL(info) << "Tor hostname " << g_tor_hostname;
+
+	return false;
+}
+
 #ifdef __MINGW64__
 int _dowildcard = 0;	// disable wildcard globbing
 #endif
 
 int main(int argc, char* argv[])
 {
+	//srand(0);
+	srand(time(NULL));
+
 	cerr << endl;
 
 	set_handlers();
-
-	//srand(0);
-	srand(time(NULL));
 
 	g_trace_level = DEFAULT_TRACE_LEVEL;
 	//g_params.trace_level = 9;
 	set_trace_level(g_trace_level);
 
+	#if 0
 	cerr << endl;
 	cerr << "     *** This program is only useful to set up your own network." << endl;
 	cerr << "     *** If you are not trying to set up your own network, then you do not need this program." << endl;
 	cerr << endl << endl;
 	ccsleep(7);
+	#endif
 
 	try
 	{
 		auto rc = process_options(argc, argv);
+		if (rc) return rc;
+
+		rc = read_tor_hostname();
 		if (rc) return rc;
 
 		BOOST_LOG_TRIVIAL(info) << "cctracker listening on port " << g_port;
@@ -160,7 +222,8 @@ int main(int argc, char* argv[])
 	catch (const exception& e)
 	{
 		cerr << "ERROR: " << e.what() << endl;
-		return -1;
+
+		start_shutdown();
 	}
 
 	while (!g_shutdown)

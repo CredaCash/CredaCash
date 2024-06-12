@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * CCassert.cpp
 */
@@ -15,7 +15,7 @@
 #define TEST_BREAK_ON_ASSERT	0	// don't break
 #endif
 
-static unsigned thread_id()
+extern "C" unsigned cc_thread_id()
 {
 	#ifdef _WIN32
 	return GetCurrentThreadId();
@@ -27,7 +27,7 @@ static unsigned thread_id()
 extern "C" void __ccassert(const char *msg, const char *file, int line)
 {
 	ostringstream os;
-	os << "error thread 0x" << hex << thread_id() << dec << " assert(" << msg << ") false at " << file << ":" << line;
+	os << "error thread 0x" << hex << cc_thread_id() << dec << " assert(" << msg << ") false at " << file << ":" << line;
 	cout << os.str() << endl;
 
 #if TEST_BREAK_ON_ASSERT
@@ -40,7 +40,7 @@ extern "C" void __ccassert(const char *msg, const char *file, int line)
 extern "C" void __ccassertz(const char *msg, uintptr_t x, const char *file, int line)
 {
 	ostringstream os;
-	os << "error thread 0x" << hex << thread_id() << dec << " assertz(" << msg << ") is " << x << " at " << file << ":" << line;
+	os << "error thread 0x" << hex << cc_thread_id() << dec << " assertz(" << msg << ") is " << x << " at " << file << ":" << line;
 	cout << os.str() << endl;
 
 #if TEST_BREAK_ON_ASSERT

@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * CCobjects.hpp
 */
@@ -113,11 +113,31 @@ public:
 		return header.tag;
 	}
 
+	static bool HasPOW(std::uint32_t tag);
+	bool HasPOW() const
+	{
+		return HasPOW(ObjTag());
+	}
+
+	static std::uint32_t BlockTag(std::uint32_t tag);
+	std::uint32_t BlockTag() const
+	{
+		return BlockTag(ObjTag());
+	}
+
 	static std::uint32_t WireTag(std::uint32_t tag);
-	std::uint32_t WireTag() const;
+	std::uint32_t WireTag() const
+	{
+		return WireTag(ObjTag());
+	}
+
+	static std::uint32_t TypeToWireTag(unsigned type);
 
 	static unsigned ObjType(std::uint32_t tag);
-	unsigned ObjType() const;
+	unsigned ObjType() const
+	{
+		return ObjType(ObjTag());
+	}
 
 	bool IsValid() const;
 
@@ -130,7 +150,10 @@ public:
 
 	unsigned BodySize() const;
 
+	void ComputeObjId(ccoid_t *oid) const;
 	void SetObjId();
+
+	static void ComputeMessageObjId(const void* msg, ccoid_t *oid);
 };
 
 #pragma pack(pop)

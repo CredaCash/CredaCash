@@ -8,23 +8,30 @@ CPP_SRCS += \
 ../src/dir.cpp \
 ../src/dirserver.cpp 
 
-OBJS += \
-./src/cctracker.o \
-./src/dir.o \
-./src/dirserver.o 
-
 CPP_DEPS += \
 ./src/cctracker.d \
 ./src/dir.d \
 ./src/dirserver.d 
 
+OBJS += \
+./src/cctracker.o \
+./src/dir.o \
+./src/dirserver.o 
+
 
 # Each subdirectory must supply rules for building sources it contributes
-src/%.o: ../src/%.cpp
+src/%.o: ../src/%.cpp src/subdir.mk
 	@echo 'Building file: $<'
 	@echo 'Invoking: Cross G++ Compiler'
-	g++ -std=c++11 -D_DEBUG=1 -I$(CREDACASH_BUILD)/source/cccommon/src -I$(CREDACASH_BUILD)/source/3rdparty/src -I$(CREDACASH_BUILD)/depends -I$(CREDACASH_BUILD)/depends/boost -O0 -g3 -fno-omit-frame-pointer -fno-optimize-sibling-calls -Wall -Wextra $(CPPFLAGS) -c -fmessage-length=0 -Wno-unused-parameter -Werror=sign-compare -isystem $(CREDACASH_BUILD)/depends/boost -MMD -MP -MF"$(@:%.o=%.d)" -MT"$(@)" -o "$@" "$<"
+	g++ -std=c++11 -DBOOST_BIND_GLOBAL_PLACEHOLDERS=1 -I$(CREDACASH_BUILD)/source/cccommon/src -I$(CREDACASH_BUILD)/source/3rdparty/src -I$(CREDACASH_BUILD)/depends -I$(CREDACASH_BUILD)/depends/boost -O0 -g3 -fno-omit-frame-pointer -fno-optimize-sibling-calls -Wall -Wextra $(CPPFLAGS) -c -fmessage-length=0 -Wno-unused-parameter -isystem $(CREDACASH_BUILD)/depends/boost -MMD -MP -MF"$(@:%.o=%.d)" -MT"$@" -o "$@" "$<"
 	@echo 'Finished building: $<'
 	@echo ' '
 
+
+clean: clean-src
+
+clean-src:
+	-$(RM) ./src/cctracker.d ./src/cctracker.o ./src/dir.d ./src/dir.o ./src/dirserver.d ./src/dirserver.o
+
+.PHONY: clean-src
 

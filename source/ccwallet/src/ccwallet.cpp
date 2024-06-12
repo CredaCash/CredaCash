@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * ccwallet.cpp
 */
@@ -21,28 +21,50 @@
 #include "walletdb.hpp"
 
 #include <CCproof.h>
-#include <transaction.hpp>
 #include <encode.h>
 
 #include <tor.h>
 
-#include <sqlite/sqlite3.h>
 #include <dblog.h>
+#include <sqlite/sqlite3.h>
 
 #include <boost/program_options/options_description.hpp>
 #include <boost/program_options/parsers.hpp>
 #include <boost/program_options/errors.hpp>
 
+#include <xtransaction-xreq.hpp>
+
 #define TRANSACT_HOSTS		"transact_tor_hosts-#.lis"
 
 #define DEFAULT_TRACE_LEVEL	3
-#define TRACE_SHUTDOWN		1
+#define TRACE_SHUTDOWN		0
 
-void set_service_configs()
+#define SECONDS_PP	(1)
+#define MINUTES_PP	(60 * SECONDS_PP)
+#define HOURS_PP	(60 * MINUTES_PP)
+#define DAYS_PP		(24 * HOURS_PP)
+#define WEEKS_PP	( 7 * DAYS_PP)
+#define MONTHS_PP	(30 * DAYS_PP)
+#define YEARS_PP	(365 * DAYS_PP)
+
+extern "C" bool IsInteractive()
+{
+	return g_interactive_thread_id == std::this_thread::get_id();
+}
+
+void set_service_pre_configs()
 {
 	g_tor_services.push_back(&g_rpc_service);
 	g_tor_services.push_back(&g_tor_control_service);
 
+	for (unsigned i = 0; i < g_tor_services.size(); ++i)
+		g_tor_services[i]->ConfigPreset();
+
+	g_lpc_service.ConfigPreset();
+}
+
+void set_service_configs()
+{
 	TorService::SetPorts(g_tor_services, g_params.base_port + WALLET_RPC_PORT);
 
 	g_params.torproxy_port = g_tor_services[g_tor_services.size()-1]->port + 1;
@@ -65,6 +87,9 @@ static void do_show_config()
 	cout << "   wallet file = " << g_params.wallet_file << endl;
 	cout << "   path to Tor exe = " << w2s(g_params.tor_exe) << endl;
 	cout << "   path to Tor config file = " << w2s(g_params.tor_config) << endl;
+	cout << "   blockchain = " << g_params.blockchain << endl;
+	if (g_params.billet_domain)
+		cout << "   billet domain = " << g_params.billet_domain << endl;
 	cout << "   base port = " << g_params.base_port << endl;
 	cout << endl;
 	if (!g_params.transact_tor)
@@ -87,6 +112,7 @@ static void do_show_config()
 	cout << "   cleared confirmations = " << g_params.cleared_confirmations << endl;
 	cout << "   polled addresses per destination = " << g_params.polling_addresses << endl;
 	cout << "   polling threads = " << g_params.polling_threads << endl;
+	cout << "   exchange poll interval = " << g_params.exchange_poll_time << endl;
 	cout << endl;
 
 	for (unsigned i = 0; i < g_tor_services.size(); ++i)
@@ -99,6 +125,7 @@ static void do_show_config()
 	cout << "   trace JSON RPC calls = " << yesno(g_params.trace_jsonrpc) << endl;
 	cout << "   trace transaction methods = " << yesno(g_params.trace_txrpc) << endl;
 	cout << "   trace transactions = " << yesno(g_params.trace_transactions) << endl;
+	cout << "   trace exchange = " << yesno(g_params.trace_exchange) << endl;
 	cout << "   trace billets = " << yesno(g_params.trace_billets) << endl;
 	cout << "   trace totals = " << yesno(g_params.trace_totals) << endl;
 	cout << "   trace secrets = " << yesno(g_params.trace_secrets) << endl;
@@ -107,7 +134,9 @@ static void do_show_config()
 	cout << "   trace transaction server queries = " << yesno(g_params.trace_txquery) << endl;
 	cout << "   trace transaction server parameter fetches = " << yesno(g_params.trace_txparams) << endl;
 	cout << "   trace transaction server commnication = " << yesno(g_params.trace_txconn) << endl;
-	cout << "   trace database calls = " << yesno(g_params.trace_db) << endl;
+	cout << "   trace connections = " << yesno(g_trace_ccserver) << endl;
+	cout << "   trace database reads = " << yesno(g_params.trace_db_reads) << endl;
+	cout << "   trace database writes = " << yesno(g_params.trace_db_writes) << endl;
 
 	cout << endl;
 }
@@ -152,10 +181,14 @@ static void check_config_values()
 		cerr <<
 
 R"(WARNING: The wallet is configured with tx-polling-threads = 0 and therefore will not detect when a transaction clears unless
-the gettransaction command is used, or the transaction send destination and change destination are both manually polled.)"
+the gettransaction command is used, or the transaction send destination and change destination are both manually polled.
+It will also not detect exchange request matches, even if addresses are manually polled.)"
 
 		"\n" << endl;
 	}
+
+	if (g_params.exchange_poll_time < 5 || g_params.exchange_poll_time > 300)
+		throw range_error("Exchange polling interval not in valid range");
 
 	if (g_params.base_port < 1 || g_params.base_port > 0xFFFF - TOR_PORT)
 		throw range_error("baseport value not in valid range");
@@ -218,6 +251,9 @@ static int process_options(int argc, char **argv)
 		("tx-polling-addresses", po::value<int>(&g_params.polling_addresses)->default_value(6), "Number of addresses to poll per receive destination.")
 		("tx-polling-threads", po::value<int>(&g_params.polling_threads)->default_value(10), "Transaction polling threads.")
 
+		//TODO?: remove this and compute from target blockchain properies?:
+		("exchange-poll-interval", po::value<int>(&g_params.exchange_poll_time)->default_value(120), "Exchange match polling interval.")
+
 		("wallet-rpc", po::value<bool>(&g_rpc_service.enabled)->default_value(0), "Provide wallet RPC service.")
 		#if 0 // for security, only allow RPC services on localhost
 		("wallet-rpc-addr", po::value<string>(&g_rpc_service.address_string)->default_value(LOCALHOST), "Network address for wallet RPC;\n"
@@ -253,6 +289,7 @@ static int process_options(int argc, char **argv)
 		("trace-jsonrpc", po::value<bool>(&g_params.trace_jsonrpc)->default_value(0), "Trace JSON RPC calls")
 		("trace-txrpc", po::value<bool>(&g_params.trace_txrpc)->default_value(0), "Trace transaction RPC methods")
 		("trace-transactions", po::value<bool>(&g_params.trace_transactions)->default_value(0), "Trace transactions")
+		("trace-exchange", po::value<bool>(&g_params.trace_exchange)->default_value(0), "Trace exchange")
 		("trace-billets", po::value<bool>(&g_params.trace_billets)->default_value(0), "Trace billets")
 		("trace-totals", po::value<bool>(&g_params.trace_totals)->default_value(0), "Trace totals")
 		("trace-secrets", po::value<bool>(&g_params.trace_secrets)->default_value(0), "Trace secrets")
@@ -261,7 +298,9 @@ static int process_options(int argc, char **argv)
 		("trace-txquery", po::value<bool>(&g_params.trace_txquery)->default_value(0), "Trace transaction server queries")
 		("trace-txparams", po::value<bool>(&g_params.trace_txparams)->default_value(0), "Trace transaction server parameter fetches")
 		("trace-txconn", po::value<bool>(&g_params.trace_txconn)->default_value(0), "Trace communication with transaction server")
-		("trace-db", po::value<bool>(&g_params.trace_db)->default_value(0), "Trace database calls")
+		("trace-connections", po::value<bool>(&g_trace_ccserver)->default_value(0), "Trace low level connection operations")
+		("trace-db-reads", po::value<bool>(&g_params.trace_db_reads)->default_value(0), "Trace database reads")
+		("trace-db-writes", po::value<bool>(&g_params.trace_db_writes)->default_value(0), "Trace database writes")
 	;
 
 	po::options_description hidden_options("");
@@ -271,7 +310,7 @@ static int process_options(int argc, char **argv)
 		("rpcpassword", po::value<string>(&g_rpc_service.pass_string))
 		("initial-master-secret", po::value<string>(&g_params.initial_master_secret))
 		("initial-master-secret-passphrase", po::value<string>(&g_params.initial_master_secret_passphrase))
-		("foundation-wallet", po::value<bool>(&g_params.foundation_wallet)->default_value(0))
+		("billet-domain", po::value<int>(&g_params.billet_domain)->default_value(0))
 	;
 
 	po::positional_options_description positional_options;
@@ -284,11 +323,11 @@ static int process_options(int argc, char **argv)
 
 	if (g_params.config_options.count("help"))
 	{
-		cout << CCAPPNAME " v" CCVERSION << endl;
-		cout << "\nUsage: " << argv[0] << " [command] [params...]" << endl;
-		cout << "   or: " << argv[0] << " [command] [params...] --interactive > logfile\n" << endl;
-		cout << basic_options << endl;
-		cout << advanced_options << endl;
+		cerr << CCAPPNAME " v" CCVERSION << endl;
+		cerr << "\nUsage: " << argv[0] << " [command] [params...]" << endl;
+		cerr << "   or: " << argv[0] << " [command] [params...] --interactive > logfile\n" << endl;
+		cerr << basic_options << endl;
+		cerr << advanced_options << endl;
 
 		return 1;
 	}
@@ -321,6 +360,9 @@ static int process_options(int argc, char **argv)
 	//for (auto v : g_params.config_options)
 	//	cout << "config option: " << v.first << endl;
 
+	if (g_params.initial_master_secret == " " || g_params.initial_master_secret == "0")
+		g_params.initial_master_secret.clear();
+
 	// TODO: move these to a function
 
 	if (!g_params.tor_exe.length())
@@ -340,48 +382,61 @@ static int process_options(int argc, char **argv)
 
 	g_lpc_service.max_outconns = 1 + g_params.polling_threads + g_params.tx_threads_max;
 
-	// polling_table[secret type][last_receive>0][list elements][period/endtime]
-		//#define SECRET_TYPE_SEND_ADDRESS			13	// + paynum if known
-		//#define SECRET_TYPE_SELF_ADDRESS			14	// + paynum if known
-		//#define SECRET_TYPE_RECV_ADDRESS			15	// + paynum if known
-		//#define SECRET_TYPE_POLL_ADDRESS			16	// + paynum if known
-		//#define SECRET_TYPE_STATIC_ADDRESS		17	// + paynum if known
+	/* polling_table[secret type][last_receive>0][list elements][period/endtime]
+		#define SECRET_TYPE_SEND_ADDRESS			13	// + paynum if known
+		#define SECRET_TYPE_SELF_ADDRESS			14	// + paynum if known
+		#define SECRET_TYPE_RECV_ADDRESS			15	// + paynum if known
+		#define SECRET_TYPE_POLL_ADDRESS			16	// + paynum if known
+		#define SECRET_TYPE_STATIC_ADDRESS			17	// + paynum if known
+		#define SECRET_TYPE_EXCHANGE_ADDRESS		18	// + paynum if known
+	*/
 
 	// SECRET_TYPE_SEND_ADDRESS nothing received
 	unsigned a = 0, r = 0;
-	g_params.polling_table[a][r].push_back(make_pair(	10,				2 * 60));
-	g_params.polling_table[a][r].push_back(make_pair(	30,				20 * 60));
-	g_params.polling_table[a][r].push_back(make_pair(30 * 60,	2 * 24*60*60));
+	g_params.polling_table[a][r].push_back(make_pair(  10 * SECONDS_PP,	   2 * MINUTES_PP));
+	g_params.polling_table[a][r].push_back(make_pair(  30 * SECONDS_PP,	  20 * MINUTES_PP));
+	g_params.polling_table[a][r].push_back(make_pair( 30 * MINUTES_PP,	 12 * HOURS_PP));
+	g_params.polling_table[a][r].push_back(make_pair( 1 * HOURS_PP,		 2 * DAYS_PP));
 
 	// SECRET_TYPE_SELF_ADDRESS nothing received
 	a++; r = 0;
-	g_params.polling_table[a][r].push_back(make_pair(	3,					30));
-	g_params.polling_table[a][r].push_back(make_pair(	5,				2 * 60));
-	g_params.polling_table[a][r].push_back(make_pair(	20,				20 * 60));
-	g_params.polling_table[a][r].push_back(make_pair(30 * 60,	2 * 24*60*60));
+	g_params.polling_table[a][r].push_back(make_pair(   5 * SECONDS_PP,	   2 * MINUTES_PP));
+	g_params.polling_table[a][r].push_back(make_pair(  20 * SECONDS_PP,	  20 * MINUTES_PP));
+	g_params.polling_table[a][r].push_back(make_pair( 30 * MINUTES_PP,	  4 * HOURS_PP));
+	g_params.polling_table[a][r].push_back(make_pair( 1 * HOURS_PP,		 12 * HOURS_PP));
+	g_params.polling_table[a][r].push_back(make_pair( 2 * HOURS_PP,		 2 * DAYS_PP));
 
 	// SECRET_TYPE_SELF_ADDRESS with payment
 		r++;
-	g_params.polling_table[a][r].push_back(make_pair(30 * 60,	2 * 24*60*60));
+	//g_params.polling_table[a][r].push_back(make_pair( 10 * MINUTES_PP,	 10 * DAYS_PP));	// for testing
+	g_params.polling_table[a][r].push_back(make_pair( 1 * HOURS_PP,		 12 * HOURS_PP));
+	g_params.polling_table[a][r].push_back(make_pair( 4 * HOURS_PP,		 2 * DAYS_PP));
 
 	// SECRET_TYPE_RECV_ADDRESS nothing received
 	a++; r = 0;
-	g_params.polling_table[a][r].push_back(make_pair(	10,					90));
-	g_params.polling_table[a][r].push_back(make_pair(	15,				10 * 60));
-	g_params.polling_table[a][r].push_back(make_pair(	30,			1 * 1*60*60));
-	g_params.polling_table[a][r].push_back(make_pair(	45,			4 * 1*60*60));
-	g_params.polling_table[a][r].push_back(make_pair(2 * 60,	2 * 24*60*60));
+	g_params.polling_table[a][r].push_back(make_pair(  10 * SECONDS_PP,	   90 * SECONDS_PP));
+	g_params.polling_table[a][r].push_back(make_pair(  15 * SECONDS_PP,	  10 * MINUTES_PP));
+	g_params.polling_table[a][r].push_back(make_pair(  30 * SECONDS_PP,	  1 * HOURS_PP));
+	g_params.polling_table[a][r].push_back(make_pair(  1 * MINUTES_PP,	  2 * HOURS_PP));
+	g_params.polling_table[a][r].push_back(make_pair(  2 * MINUTES_PP,	  4 * HOURS_PP));
+	g_params.polling_table[a][r].push_back(make_pair( 10 * MINUTES_PP,	  8 * HOURS_PP));
+	g_params.polling_table[a][r].push_back(make_pair( 30 * MINUTES_PP,	  2 * DAYS_PP));
+	g_params.polling_table[a][r].push_back(make_pair( 2 * HOURS_PP,		 1 * MONTHS_PP));
+	g_params.polling_table[a][r].push_back(make_pair(1 * DAYS_PP,		1 * YEARS_PP));
 
 	// SECRET_TYPE_RECV_ADDRESS with payment
 		r++;
-	g_params.polling_table[a][r].push_back(make_pair(	30,				2 * 60));
-	g_params.polling_table[a][r].push_back(make_pair(2 * 60,			10 * 60));
-	g_params.polling_table[a][r].push_back(make_pair(5 * 60,	1 * 24*60*60));
+	g_params.polling_table[a][r].push_back(make_pair(  5 * MINUTES_PP,	  10 * MINUTES_PP));
+	g_params.polling_table[a][r].push_back(make_pair( 10 * MINUTES_PP,	  30 * MINUTES_PP));
+	g_params.polling_table[a][r].push_back(make_pair(  1 * HOURS_PP,	 1 * DAYS_PP));
+	g_params.polling_table[a][r].push_back(make_pair(  8 * HOURS_PP,	 4 * DAYS_PP));
 
 	// SECRET_TYPE_POLL_ADDRESS nothing received
 	a++; r = 0;
-	g_params.polling_table[a][r].push_back(make_pair(1 * 60,			20 * 60));
-	g_params.polling_table[a][r].push_back(make_pair(5 * 60,	2 * 24*60*60));
+	g_params.polling_table[a][r].push_back(make_pair(  1 * MINUTES_PP,	  20 * MINUTES_PP));
+	g_params.polling_table[a][r].push_back(make_pair(  5 * MINUTES_PP,	  8 * HOURS_PP));
+	g_params.polling_table[a][r].push_back(make_pair( 15 * MINUTES_PP,	 1 * DAYS_PP));
+	g_params.polling_table[a][r].push_back(make_pair( 30 * MINUTES_PP,	 2 * DAYS_PP));
 
 	// SECRET_TYPE_POLL_ADDRESS with payment (copy SECRET_TYPE_RECV_ADDRESS)
 		r++;
@@ -389,16 +444,26 @@ static int process_options(int argc, char **argv)
 
 	// SECRET_TYPE_STATIC_ADDRESS nothing received
 	a++; r = 0;
-	g_params.polling_table[a][r].push_back(make_pair(	20,					2 * 60));
-	g_params.polling_table[a][r].push_back(make_pair(	30,					5 * 60));
-	g_params.polling_table[a][r].push_back(make_pair(	60,					10 * 60));
-	g_params.polling_table[a][r].push_back(make_pair(4 * 60,			1 * 60*60));
-	g_params.polling_table[a][r].push_back(make_pair(10 * 60,			12 * 60*60));
-	g_params.polling_table[a][r].push_back(make_pair(20 * 60,		7 * 24*60*60));
-	g_params.polling_table[a][r].push_back(make_pair(6 * 60*60,		60 * 24*60*60));
-	g_params.polling_table[a][r].push_back(make_pair(12 * 60*60,	INT_MAX/4));
+	g_params.polling_table[a][r].push_back(make_pair(  20 * SECONDS_PP,	   2 * MINUTES_PP));
+	g_params.polling_table[a][r].push_back(make_pair(  30 * SECONDS_PP,	   5 * MINUTES_PP));
+	g_params.polling_table[a][r].push_back(make_pair(  1 * MINUTES_PP,	  10 * MINUTES_PP));
+	g_params.polling_table[a][r].push_back(make_pair(  5 * MINUTES_PP,	  1 * HOURS_PP));
+	g_params.polling_table[a][r].push_back(make_pair( 10 * MINUTES_PP,	 12 * HOURS_PP));
+	g_params.polling_table[a][r].push_back(make_pair( 20 * MINUTES_PP,	 7 * DAYS_PP));
+	g_params.polling_table[a][r].push_back(make_pair( 6 * HOURS_PP,		60 * DAYS_PP));
+	g_params.polling_table[a][r].push_back(make_pair(1 * DAYS_PP,		INT_MAX/4));
 
 	// SECRET_TYPE_STATIC_ADDRESS with payment (copy nothing received)
+		r++;
+	g_params.polling_table[a][r] = g_params.polling_table[a][0];
+
+	// SECRET_TYPE_EXCHANGE_ADDRESS nothing received -- these are demand polled when a match is found, so polling times here are only in case that malfunctions
+	a++; r = 0;
+	g_params.polling_table[a][r].push_back(make_pair( 2 * HOURS_PP,		  8 * HOURS_PP));
+	g_params.polling_table[a][r].push_back(make_pair( 4 * HOURS_PP,		 12 * HOURS_PP));
+	g_params.polling_table[a][r].push_back(make_pair(12 * HOURS_PP,		 2 * DAYS_PP));
+
+	// SECRET_TYPE_EXCHANGE_ADDRESS with payment (copy nothing received)
 		r++;
 	g_params.polling_table[a][r] = g_params.polling_table[a][0];
 
@@ -445,7 +510,7 @@ static int set_rpc_auth_string()
 		CCRandom(r, sizeof(r));
 
 		cookie = "__cookie__:";
-		cookie += buf2hex(r, sizeof(r), 0);
+		cookie += buf2hex(r, sizeof(r));
 	}
 
 	wstring fname = g_params.app_data_dir + s2w(PATH_DELIMITER) + L".cookie";
@@ -475,14 +540,15 @@ static int set_rpc_auth_string()
 	}
 
 	string encoded;
-	base64_encode(base64, cookie, encoded);
+	base64_encode(base64sym, cookie, encoded);
 
 	g_rpc_service.auth_string = " Basic ";
 	g_rpc_service.auth_string += encoded;
 
 	//BOOST_LOG_TRIVIAL(info) << "RCP Authorization string = " << g_rpc_service.auth_string;	// logging this would be a security leak
 
-	lock_guard<FastSpinLock> lock(g_cout_lock);
+	lock_guard<mutex> lock(g_cerr_lock);
+	check_cerr_newline();
 	cerr << "RPC service username and password saved in file " << w2s(fname) << endl;
 
 	return 0;
@@ -513,23 +579,37 @@ int _dowildcard = 0;	// disable wildcard globbing
 
 int main(int argc, char **argv)
 {
+	//auto t0 = highres_ticks();
+	//sleep(10);
+	//cerr << "highres_ticks " << (highres_ticks() - t0)/10 << endl;
+
+	//g_clock_offset = -100000;	// for testing
+	//cerr << "start time " << unixtime() << endl;
+
+	//srand(0);
+	srand(time(NULL));
+
+	//encode_test(); return 0;
+	//base64_test(base64sym); return 0;
+	//XcxTest();
+	//return 0;
+
 	cerr << endl;
 
 	g_shutdown_callback = shutdown_callback;
 
 	set_handlers();
 
-	//srand(0);
-	srand(time(NULL));
-
 	g_params.trace_level = DEFAULT_TRACE_LEVEL;
 	set_trace_level(g_params.trace_level);
 
-	g_interactive = true;
+	g_interactive_thread_id = std::this_thread::get_id();
 
 	g_params.process_dir = get_process_dir();
 	if (!g_params.process_dir.length())
 		return -1;
+
+	set_service_pre_configs();
 
 	try
 	{
@@ -541,8 +621,6 @@ int main(int argc, char **argv)
 		cerr << "ERROR: " << e.what() << endl;
 		return -1;
 	}
-
-	//base64_test(base64, base64int); return 0;
 
 	if (g_params.config_options.count("interactive"))
 		g_params.interactive = true;
@@ -572,6 +650,8 @@ int main(int argc, char **argv)
 
 	try
 	{
+		Xreq::Init();
+
 		CCProof_Init(g_params.proof_key_dir);
 		CCProof_PreloadVerifyKeys();
 
@@ -583,11 +663,18 @@ int main(int argc, char **argv)
 
 		if (create_wallet)
 		{
+			static mutex createlock;
+			lock_guard<mutex> lock(createlock);
+
 			try
 			{
-				auto rc = Secret::CreateBaseSecrets(dbconn);
+				auto rc = Secret::CreateMasterSecret(dbconn);
 
-				if (rc) goto do_fatal;
+				if (rc < 0)
+					goto do_fatal;
+
+				if (!rc)
+					Secret::CreateBaseSecrets(dbconn);
 			}
 			catch (const exception& e)
 			{
@@ -641,26 +728,34 @@ int main(int argc, char **argv)
 	txquery_interactive = g_lpc_service.GetConnection(false);
 	CCASSERT(txquery_interactive);
 
-	if (command_line_json.size())
+	//start_shutdown();	// for testing
+
+	if (command_line_json == "stop")
+	{
+		result_code = 0;
+		start_shutdown();
+	}
+
+	if (command_line_json.size() && !g_shutdown)
 	{
 		result_code = interactive_do_json_command(command_line_json, dbconn, *txquery_interactive);
 	}
 
-	//start_shutdown();	// for testing
-
-	if (g_rpc_service.enabled)
+	if (g_rpc_service.enabled && !g_shutdown)
 	{
 		auto rc = set_rpc_auth_string();
 		if (rc) goto do_fatal;
 
 		g_rpc_service.Start();
 
-		lock_guard<FastSpinLock> lock(g_cout_lock);
+		lock_guard<mutex> lock(g_cerr_lock);
+		check_cerr_newline();
 		cerr << "RPC service enabled on port " << g_rpc_service.port << "\n" << endl;
 	}
-	else if (!command_line_json.size() || g_params.interactive)
+	else if ((!command_line_json.size() || g_params.interactive) && !g_shutdown)
 	{
-		lock_guard<FastSpinLock> lock(g_cout_lock);
+		lock_guard<mutex> lock(g_cerr_lock);
+		check_cerr_newline();
 		cerr << "Note: RPC service not enabled ";
 		if (g_params.interactive)
 			cerr << "(start " CCEXENAME " with --wallet-rpc=1 if RPC is required)";
@@ -671,7 +766,7 @@ int main(int argc, char **argv)
 
 	result_code = 0;
 
-	if (g_rpc_service.enabled || g_params.interactive)
+	if ((g_rpc_service.enabled || g_params.interactive) && !g_shutdown)
 	{
 		Polling g_polling;
 
@@ -694,86 +789,87 @@ int main(int argc, char **argv)
 		start_shutdown();
 
 		{
-			lock_guard<FastSpinLock> lock(g_cout_lock);
+			lock_guard<mutex> lock(g_cerr_lock);
+			check_cerr_newline();
 			cerr << "\nShutting down..." << endl;
 		}
 
-			if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 1...";
+			if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(info) << "shutdown 1...";
 
 		g_polling.StartShutdown();
 
-			if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 2...";
+			if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(info) << "shutdown 2...";
 
 		g_polling.WaitForShutdown();
 	}
 
 do_fatal:
 
-		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 3...";
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(info) << "shutdown 3...";
 
 	start_shutdown();
 
-		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 4...";
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(info) << "shutdown 4...";
 
 	wait_for_shutdown();
 
-		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 5...";
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(info) << "shutdown 5...";
 
 	shutdown_callback();
 
-		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 6...";
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(info) << "shutdown 6...";
 
 	cc_mint_threads_shutdown();
 
-		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 7...";
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(info) << "shutdown 7...";
 
 	Transaction::Shutdown();
 
 	if (txquery_interactive)
 	{
-			if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 8...";
+			if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(info) << "shutdown 8...";
 
 		txquery_interactive->Stop();
 
-			if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 9...";
+			if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(info) << "shutdown 9...";
 
 		txquery_interactive->WaitForStopped();
 
-			if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 10...";
+			if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(info) << "shutdown 10...";
 
 		txquery_interactive->FreeConnection();
 	}
 
-		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 11...";
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(info) << "shutdown 11...";
 
 	g_rpc_service.StartShutdown();
 
-		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 12...";
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(info) << "shutdown 12...";
 
 	g_lpc_service.StartShutdown();
 
-		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 14...";
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(info) << "shutdown 14...";
 
 	g_rpc_service.WaitForShutdown();
 
-		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 15...";
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(info) << "shutdown 15...";
 
 	g_lpc_service.WaitForShutdown();
 
 	if (dbconn)
 	{
-			if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 16...";
+			if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(info) << "shutdown 16...";
 
-		dbconn->CloseDb(1);	// 1 = done
+		dbconn->CloseDb(true);
 
 		delete dbconn;
 	}
 
-		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 17...";
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(info) << "shutdown 17...";
 
 	dblog(sqlite3_shutdown());
 
-		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 18...";
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(info) << "shutdown 18...";
 
 	tor_thread.join();
 

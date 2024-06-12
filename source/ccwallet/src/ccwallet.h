@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * ccwallet.h
 */
@@ -9,9 +9,9 @@
 #pragma once
 
 #define CCAPPNAME	"CredaCash RPC Wallet"
-#define CCVERSION	 "1.01" //@@!
+#define CCVERSION	"2.0" //@@!
 #define CCEXENAME	"ccwallet"
-#define CCAPPDIR	"CCWallet-#"
+#define CCAPPDIR	"CCWallet-#" //@@!
 
 #define WALLET_ID_BYTES		(128/8)
 
@@ -30,7 +30,11 @@
 
 #include <boost/program_options/variables_map.hpp>
 
-DECLARE_EXTERN thread_local bool g_interactive;
+// At some point (around g++ v8 or v9), mingw64 with g++ optimzation turned on developed a bug where accessing an extern thread_local variable causes an access violation
+// So now only one thread can be interactive, identified by thread id
+// DECLARE_EXTERN thread_local bool g_interactive;
+DECLARE_EXTERN std::thread::id g_interactive_thread_id;
+extern "C" bool IsInteractive();
 
 DECLARE_EXTERN struct global_params_struct
 {
@@ -51,7 +55,7 @@ DECLARE_EXTERN struct global_params_struct
 	int		secret_gen_memory;
 
 	uint64_t blockchain;
-	bool	foundation_wallet;
+	int		billet_domain;
 
 	int		base_port;
 
@@ -72,7 +76,9 @@ DECLARE_EXTERN struct global_params_struct
 	int polling_addresses;
 	int polling_threads;
 
-	array<array<vector<pair<unsigned, unsigned>>, 2>, 5> polling_table;
+	array<array<vector<pair<unsigned, unsigned>>, 2>, 7> polling_table;
+
+	int exchange_poll_time;
 
 	wstring tor_exe;
 	wstring tor_config;
@@ -84,6 +90,7 @@ DECLARE_EXTERN struct global_params_struct
 	bool	trace_jsonrpc;
 	bool	trace_txrpc;
 	bool	trace_transactions;
+	bool	trace_exchange;
 	bool	trace_billets;
 	bool	trace_totals;
 	bool	trace_secrets;
@@ -92,8 +99,8 @@ DECLARE_EXTERN struct global_params_struct
 	bool	trace_txparams;
 	bool	trace_txquery;
 	bool	trace_txconn;
-	bool	trace_db;
-
+	bool	trace_db_reads;
+	bool	trace_db_writes;
 } g_params;
 
 #ifdef DECLARING_EXTERN

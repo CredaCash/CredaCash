@@ -1,7 +1,8 @@
+#!/usr/bin/env python2
  #
  # CredaCash (TM) cryptocurrency and blockchain
  #
- # Copyright (C) 2015-2020 Creda Software, Inc.
+ # Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  #
  # check-base64.py
 #

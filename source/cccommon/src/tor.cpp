@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * tor.cpp
 */
@@ -16,13 +16,13 @@
 static const wchar_t space_char = 0xFFFF;
 static const wstring space = L"\xFFFF";
 
-static void tor_hidden_service_config(wostringstream& params, wstring& service_port_list, const TorService& service)
+static void tor_hidden_service_config(bool external_tor, wostringstream& params, wstring& service_port_list, const TorService& service)
 {
 	if (service.enabled && service.tor_service)
 	{
 		wstring dir = service.app_data_dir + s2w(service.tor_hostname_subdir);
 
-		if (service.tor_new_hostname)
+		if (service.tor_new_hostname && !external_tor)
 		{
 			delete_file(dir + WIDE(PATH_DELIMITER) + L"private_key");
 			delete_file(dir + WIDE(PATH_DELIMITER) + L"hs_ed25519_secret_key");
@@ -72,7 +72,7 @@ void tor_start(const wstring& process_dir, const wstring& tor_exe, const wstring
 	}
 
 	for (unsigned i = 0; i < services.size(); ++i)
-		tor_hidden_service_config(params, service_port_list, *services[i]);
+		tor_hidden_service_config(external_tor, params, service_port_list, *services[i]);
 
 	params << space << "+LongLivedPorts" << space << "\"443" << service_port_list << "\"";
 
@@ -85,14 +85,16 @@ void tor_start(const wstring& process_dir, const wstring& tor_exe, const wstring
 			paramline_text[i] = ' ';
 	}
 
-	BOOST_LOG_TRIVIAL(info) << "Tor command line: " << w2s(paramline_text);
-
 	if (external_tor)
 	{
-		BOOST_LOG_TRIVIAL(info) << "Skipping Tor launch; Tor must be launched and managed externally";
+		BOOST_LOG_TRIVIAL(warning) << "Skipping Tor launch; Tor must be launched and managed externally";
+
+		BOOST_LOG_TRIVIAL(warning) << "Tor command line: " << w2s(paramline_text);
 
 		return;
 	}
+
+	BOOST_LOG_TRIVIAL(info) << "Tor command line: " << w2s(paramline_text);
 
 #ifdef _WIN32
 	PROCESS_INFORMATION pi;
@@ -119,7 +121,8 @@ void tor_start(const wstring& process_dir, const wstring& tor_exe, const wstring
 			BOOST_LOG_TRIVIAL(error) << "Unable to start Tor; error = " << GetLastError();
 
 			{
-				lock_guard<FastSpinLock> lock(g_cout_lock);
+				lock_guard<mutex> lock(g_cerr_lock);
+				check_cerr_newline();
 				cerr << "ERROR: Unable to start Tor" << endl;
 			}
 
@@ -213,7 +216,8 @@ void tor_start(const wstring& process_dir, const wstring& tor_exe, const wstring
 			BOOST_LOG_TRIVIAL(error) << "Unable to start Tor; error = " << rc;
 
 			{
-				lock_guard<FastSpinLock> lock(g_cout_lock);
+				lock_guard<mutex> lock(g_cerr_lock);
+				check_cerr_newline();
 				cerr << "ERROR: Unable to start Tor" << endl;
 			}
 

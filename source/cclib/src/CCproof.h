@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * CCproof.h
 */
@@ -14,7 +14,7 @@
 
 //#define TEST_SUPPORT_ZK_KEYGEN	1	// for setup; note: 68 minutes on ODROID-C2 to generate 31 key pairs
 
-//#define TEST_SKIP_ZKPROOFS		1	// for faster testing of tx handling ***NOTE: also set *_work_difficulty = 0
+//#define TEST_SKIP_ZKPROOFS		1	// for faster testing of tx handling ***NOTE: also set TEST_TX_DIFFICULTY_ZERO and --transact-difficulty=0
 
 #ifndef TEST_SUPPORT_ZK_KEYGEN
 #define TEST_SUPPORT_ZK_KEYGEN		0

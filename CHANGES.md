@@ -2,6 +2,37 @@
 ---
 <!--- NOTE: This file is in Markdown format, and is intended to be viewed in a Markdown viewer. -->
 
+## v2.0 2024-06-12
+
+### ccnode
+
+#### - Major Changes
+
+- Added integrated peer-to-peer crosschain exchange supporting CredaCash, Bitcoin (BTC), and Bitcoin Cash (BCH).
+- Added mining of CredaCash currency based on the use of the exchange.
+
+#### - Minor Changes
+
+- Version identifier changed to "2.0".
+- Faster initial blockchain sync.
+
+### ccwallet
+
+#### - Major Changes
+
+- Added support for integrated peer-to-peer crosschain exchange.
+- Added support for mining CredaCash currency based on use of the exchange.
+
+#### - Minor Changes
+
+- Version identifier changed to "2.0".
+- Added various "cc.crosschain\_" and "cc.exchange\_" commands.
+- Added command "cc.donation\_estimate".
+- Added command "cc.billets_list_unspent" that can filter output by pending, cleared and allocated statuses.
+- "listunspent" output now includes pending and allocated billets.
+- Commands that provide transaction information now output several CredaCash-specific fields prefixed "cc."
+- Commands that require a txid now accept both universal txid's (prefixed "CCTX\_") and wallet internal txid's (prefixed "CCTX_Internal\_").
+
 ## v1.1 2020-02-22
 
 ### ccnode

@@ -1,13 +1,14 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * dbconn-validobjs.cpp
 */
 
 #include "ccnode.h"
 #include "dbconn.hpp"
+#include "seqnum.hpp"
 #include "block.hpp"
 #include "witness.hpp"
 
@@ -15,26 +16,19 @@
 #include <CCobjects.hpp>
 #include <transaction.h>
 #include <transaction.hpp>
+#include <xtransaction.hpp>
 
 #define TRACE_DBCONN	(g_params.trace_validobj_db)
 
-static atomic<int64_t> g_valid_block_seqnum(VALID_BLOCK_SEQNUM_START);
-static atomic<int64_t> g_valid_tx_seqnum(1);
-
-static boost::shared_mutex Valid_Objs_db_mutex;	// to avoid inconsistency problems with shared cache
-//static mutex Valid_Objs_db_mutex;				// to avoid inconsistency problems with shared cache
-
-int64_t DbConnValidObjs::GetNextTxSeqnum()
-{
-	return g_valid_tx_seqnum.load();
-}
+//static boost::shared_mutex Valid_Objs_db_mutex;	// to avoid inconsistency problems with shared cache
+static mutex Valid_Objs_db_mutex;				// to avoid inconsistency problems with shared cache
 
 DbConnValidObjs::DbConnValidObjs()
 {
 	ClearDbPointers();
 
-	lock_guard<boost::shared_mutex> lock(Valid_Objs_db_mutex);
-	//lock_guard<mutex> lock(Valid_Objs_db_mutex);
+	//lock_guard<boost::shared_mutex> lock(Valid_Objs_db_mutex);
+	lock_guard<mutex> lock(Valid_Objs_db_mutex);
 
 	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnValidObjs::DbConnValidObjs dbconn " << (uintptr_t)this;
 
@@ -61,8 +55,8 @@ DbConnValidObjs::~DbConnValidObjs()
 	if (!explain)
 		elock.unlock();
 
-	lock_guard<boost::shared_mutex> lock(Valid_Objs_db_mutex);
-	//lock_guard<mutex> lock(Valid_Objs_db_mutex);
+	//lock_guard<boost::shared_mutex> lock(Valid_Objs_db_mutex);
+	lock_guard<mutex> lock(Valid_Objs_db_mutex);
 #endif
 
 	//if (explain)
@@ -92,33 +86,42 @@ void DbConnValidObjs::DoValidObjsFinish()
 	sqlite3_reset(Valid_Objs_delete_obj);
 }
 
-int DbConnValidObjs::ValidObjsInsert(SmartBuf smartobj)
+int DbConnValidObjs::ValidObjsInsert(SmartBuf smartobj, int64_t* pseqnum)
 {
-	lock_guard<boost::shared_mutex> lock(Valid_Objs_db_mutex);	// sql statements must be reset before lock is released
-	//lock_guard<mutex> lock(Valid_Objs_db_mutex);				// sql statements must be reset before lock is released
+	//lock_guard<boost::shared_mutex> lock(Valid_Objs_db_mutex);	// sql statements must be reset before lock is released
+	lock_guard<mutex> lock(Valid_Objs_db_mutex);				// sql statements must be reset before lock is released
 	Finally finally(boost::bind(&DbConnValidObjs::DoValidObjsFinish, this));
+
+	if (pseqnum)
+		*pseqnum = 0;
 
 	auto bufp = smartobj.BasePtr();
 	auto obj = (CCObject*)smartobj.data();
+	auto type = obj->ObjType();
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnValidObjs::ValidObjsInsert bufp " << (uintptr_t)bufp << " obj tag " << obj->ObjTag() << " oid " << buf2hex(obj->OidPtr(), sizeof(ccoid_t));
+	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnValidObjs::ValidObjsInsert bufp " << (uintptr_t)bufp << " obj tag " << hex << obj->ObjTag() << dec << " type " << type << " oid " << buf2hex(obj->OidPtr(), CC_OID_TRACE_SIZE);
+
+	CCASSERT(type);
 
 	int64_t seqnum;
-	if (obj->ObjType() == CC_TYPE_BLOCK)
-	{
-		seqnum = g_valid_block_seqnum.fetch_add(1);
 
-		// if the first block is the genesis block, assign it seqnum = 0
-		if (seqnum == VALID_BLOCK_SEQNUM_START)
-		{
-			CCASSERT(sizeof(ccoid_t) == 2 * sizeof(uint64_t));
-			auto oidv = (uint64_t*)obj->OidPtr();
-			if (!oidv[0] && !oidv[1])
-				seqnum = 0;
-		}
-	}
+	if (type == CC_TYPE_BLOCK)
+		seqnum = g_seqnum[BLOCKSEQ][VALIDSEQ].NextNum();
+	else if (Xtx::TypeIsXreq(type))
+		seqnum = g_seqnum[XREQSEQ][VALIDSEQ].NextNum();
 	else
-		seqnum = g_valid_tx_seqnum.fetch_add(1);
+		seqnum = g_seqnum[TXSEQ][VALIDSEQ].NextNum();
+
+	if (!seqnum) return -1;
+
+	// if the first block is the genesis block, assign it seqnum = 0
+	if (seqnum == g_seqnum[BLOCKSEQ][VALIDSEQ].seqmin)
+	{
+		CCASSERT(sizeof(ccoid_t) == 2 * sizeof(uint64_t));
+		auto oidv = (uint64_t*)obj->OidPtr();
+		if (!oidv[0] && !oidv[1])
+			seqnum = 0;
+	}
 
 	// Seqnum, Time, ObjId, Bufp
 	if (dblog(sqlite3_bind_int64(Valid_Objs_insert, 1, seqnum))) return -1;
@@ -134,9 +137,10 @@ int DbConnValidObjs::ValidObjsInsert(SmartBuf smartobj)
 	}
 
 	auto rc = sqlite3_step(Valid_Objs_insert);
+
 	if (dbresult(rc) == SQLITE_CONSTRAINT)
 	{
-		BOOST_LOG_TRIVIAL(warning) << "DbConnValidObjs::ValidObjsInsert object downloaded more than once; bufp " << (uintptr_t)bufp << " oid " << buf2hex(obj->OidPtr(), sizeof(ccoid_t));
+		BOOST_LOG_TRIVIAL(warning) << "DbConnValidObjs::ValidObjsInsert object downloaded more than once; seqnum " << seqnum << " bufp " << (uintptr_t)bufp << " oid " << buf2hex(obj->OidPtr(), CC_OID_TRACE_SIZE);
 
 		return 1;
 	}
@@ -146,13 +150,16 @@ int DbConnValidObjs::ValidObjsInsert(SmartBuf smartobj)
 
 	if (changes)
 	{
-		if (TRACE_DBCONN || TRACE_SMARTBUF) BOOST_LOG_TRIVIAL(debug) << "DbConnValidObjs::ValidObjsInsert inserted seqnum " << seqnum << " bufp " << (uintptr_t)bufp << " oid " << buf2hex(obj->OidPtr(), sizeof(ccoid_t));
+		if (TRACE_DBCONN || TRACE_SMARTBUF) BOOST_LOG_TRIVIAL(debug) << "DbConnValidObjs::ValidObjsInsert inserted seqnum " << seqnum << " bufp " << (uintptr_t)bufp << " oid " << buf2hex(obj->OidPtr(), CC_OID_TRACE_SIZE);
 
 		smartobj.IncRef();
 	}
 
 	if (changes != 1)
-		BOOST_LOG_TRIVIAL(error) << "DbConnValidObjs::ValidObjsInsert sqlite3_changes " << changes << " after insert seqnum " << seqnum << " bufp " << (uintptr_t)bufp << " oid " << buf2hex(obj->OidPtr(), sizeof(ccoid_t));
+		BOOST_LOG_TRIVIAL(error) << "DbConnValidObjs::ValidObjsInsert sqlite3_changes " << changes << " after insert seqnum " << seqnum << " bufp " << (uintptr_t)bufp << " oid " << buf2hex(obj->OidPtr(), CC_OID_TRACE_SIZE);
+
+	if (pseqnum)
+		*pseqnum = seqnum;
 
 	return 0;
 }
@@ -160,14 +167,15 @@ int DbConnValidObjs::ValidObjsInsert(SmartBuf smartobj)
 // returns 0=found, 1=not found, -1=server error
 int DbConnValidObjs::ValidObjsGetObj(const ccoid_t& oid, SmartBuf *retobj, bool or_greater)
 {
-	boost::shared_lock<boost::shared_mutex> lock(Valid_Objs_db_mutex);	// sql statements must be reset before lock is released
-	//lock_guard<mutex> lock(Valid_Objs_db_mutex);						// sql statements must be reset before lock is released
+	//boost::shared_lock<boost::shared_mutex> lock(Valid_Objs_db_mutex);	// sql statements must be reset before lock is released
+	lock_guard<mutex> lock(Valid_Objs_db_mutex);						// sql statements must be reset before lock is released
 	Finally finally(boost::bind(&DbConnValidObjs::DoValidObjsFinish, this));
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnValidObjs::ValidObjsGetObj dbconn " << uintptr_t(this) << " oid " << buf2hex(&oid, sizeof(ccoid_t)) << " or_greater " << or_greater;
+	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnValidObjs::ValidObjsGetObj dbconn " << uintptr_t(this) << " oid " << buf2hex(&oid, CC_OID_TRACE_SIZE) << " or_greater " << or_greater;
 
 	retobj->ClearRef();
 
+	// ObjId >=
 	if (dblog(sqlite3_bind_blob(Valid_Objs_select_obj, 1, &oid, sizeof(ccoid_t), SQLITE_STATIC))) return -1;
 
 	int rc;
@@ -233,11 +241,11 @@ int DbConnValidObjs::ValidObjsGetObj(const ccoid_t& oid, SmartBuf *retobj, bool 
 	auto obj = (CCObject*)smartobj.data();
 	CCASSERT(obj);
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnValidObjs::ValidObjsGetObj obj.oid " << buf2hex(obj->OidPtr(), sizeof(ccoid_t));
+	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnValidObjs::ValidObjsGetObj obj.oid " << buf2hex(obj->OidPtr(), CC_OID_TRACE_SIZE);
 
-	if (memcmp(obj->OidPtr(), &oid, sizeof(ccoid_t)) && !or_greater)
+	if (!or_greater && memcmp(obj->OidPtr(), &oid, sizeof(ccoid_t)))
 	{
-		if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnValidObjs::ValidObjsGetObj ObjId mismatch oid " << buf2hex(&oid, sizeof(ccoid_t));
+		if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnValidObjs::ValidObjsGetObj ObjId mismatch oid " << buf2hex(&oid, CC_OID_TRACE_SIZE);
 
 		return 1;
 	}
@@ -251,29 +259,29 @@ int DbConnValidObjs::ValidObjsGetObj(const ccoid_t& oid, SmartBuf *retobj, bool 
 		return -1;
 	}
 
-	if (TRACE_DBCONN | TRACE_SMARTBUF) BOOST_LOG_TRIVIAL(debug) << "DbConnValidObjs::ValidObjsGetObj returning ObjId " << buf2hex(&oid, sizeof(ccoid_t));
+	if (TRACE_DBCONN | TRACE_SMARTBUF) BOOST_LOG_TRIVIAL(debug) << "DbConnValidObjs::ValidObjsGetObj returning ObjId " << buf2hex(&oid, CC_OID_TRACE_SIZE);
 
 	*retobj = smartobj;
 
 	return 0;
 }
 
-unsigned DbConnValidObjs::ValidObjsFindNew(int64_t& next_seqnum, unsigned limit, bool want_msgs, uint8_t *output, unsigned bufsize)
+unsigned DbConnValidObjs::ValidObjsFindNew(int64_t& next_seqnum, int64_t max_seqnum, unsigned limit, bool want_msgs, uint8_t *output, unsigned bufsize)
 {
-	boost::shared_lock<boost::shared_mutex> lock(Valid_Objs_db_mutex);	// sql statements must be reset before lock is released
-	//lock_guard<mutex> lock(Valid_Objs_db_mutex);						// sql statements must be reset before lock is released
+	//boost::shared_lock<boost::shared_mutex> lock(Valid_Objs_db_mutex);	// sql statements must be reset before lock is released
+	lock_guard<mutex> lock(Valid_Objs_db_mutex);						// sql statements must be reset before lock is released
 	Finally finally(boost::bind(&DbConnValidObjs::DoValidObjsFinish, this));
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnValidObjs::ValidObjsFindNew next_seqnum " << next_seqnum << " limit " << limit << " want_msgs " << want_msgs;
+	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnValidObjs::ValidObjsFindNew next_seqnum " << next_seqnum << " max_seqnum " << max_seqnum << " limit " << limit << " want_msgs " << want_msgs;
 
 	// min, max, limit
 	if (dblog(sqlite3_bind_int64(Valid_Objs_select_seqnums, 1, next_seqnum))) return -1;
-	if (dblog(sqlite3_bind_int64(Valid_Objs_select_seqnums, 2, (next_seqnum < 0 ? -1 : INT64_MAX)))) return -1;
+	if (dblog(sqlite3_bind_int64(Valid_Objs_select_seqnums, 2, max_seqnum))) return -1;
 	if (dblog(sqlite3_bind_int64(Valid_Objs_select_seqnums, 3, limit))) return -1;
 
 	uint32_t bufpos = 0;
 
-	while (true)
+	while (!g_shutdown)
 	{
 		int rc;
 
@@ -354,14 +362,14 @@ unsigned DbConnValidObjs::ValidObjsFindNew(int64_t& next_seqnum, unsigned limit,
 			break;
 		}
 
-		if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnValidObjs::ValidObjsFindNew seqnum " << seqnum << " bufp " << (uintptr_t)bufp << " db ObjId " << buf2hex(objid_blob, sizeof(ccoid_t));
+		if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnValidObjs::ValidObjsFindNew seqnum " << seqnum << " bufp " << (uintptr_t)bufp << " db ObjId " << buf2hex(objid_blob, CC_OID_TRACE_SIZE);
 
 		SmartBuf smartobj(bufp);
 		auto obj = (CCObject*)smartobj.data();
 		CCASSERT(obj);
 		auto size = obj->ObjSize();
 
-		if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnValidObjs::ValidObjsFindNew bufp " << (uintptr_t)bufp << " obj.oid " << buf2hex(obj->OidPtr(), sizeof(ccoid_t));
+		if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnValidObjs::ValidObjsFindNew bufp " << (uintptr_t)bufp << " obj.oid " << buf2hex(obj->OidPtr(), CC_OID_TRACE_SIZE);
 
 		if (memcmp(obj->OidPtr(), objid_blob, sizeof(ccoid_t)))
 		{
@@ -381,20 +389,21 @@ unsigned DbConnValidObjs::ValidObjsFindNew(int64_t& next_seqnum, unsigned limit,
 
 		if (!want_msgs)
 		{
-			// return array of SmartBuf's
+			// return array of ValidObjSeqnumObjPair's
 
-			auto objarray = (SmartBuf*)output;
+			auto objarray = (ValidObjSeqnumObjPair*)output;
 
-			objarray[bufpos++] = std::move(smartobj);
+			objarray[bufpos].seqnum = seqnum;
+			objarray[bufpos].smartobj = std::move(smartobj);
 
-			if (bufpos >= bufsize)
+			if (++bufpos >= bufsize)
 				break;
 		}
-		else if (seqnum < 0)
+		else if (seqnum <= g_seqnum[BLOCKSEQ][VALIDSEQ].seqmax)
 		{
 			// we have a block
 
-			if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnValidObjs::ValidObjsFindNew preparing to send CC_MSG_HAVE_BLOCK oid " << buf2hex(objid_blob, sizeof(ccoid_t));
+			if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnValidObjs::ValidObjsFindNew preparing to send CC_MSG_HAVE_BLOCK oid " << buf2hex(objid_blob, CC_OID_TRACE_SIZE);
 
 			if (!bufpos)
 			{
@@ -437,7 +446,7 @@ unsigned DbConnValidObjs::ValidObjsFindNew(int64_t& next_seqnum, unsigned limit,
 			auto param_level = txpay_param_level_from_wire(obj);
 			if (param_level == (uint64_t)(-1))
 			{
-				BOOST_LOG_TRIVIAL(error) << "DbConnValidObjs::ValidObjsFindNew tx invalid data size " << obj->DataSize();
+				BOOST_LOG_TRIVIAL(error) << "DbConnValidObjs::ValidObjsFindNew tx invalid; data size " << obj->DataSize();
 
 				break;
 			}
@@ -457,7 +466,7 @@ unsigned DbConnValidObjs::ValidObjsFindNew(int64_t& next_seqnum, unsigned limit,
 				break;
 			}
 
-			if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnValidObjs::ValidObjsFindNew preparing to send CC_MSG_HAVE_TX oid " << buf2hex(objid_blob, sizeof(ccoid_t)) << " size " << size << " param_level " << param_level << " oid " << buf2hex(objid_blob, sizeof(ccoid_t));
+			if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnValidObjs::ValidObjsFindNew preparing to send CC_MSG_HAVE_TX size " << size << " param_level " << param_level << " oid " << buf2hex(objid_blob, CC_OID_TRACE_SIZE);
 
 			copy_to_bufp(objid_blob, sizeof(relay_request_wire_params_t::oid), bufpos, output, bufsize);
 			copy_to_buf(param_level, sizeof(relay_request_wire_params_t::level), bufpos, output, bufsize);
@@ -486,8 +495,8 @@ unsigned DbConnValidObjs::ValidObjsFindNew(int64_t& next_seqnum, unsigned limit,
 
 int DbConnValidObjs::ValidObjsDeleteObj(SmartBuf smartobj)
 {
-	lock_guard<boost::shared_mutex> lock(Valid_Objs_db_mutex);	// sql statements must be reset before lock is released
-	//lock_guard<mutex> lock(Valid_Objs_db_mutex);				// sql statements must be reset before lock is released
+	//lock_guard<boost::shared_mutex> lock(Valid_Objs_db_mutex);	// sql statements must be reset before lock is released
+	lock_guard<mutex> lock(Valid_Objs_db_mutex);				// sql statements must be reset before lock is released
 	Finally finally(boost::bind(&DbConnValidObjs::DoValidObjsFinish, this));
 
 	if (TRACE_SMARTBUF) BOOST_LOG_TRIVIAL(debug) << "DbConnValidObjs::ValidObjsDeleteObj smartobj " << (uintptr_t)&smartobj;
@@ -495,7 +504,7 @@ int DbConnValidObjs::ValidObjsDeleteObj(SmartBuf smartobj)
 	auto bufp = smartobj.BasePtr();
 	auto obj = (CCObject*)smartobj.data();
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnValidObjs::ValidObjsDeleteObj bufp " << (uintptr_t)bufp << " oid " << buf2hex(obj->OidPtr(), sizeof(ccoid_t));
+	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnValidObjs::ValidObjsDeleteObj bufp " << (uintptr_t)bufp << " oid " << buf2hex(obj->OidPtr(), CC_OID_TRACE_SIZE);
 
 	if (dblog(sqlite3_bind_blob(Valid_Objs_delete_obj, 1, obj->OidPtr(), sizeof(ccoid_t), SQLITE_STATIC))) return -1;
 
@@ -512,7 +521,7 @@ int DbConnValidObjs::ValidObjsDeleteObj(SmartBuf smartobj)
 
 	if (changes)
 	{
-		if (TRACE_DBCONN || TRACE_SMARTBUF) BOOST_LOG_TRIVIAL(debug) << "DbConnValidObjs::ValidObjsDeleteObj deleted bufp " << (uintptr_t)bufp << " oid " << buf2hex(obj->OidPtr(), sizeof(ccoid_t));
+		if (TRACE_DBCONN || TRACE_SMARTBUF) BOOST_LOG_TRIVIAL(debug) << "DbConnValidObjs::ValidObjsDeleteObj deleted bufp " << (uintptr_t)bufp << " oid " << buf2hex(obj->OidPtr(), CC_OID_TRACE_SIZE);
 
 		smartobj.DecRef();		// it's now deleted from the db
 	}
@@ -521,9 +530,9 @@ int DbConnValidObjs::ValidObjsDeleteObj(SmartBuf smartobj)
 	{
 		// will happen when witness deletes object that expire thread is waiting on
 		if (IsWitness() && changes == 0)
-			BOOST_LOG_TRIVIAL(debug) << "DbConnValidObjs::ValidObjsDeleteObj sqlite3_changes " << changes << " after delete obj from Valid_Objs bufp " << (uintptr_t)bufp << " oid " << buf2hex(obj->OidPtr(), sizeof(ccoid_t));
+			BOOST_LOG_TRIVIAL(debug) << "DbConnValidObjs::ValidObjsDeleteObj sqlite3_changes " << changes << " after delete obj from Valid_Objs bufp " << (uintptr_t)bufp << " oid " << buf2hex(obj->OidPtr(), CC_OID_TRACE_SIZE);
 		else
-			BOOST_LOG_TRIVIAL(error) << "DbConnValidObjs::ValidObjsDeleteObj sqlite3_changes " << changes << " after delete obj from Valid_Objs bufp " << (uintptr_t)bufp << " oid " << buf2hex(obj->OidPtr(), sizeof(ccoid_t));
+			BOOST_LOG_TRIVIAL(error) << "DbConnValidObjs::ValidObjsDeleteObj sqlite3_changes " << changes << " after delete obj from Valid_Objs bufp " << (uintptr_t)bufp << " oid " << buf2hex(obj->OidPtr(), CC_OID_TRACE_SIZE);
 	}
 
 	return 0;
@@ -534,8 +543,8 @@ int DbConnValidObjs::ValidObjsDeleteSeqnum(int64_t seqnum)
 	// Note: this function does not DefRef the smartobj in the Valid_Objs_db, leading to a memory leak.
 	// It is used only when ValidObjsDeleteObj fails
 
-	lock_guard<boost::shared_mutex> lock(Valid_Objs_db_mutex);	// sql statements must be reset before lock is released
-	//lock_guard<mutex> lock(Valid_Objs_db_mutex);				// sql statements must be reset before lock is released
+	//lock_guard<boost::shared_mutex> lock(Valid_Objs_db_mutex);	// sql statements must be reset before lock is released
+	lock_guard<mutex> lock(Valid_Objs_db_mutex);				// sql statements must be reset before lock is released
 	Finally finally(boost::bind(&DbConnValidObjs::DoValidObjsFinish, this));
 
 	BOOST_LOG_TRIVIAL(warning) << "DbConnValidObjs::ValidObjsDeleteSeqnum seqnum " << seqnum << " -- will lead to memory leak";
@@ -556,16 +565,14 @@ int DbConnValidObjs::ValidObjsDeleteSeqnum(int64_t seqnum)
 
 int DbConnValidObjs::ValidObjsGetExpires(int64_t min_seqnum, int64_t max_seqnum, int64_t& next_expires_seqnum, SmartBuf *retobj, uint32_t& next_expires_t0)
 {
-	boost::shared_lock<boost::shared_mutex> lock(Valid_Objs_db_mutex);	// sql statements must be reset before lock is released
-	//lock_guard<mutex> lock(Valid_Objs_db_mutex);						// sql statements must be reset before lock is released
+	//boost::shared_lock<boost::shared_mutex> lock(Valid_Objs_db_mutex);	// sql statements must be reset before lock is released
+	lock_guard<mutex> lock(Valid_Objs_db_mutex);						// sql statements must be reset before lock is released
 	Finally finally(boost::bind(&DbConnValidObjs::DoValidObjsFinish, this));
 
 	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnValidObjs::ValidObjsGetExpires min_seqnum " << min_seqnum << " max_seqnum " << max_seqnum;
 
-	// preset these in case of error
 	auto last_expires_seqnum = next_expires_seqnum;
 	next_expires_seqnum = -1;
-	retobj->ClearRef();
 
 	int rc;
 
@@ -663,8 +670,8 @@ int DbConnValidObjs::ValidObjsGetExpires(int64_t min_seqnum, int64_t max_seqnum,
 		return -1;
 	}
 
-	if (TRACE_SMARTBUF && obj) BOOST_LOG_TRIVIAL(debug) << "DbConnValidObjs::ValidObjsGetExpires seqnum " << seqnum << " t0 " << t0 << " oid " << buf2hex(obj->OidPtr(), sizeof(ccoid_t));
-	else if (TRACE_DBCONN && obj) BOOST_LOG_TRIVIAL(trace) << "DbConnValidObjs::ValidObjsGetExpires seqnum " << seqnum << " t0 " << t0 << " oid " << buf2hex(obj->OidPtr(), sizeof(ccoid_t));
+	if (TRACE_SMARTBUF && obj) BOOST_LOG_TRIVIAL(debug) << "DbConnValidObjs::ValidObjsGetExpires seqnum " << seqnum << " t0 " << t0 << " oid " << buf2hex(obj->OidPtr(), CC_OID_TRACE_SIZE);
+	else if (TRACE_DBCONN && obj) BOOST_LOG_TRIVIAL(trace) << "DbConnValidObjs::ValidObjsGetExpires seqnum " << seqnum << " t0 " << t0 << " oid " << buf2hex(obj->OidPtr(), CC_OID_TRACE_SIZE);
 	else if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnValidObjs::ValidObjsGetExpires seqnum " << seqnum << " t0 " << t0 << ", obj = " << (uintptr_t)obj;
 
 	next_expires_seqnum = seqnum;

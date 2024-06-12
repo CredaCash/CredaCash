@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * processblock.cpp
 */
@@ -15,9 +15,14 @@
 
 #include <CCobjects.hpp>
 #include <transaction.h>
+#include <xtransaction-xreq.hpp>
+#include <xtransaction-xpay.hpp>
 #include <ccserver/connection_registry.hpp>
 
-#define TRACE_PROCESS	(g_params.trace_block_validation)
+#define XCX_PAY_RETRIES				200
+#define XCX_PAY_WITNESS_RETRIES		4
+
+#define TRACE_PROCESS_BLOCK	(g_params.trace_block_validation)
 
 //!#define TEST_CUZZ			1
 //!#define RTEST_SKIP_TX_WAIT	4
@@ -41,7 +46,7 @@ static DbConn *dbconn = NULL;	// not thread safe
 
 void ProcessBlock::Init()
 {
-	if (TRACE_PROCESS) BOOST_LOG_TRIVIAL(trace) << "ProcessBlock::Init";
+	if (TRACE_PROCESS_BLOCK) BOOST_LOG_TRIVIAL(trace) << "ProcessBlock::Init";
 
 	dbconn = new DbConn;
 
@@ -50,16 +55,16 @@ void ProcessBlock::Init()
 
 void ProcessBlock::Stop()
 {
-	if (TRACE_PROCESS) BOOST_LOG_TRIVIAL(trace) << "ProcessBlock::Stop";
+	if (TRACE_PROCESS_BLOCK) BOOST_LOG_TRIVIAL(trace) << "ProcessBlock::Stop";
 
 	DbConnProcessQ::StopQueuedWork(PROCESS_Q_TYPE_BLOCK);
 
-	if (TRACE_PROCESS) BOOST_LOG_TRIVIAL(trace) << "ProcessBlock::Stop done";
+	if (TRACE_PROCESS_BLOCK) BOOST_LOG_TRIVIAL(trace) << "ProcessBlock::Stop done";
 }
 
 void ProcessBlock::DeInit()
 {
-	if (TRACE_PROCESS) BOOST_LOG_TRIVIAL(trace) << "ProcessBlock::DeInit";
+	if (TRACE_PROCESS_BLOCK) BOOST_LOG_TRIVIAL(trace) << "ProcessBlock::DeInit";
 
 	if (m_thread)
 	{
@@ -72,7 +77,7 @@ void ProcessBlock::DeInit()
 
 	delete dbconn;
 
-	if (TRACE_PROCESS) BOOST_LOG_TRIVIAL(trace) << "ProcessBlock::DeInit done";
+	if (TRACE_PROCESS_BLOCK) BOOST_LOG_TRIVIAL(trace) << "ProcessBlock::DeInit done";
 }
 
 int ProcessBlock::ExtractTx(const char *wire, const uint32_t txsize, SmartBuf& smartobj)
@@ -113,9 +118,9 @@ int ProcessBlock::CompareBinaryTxs(SmartBuf smartobj1, SmartBuf smartobj2)
 	auto obj1 = (CCObject*)smartobj1.data();
 	auto obj2 = (CCObject*)smartobj2.data();
 
-	if (obj1->ObjType() != obj2->ObjType())
+	if (obj1->WireTag() != obj2->WireTag())
 	{
-		BOOST_LOG_TRIVIAL(info) << "ProcessBlock::CompareBinaryTxs ObjType's differ";
+		BOOST_LOG_TRIVIAL(info) << "ProcessBlock::CompareBinaryTxs WireTag's differ";
 
 		return -1;
 	}
@@ -146,7 +151,7 @@ int ProcessBlock::BlockValidate(DbConn *dbconn, SmartBuf smartobj, TxPay& txbuf)
 
 	CCASSERT(auxp);
 
-	if (TRACE_PROCESS) BOOST_LOG_TRIVIAL(trace) << "ProcessBlock::BlockValidate block bufp " << (uintptr_t)bufp << " level " << wire->level.GetValue() << " witness " << (unsigned)wire->witness << " oid " << buf2hex(&auxp->oid, sizeof(ccoid_t)) << " prior oid " << buf2hex(&wire->prior_oid, sizeof(ccoid_t));
+	if (TRACE_PROCESS_BLOCK) BOOST_LOG_TRIVIAL(trace) << "ProcessBlock::BlockValidate block bufp " << (uintptr_t)bufp << " level " << wire->level.GetValue() << " witness " << (unsigned)wire->witness << " oid " << buf2hex(&auxp->oid, CC_OID_TRACE_SIZE) << " prior oid " << buf2hex(&wire->prior_oid, CC_OID_TRACE_SIZE);
 
 	auto prune_level = g_blockchain.ComputePruneLevel(1, BLOCK_PRUNE_ROUNDS);
 
@@ -171,9 +176,9 @@ int ProcessBlock::BlockValidate(DbConn *dbconn, SmartBuf smartobj, TxPay& txbuf)
 		auto rc = dbconn->ValidObjsGetObj(wire->prior_oid, &priorobj);
 		if (rc)
 		{
-			BOOST_LOG_TRIVIAL(debug) << "ProcessBlock::BlockValidate prior block not yet valid for block oid " << buf2hex(&auxp->oid, sizeof(ccoid_t)) << " prior oid " << buf2hex(&wire->prior_oid, sizeof(ccoid_t));
+			BOOST_LOG_TRIVIAL(debug) << "ProcessBlock::BlockValidate prior block not yet valid for block oid " << buf2hex(&auxp->oid, CC_OID_TRACE_SIZE) << " prior oid " << buf2hex(&wire->prior_oid, CC_OID_TRACE_SIZE);
 
-			return 1;	// hold and retry (block will be requeued by ProcessQUpdateSubsequentBlockStatus)
+			return 2;	// hold and retry (block will be requeued by ProcessQUpdateSubsequentBlockStatus)
 		}
 
 		block->ChainToPriorBlock(priorobj);
@@ -194,24 +199,27 @@ int ProcessBlock::BlockValidate(DbConn *dbconn, SmartBuf smartobj, TxPay& txbuf)
 
 	if (block->CheckBadSigOrder(-1))
 	{
-		BOOST_LOG_TRIVIAL(info) << "ProcessBlock::BlockValidate error witness order rule failed block oid " << buf2hex(&auxp->oid, sizeof(ccoid_t));
+		BOOST_LOG_TRIVIAL(info) << "ProcessBlock::BlockValidate error witness order rule failed";
 
 		return -1;
 	}
 
 	if (block->SignOrVerify(true))
 	{
-		BOOST_LOG_TRIVIAL(info) << "ProcessBlock::BlockValidate error block signature verification failed block oid " << buf2hex(&auxp->oid, sizeof(ccoid_t));
+		BOOST_LOG_TRIVIAL(info) << "ProcessBlock::BlockValidate error block signature verification failed";
 
 		return -1;
 	}
 
-	int64_t future = wire->timestamp.GetValue() - time(NULL);
+	auto prior_blocktime = priorblock->WireData()->timestamp.GetValue();
+
+	auto block_time = wire->timestamp.GetValue();
+	int64_t future = block_time - unixtime();
 	if (TEST_FUTURE_BLOCKS && !IsWitness()) future += 60;
 
 	if (future > g_params.block_future_tolerance)
 	{
-		BOOST_LOG_TRIVIAL(info) << "ProcessBlock::BlockValidate error block timestamp is " << future << " seconds in future";
+		BOOST_LOG_TRIVIAL(info) << "ProcessBlock::BlockValidate error block timestamp " << block_time << " is " << future << " seconds in future";
 
 		// delete queue entry so validation can be retried later
 		auto obj = (CCObject*)smartobj.data();
@@ -219,8 +227,9 @@ int ProcessBlock::BlockValidate(DbConn *dbconn, SmartBuf smartobj, TxPay& txbuf)
 		uint32_t callback_id;
 		dbconn->ProcessQSelectAndDelete(PROCESS_Q_TYPE_BLOCK, *(obj->OidPtr()), block_tx_count, conn_index, callback_id);
 
-		lock_guard<FastSpinLock> lock(g_cout_lock);
-		cerr << "Warning: Block timestamp is " << future << " seconds in future; for proper operation, please check that this computer's clock is accurate." << endl;
+		lock_guard<mutex> lock(g_cerr_lock);
+		check_cerr_newline();
+		cerr << "Warning: Block timestamp " << block_time << " is " << future << " seconds in future; for proper operation, please check that this computer's clock is accurate." << endl;
 
 		return -1;
 	}
@@ -237,58 +246,112 @@ int ProcessBlock::BlockValidate(DbConn *dbconn, SmartBuf smartobj, TxPay& txbuf)
 	auto pend = block->ObjEndPtr();
 	uint32_t txsize = (1 << 30);
 
-	if (TRACE_PROCESS) BOOST_LOG_TRIVIAL(trace) << "ProcessBlock::BlockValidate block level " << wire->level.GetValue() << " bufp " << (uintptr_t)bufp << " objsize " << block->ObjSize() << " pdata " << (uintptr_t)pdata << " pend " << (uintptr_t)pend;
+	if (TRACE_PROCESS_BLOCK) BOOST_LOG_TRIVIAL(trace) << "ProcessBlock::BlockValidate block level " << wire->level.GetValue() << " bufp " << (uintptr_t)bufp << " objsize " << block->ObjSize() << " pdata " << (uintptr_t)pdata << " pend " << (uintptr_t)pend;
 
 	g_processtx.InitBlockScan();
-
-	auxp->total_donations = 0UL;
 
 	auto p = pdata;
 	for (; p < pend; p += txsize)
 	{
 		if (g_shutdown)
-			return -1;
+			return 1;
 
 		txsize = *(uint32_t*)p;
 
-		//if (TRACE_PROCESS) BOOST_LOG_TRIVIAL(trace) << "ProcessBlock::BlockValidate ptxdata " << (uintptr_t)p << " txsize " << txsize << " data " << buf2hex(p, 16);
+		//if (TRACE_PROCESS_BLOCK) BOOST_LOG_TRIVIAL(trace) << "ProcessBlock::BlockValidate ptxdata " << (uintptr_t)p << " txsize " << txsize << " data " << buf2hex(p, 16);
 
 		auto rc = tx_from_wire(txbuf, (char*)p, txsize);
 		if (rc)
 		{
-			BOOST_LOG_TRIVIAL(info) << "ProcessBlock::BlockValidate error parsing transaction in block oid " << buf2hex(&auxp->oid, sizeof(ccoid_t));
+			BOOST_LOG_TRIVIAL(info) << "ProcessBlock::BlockValidate error parsing transaction";
 
 			auto save = txbuf.tag_type;
 			txbuf.tag_type = -1;
 			if (txbuf.tag_type == save)
 			{
-				lock_guard<FastSpinLock> lock(g_cout_lock);
+				lock_guard<mutex> lock(g_cerr_lock);
+				check_cerr_newline();
 				cerr << "WARNING: unrecognized block contents; please check if a newer software version is available" << endl;
 			}
 
 			return -1;
 		}
 
-		if (txbuf.tag_type != CC_TYPE_MINT)
-		{
-			bigint_t donation;
-			tx_amount_decode(txbuf.donation_fp, donation, true, TX_DONATION_BITS, TX_AMOUNT_EXPONENT_BITS);
-
-			auxp->total_donations = auxp->total_donations + donation;
-		}
-
 		if (TEST_CUZZ) usleep(rand() & (1024*1024-1));
 
-		g_blockchain.CheckCreatePseudoSerialnum(txbuf, p, txsize);
+		auto xtx = ProcessTx::ExtractXtx(dbconn, txbuf);
+		if (!xtx && ProcessTx::ExtractXtxFailed(txbuf, true)) return -1;
+
+		if (Xtx::TypeIsXreq(txbuf.tag_type))	// TODO: test this
+		{
+			auto xreq = Xreq::Cast(xtx);
+
+			if (xreq->expire_time > prior_blocktime + XREQ_MAX_EXPIRE_TIME)
+			{
+				BOOST_LOG_TRIVIAL(info) << "ProcessBlock::BlockValidate xreq excess expire_time " << xreq->expire_time << " prior_blocktime " << prior_blocktime << " XREQ_MAX_EXPIRE_TIME " << XREQ_MAX_EXPIRE_TIME;
+
+				return -1;
+			}
+
+			if (xreq->expire_time <= prior_blocktime + xreq->hold_time + XREQ_MIN_POSTHOLD_TIME)
+			{
+				BOOST_LOG_TRIVIAL(info) << "ProcessBlock::BlockValidate expired xreq expire_time " << xreq->expire_time << " prior_blocktime " << prior_blocktime << " hold_time " << xreq->hold_time << " XREQ_MIN_POSTHOLD_TIME " << XREQ_MIN_POSTHOLD_TIME;
+
+				return -1;
+			}
+
+			if (xreq->foreign_address.length())
+			{
+				auto rc = dbconn->XmatchingreqUniqueForeignAddressSelect(prior_blocktime, xreq->quote_asset, xreq->foreign_address);
+				if (rc <= 0)
+				{
+					BOOST_LOG_TRIVIAL(info) << "ProcessBlock::BlockValidate duplicate foreign_address " << xreq->foreign_address;
+
+					return -1;
+				}
+			}
+		}
+
+		if (Xtx::TypeIsXpay(txbuf.tag_type))	// TODO: test this
+		{
+			auto xpay = Xpay::Cast(xtx);
+
+			if (!xpay->match_timestamp)
+			{
+				BOOST_LOG_TRIVIAL(error) << "ProcessBlock::BlockValidate missing xpay.match_timestamp; " << xpay->DebugString();
+
+				return -1;
+			}
+
+			if (!xpay->payment_time)
+			{
+				BOOST_LOG_TRIVIAL(error) << "ProcessBlock::BlockValidate missing xpay.payment_time; " << xpay->DebugString();
+
+				return -1;
+			}
+
+			if (xpay->match_timestamp + xpay->payment_time < prior_blocktime)	// TODO: test this
+			{
+				BOOST_LOG_TRIVIAL(info) << "ProcessBlock::BlockValidate expired xpay match_timestamp " << xpay->match_timestamp << " payment_time " << xpay->payment_time << " prior_blocktime " << prior_blocktime;
+
+				return -1;
+			}
+		}
+
+		BlockChain::CheckCreatePseudoSerialnum(txbuf, xtx, p);
 
 		for (unsigned i = 0; i < txbuf.nin; ++i)
 		{
 			if (TEST_CUZZ) usleep(rand() & (1024*1024-1));
 
 			auto rc = g_blockchain.CheckSerialnum(dbconn, priorobj, TEMP_SERIALS_PROCESS_BLOCKP, SmartBuf(), &txbuf.inputs[i].S_serialnum, TX_SERIALNUM_BYTES);
+
+			if (g_shutdown)
+				return 1;
+
 			if (rc)
 			{
-				BOOST_LOG_TRIVIAL(info) << "ProcessBlock::BlockValidate CheckSerialnum result " << rc << " in block oid " << buf2hex(&auxp->oid, sizeof(ccoid_t));
+				BOOST_LOG_TRIVIAL(info) << "ProcessBlock::BlockValidate CheckSerialnum result " << rc << " in block oid " << buf2hex(&auxp->oid, CC_OID_TRACE_SIZE);
 
 				return 1;	// don't disconnect peer for sending a block that duplicates an existing serialnum
 							// !!! TODO: disconnect if duplicate serialnum was in same block or indelible block with respect to block being checked
@@ -299,7 +362,7 @@ int ProcessBlock::BlockValidate(DbConn *dbconn, SmartBuf smartobj, TxPay& txbuf)
 			auto rc2 = dbconn->TempSerialnumInsert(&txbuf.inputs[i].S_serialnum, TX_SERIALNUM_BYTES, (void*)TEMP_SERIALS_PROCESS_BLOCKP);
 			if (rc2)
 			{
-				BOOST_LOG_TRIVIAL(error) << "ProcessBlock::BlockValidate TempSerialnumInsert failure " << rc << " in block oid " << buf2hex(&auxp->oid, sizeof(ccoid_t));
+				BOOST_LOG_TRIVIAL(error) << "ProcessBlock::BlockValidate TempSerialnumInsert failure " << rc;
 
 				return -1;
 			}
@@ -310,7 +373,7 @@ int ProcessBlock::BlockValidate(DbConn *dbconn, SmartBuf smartobj, TxPay& txbuf)
 		if (rc) return -1;
 		CCASSERT(smartobj);
 
-		g_processtx.TxEnqueueValidate(dbconn, true, false, -1, smartobj, 0, 0);
+		g_processtx.TxEnqueueValidate(dbconn, true, false, PROCESS_Q_PRIORITY_BLOCK_TX, smartobj, 0, 0);
 	}
 
 	if (p != pend)
@@ -328,7 +391,7 @@ int ProcessBlock::BlockValidate(DbConn *dbconn, SmartBuf smartobj, TxPay& txbuf)
 	for (p = pdata; p < pend; p += txsize)
 	{
 		if (g_shutdown)
-			return -1;
+			return 1;
 
 		txsize = *(uint32_t*)p;
 
@@ -344,21 +407,34 @@ int ProcessBlock::BlockValidate(DbConn *dbconn, SmartBuf smartobj, TxPay& txbuf)
 		rc = dbconn->ValidObjsGetObj(*obj->OidPtr(), &validobj);
 		if (!rc)
 		{
-			if (TRACE_PROCESS) BOOST_LOG_TRIVIAL(debug) << "ProcessBlock::BlockValidate tx found in valid db oid " << buf2hex(obj->OidPtr(), sizeof(ccoid_t));
+			if (TRACE_PROCESS_BLOCK) BOOST_LOG_TRIVIAL(debug) << "ProcessBlock::BlockValidate tx found in valid db oid " << buf2hex(obj->OidPtr(), CC_OID_TRACE_SIZE);
 
 			auto rc = ProcessBlock::CompareBinaryTxs(smartobj, validobj);
 			if (rc) return -1;
 		}
 		else
 		{
-			if (TRACE_PROCESS) BOOST_LOG_TRIVIAL(debug) << "ProcessBlock::BlockValidate tx not found in valid db oid " << buf2hex(obj->OidPtr(), sizeof(ccoid_t));
+			if (TRACE_PROCESS_BLOCK) BOOST_LOG_TRIVIAL(debug) << "ProcessBlock::BlockValidate tx not found in valid db oid " << buf2hex(obj->OidPtr(), CC_OID_TRACE_SIZE);
 
-			rc = ProcessTx::TxValidate(dbconn, txbuf, smartobj);
-			if (rc)
+			for (unsigned retry = 0; ; ++retry)
 			{
-				BOOST_LOG_TRIVIAL(info) << "ProcessBlock::BlockValidate tx invalid";
+				auto rc = ProcessTx::TxValidate(dbconn, txbuf, smartobj, prior_blocktime, true);	// use prior_blocktime, so that tx's in this block expire after the block is processed
+				if (!rc)
+					break;
 
-				return -1;
+				if (txbuf.tag_type != CC_TYPE_XCX_PAYMENT || retry > (IsWitness() ? XCX_PAY_WITNESS_RETRIES : XCX_PAY_RETRIES))
+				{
+					BOOST_LOG_TRIVIAL(info) << "ProcessBlock::BlockValidate tx type " << txbuf.tag_type << " invalid";
+
+					return -1;
+				}
+
+				if (g_shutdown)
+					return 1;
+
+				sleep(1);
+
+				BOOST_LOG_TRIVIAL(info) << "ProcessBlock::BlockValidate retrying validation of tx type " << txbuf.tag_type;
 			}
 		}
 	}
@@ -372,7 +448,7 @@ void ProcessBlock::ValidObjsBlockInsert(DbConn *dbconn, SmartBuf smartobj, TxPay
 	auto wire = block->WireData();
 	auto auxp = block->AuxPtr();
 
-	if (TRACE_PROCESS) BOOST_LOG_TRIVIAL(trace) << "ProcessBlock::ValidObjsBlockInsert enqueue " << enqueue << " check indelible " << check_indelible << " block level " << wire->level.GetValue() << " witness " << (unsigned)wire->witness << " size " << block->ObjSize() << " oid " << buf2hex(&auxp->oid, sizeof(ccoid_t)) << " prior oid " << buf2hex(&wire->prior_oid, sizeof(ccoid_t));
+	if (TRACE_PROCESS_BLOCK) BOOST_LOG_TRIVIAL(trace) << "ProcessBlock::ValidObjsBlockInsert enqueue " << enqueue << " check indelible " << check_indelible << " block level " << wire->level.GetValue() << " witness " << (unsigned)wire->witness << " size " << block->ObjSize() << " oid " << buf2hex(&auxp->oid, CC_OID_TRACE_SIZE) << " prior oid " << buf2hex(&wire->prior_oid, CC_OID_TRACE_SIZE);
 
 	if (TEST_CUZZ) usleep(rand() & (1024*1024-1));
 
@@ -395,16 +471,13 @@ void ProcessBlock::ValidObjsBlockInsert(DbConn *dbconn, SmartBuf smartobj, TxPay
 
 	if (enqueue)
 	{
-		dbconn->ProcessQEnqueueValidate(PROCESS_Q_TYPE_BLOCK, smartobj, &wire->prior_oid, wire->level.GetValue(), PROCESS_Q_STATUS_VALID, 0, false, 0, 0);
-	}
-	else if (IsWitness())
-	{
-		dbconn->ProcessQUpdateValidObj(PROCESS_Q_TYPE_BLOCK, auxp->oid, PROCESS_Q_STATUS_VALID, 0);
+		dbconn->ProcessQEnqueueValidate(PROCESS_Q_TYPE_BLOCK, smartobj, &wire->prior_oid, wire->level.GetValue(), PROCESS_Q_STATUS_VALID, PROCESS_Q_PRIORITY_BLOCK_HI, false, 0, 0);
 	}
 	else
 	{
 		// leave the block in the ProcessQ to be pruned later by level
 		// this helps prevents doubly-downloaded blocks from being validated more than once
+		dbconn->ProcessQUpdateObj(PROCESS_Q_TYPE_BLOCK, auxp->oid, PROCESS_Q_STATUS_VALID, 0);
 	}
 
 	if (TEST_CUZZ) usleep(rand() & (1024*1024-1));
@@ -441,23 +514,20 @@ void ProcessBlock::ValidObjsBlockInsert(DbConn *dbconn, SmartBuf smartobj, TxPay
 
 	m_last_block_ticks = ccticks();
 
-	g_witness.NotifyNewWork(true);
+	g_witness.NotifyNewWork(BLOCKSEQ);
 }
 
 void ProcessBlock::ThreadProc()
 {
 	static TxPay txbuf;	// not thread safe
 
-	if (TRACE_PROCESS) BOOST_LOG_TRIVIAL(trace) << "ProcessBlock::ThreadProc start dbconn " << (uintptr_t)dbconn;
+	if (TRACE_PROCESS_BLOCK) BOOST_LOG_TRIVIAL(trace) << "ProcessBlock::ThreadProc start dbconn " << (uintptr_t)dbconn;
 
 	while (true)
 	{
 		if (TEST_CUZZ) usleep(rand() & (1024*1024-1));
 
 		dbconn->WaitForQueuedWork(PROCESS_Q_TYPE_BLOCK);
-
-		if (g_shutdown)
-			break;
 
 		if (g_blockchain.HasFatalError())
 		{
@@ -466,9 +536,13 @@ void ProcessBlock::ThreadProc()
 			break;
 		}
 
+		if (g_shutdown)
+			break;
+
 		SmartBuf smartobj;
 		unsigned conn_index;
 		uint32_t callback_id;
+		uint64_t level = 0;
 		int result = -1;
 
 		while (true)	// so we can use break on error
@@ -484,42 +558,67 @@ void ProcessBlock::ThreadProc()
 
 			if (TEST_CUZZ) usleep(rand() & (1024*1024-1));
 
-			result = BlockValidate(dbconn, smartobj, txbuf);
-			if (result)
-				break;
-
 			auto bufp = smartobj.BasePtr();
 			auto block = (Block*)smartobj.data();
 			auto wire = block->WireData();
 			auto auxp = block->AuxPtr();
 
-			if (dbconn->TempSerialnumUpdate((void*)TEMP_SERIALS_PROCESS_BLOCKP, bufp, wire->level.GetValue()))
-			{
-				// we can't allow this error because we could end up with a valid block without its serialnums indexed, which could allow a double-spend
+			level = wire->level.GetValue();
 
-				BOOST_LOG_TRIVIAL(error) << "ProcessBlock TempSerialnumUpdate failure for block oid " << buf2hex(&auxp->oid, sizeof(ccoid_t));
+			result = BlockValidate(dbconn, smartobj, txbuf);
+			if (result)
+			{
+				if (result < 0)
+				{
+					BOOST_LOG_TRIVIAL(info) << "ProcessBlock::BlockValidate failed block level " << level << " oid " << buf2hex(&auxp->oid, CC_OID_TRACE_SIZE);
+
+					{
+						lock_guard<mutex> lock(g_cerr_lock);
+						check_cerr_newline();
+						cerr << "Block validate failed block level " << level << " oid " << buf2hex(&auxp->oid, CC_OID_TRACE_SIZE) << endl;
+					}
+
+					g_blockchain.DebugStop("Block validate failed");
+
+					//start_shutdown(); // for debugging
+
+					dbconn->ProcessQUpdateObj(PROCESS_Q_TYPE_BLOCK, auxp->oid, PROCESS_Q_STATUS_INVALID, 0);
+				}
 
 				break;
 			}
 
-			BOOST_LOG_TRIVIAL(info) << "ProcessBlock received valid block level " << wire->level.GetValue() << " witness " << (unsigned)wire->witness << " skip " << auxp->skip << " size " << (block->ObjSize() < 1000 ? " " : "") << block->ObjSize() << " oid " << buf2hex(&auxp->oid, sizeof(ccoid_t)) << " prior " << buf2hex(&wire->prior_oid, sizeof(ccoid_t));
+			if (dbconn->TempSerialnumUpdate((void*)TEMP_SERIALS_PROCESS_BLOCKP, bufp, level))
+			{
+				// we can't allow a block with this error because we could end up with a valid block without its serialnums indexed, which could allow a double-spend
 
-			ValidObjsBlockInsert(dbconn, smartobj, txbuf);
+				BOOST_LOG_TRIVIAL(error) << "ProcessBlock TempSerialnumUpdate failure for block oid " << buf2hex(&auxp->oid, CC_OID_TRACE_SIZE);
+
+				result = 1;
+
+				break;
+			}
+
+			CCASSERTZ(result);
+
+			BOOST_LOG_TRIVIAL(info) << "ProcessBlock received valid block level " << level << " timestamp " << wire->timestamp.GetValue() << " witness " << (unsigned)wire->witness << " skip " << auxp->skip << " size " << (block->ObjSize() < 1000 ? " " : "") << block->ObjSize() << " oid " << buf2hex(&auxp->oid, CC_OID_TRACE_SIZE) << " prior " << buf2hex(&wire->prior_oid, CC_OID_TRACE_SIZE);
 
 			block->ConsoleAnnounce(" received", wire, auxp);
+
+			ValidObjsBlockInsert(dbconn, smartobj, txbuf);
 
 			break;
 		}
 
-		if (conn_index && result < 0 && !g_shutdown)
+		if (conn_index && !g_shutdown)
 		{
-			if (TRACE_PROCESS) BOOST_LOG_TRIVIAL(debug) << "ProcessBlock calling HandleValidateDone Conn " << conn_index << " callback_id " << callback_id << " result " << result;
+			if (TRACE_PROCESS_BLOCK) BOOST_LOG_TRIVIAL(debug) << "ProcessBlock calling HandleValidateDone level " << level << " Conn " << conn_index << " callback_id " << callback_id << " result " << result;
 
 			auto conn = g_connregistry.GetConn(conn_index);
 
-			conn->HandleValidateDone(callback_id, PROCESS_RESULT_STOP_THRESHOLD);
+			conn->HandleValidateDone(level, callback_id, result);
 		}
 	}
 
-	if (TRACE_PROCESS) BOOST_LOG_TRIVIAL(trace) << "ProcessBlock::ThreadProc end dbconn " << (uintptr_t)dbconn;
+	if (TRACE_PROCESS_BLOCK) BOOST_LOG_TRIVIAL(trace) << "ProcessBlock::ThreadProc end dbconn " << (uintptr_t)dbconn;
 }

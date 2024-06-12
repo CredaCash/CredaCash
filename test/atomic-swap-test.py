@@ -1,9 +1,11 @@
+#!/usr/bin/env python2
+
 '''
 CredaCash(TM) Atomic Swap Test
 
 Part of the CredaCash (TM) cryptocurrency and blockchain
 
-Copyright (C) 2015-2020 Creda Software, Inc.
+Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
 
 
 Protocol:
@@ -148,7 +150,7 @@ class Bill:
 				self.amount = Amounts.Decode(toint(entry['amount']), False)
 				self.commitnum = commitnum
 				self.params += ', "commitment-iv" : "' + entry['commitment-iv'] + '"'
-				self.params += ', "pool" : "' + hex(toint(entry['pool'])) + '"'
+				self.params += ', "domain" : "' + hex(toint(entry['domain'])) + '"'
 				self.params += ', "asset" : "' + hex(toint(entry['asset'])) + '"'
 				self.params += ', "amount" : "' + hex(toint(entry['amount'])) + '"'
 				self.serialnum = ComputeSerialnum('monitor-secret', self.monitor_secret, self.commitment, commitnum)

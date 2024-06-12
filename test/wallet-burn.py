@@ -1,17 +1,17 @@
+#!/usr/bin/env python2
+
 '''
 CredaCash(TM) Wallet Test Script
 
 Part of the CredaCash (TM) cryptocurrency and blockchain
 
-Copyright (C) 2015-2020 Creda Software, Inc.
+Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
 
 This script runs "burn-in" tests against the CredaCash wallet
 
 Note: when doing automated testing, it is helpful to:
-	set the donation params to zero, so no funds are lost and balances can easily be checked
-		or alternately, set TEST_FAIL_ALL_TXS to 1 so balance should not change (after all failed tx's are reverted)
 	for debugging, compile with TEST_LOG_BALANCE = 1
-	for more speed, compile with TEST_SKIP_ZKPROOFS = 1 and *_work_difficulty = 1 << 63
+	for more speed, compile with TEST_SKIP_ZKPROOFS = 1 and *_work_difficulty = 0
 	for more speed, store the databases on a ram disk
 	when RTEST_TX_ERRORS is enabled, the simulated error in CreateTxMint can be disabled so the wallets get their full balances
 	set tx-polling-threads = 20
@@ -21,11 +21,17 @@ Note: when doing automated testing, it is helpful to:
 	set trace = 4 for both the wallet and tx server
 	set trace-polling = 1
 
+When testing, check that no funds are created or lost (total amount minted - total donations = total wallet balances)
+	Note, total donations can be found with:
+		tail -n 1000 ccnode.out | grep donation | tail
+
 Testing scenarios:
 (A) One wallet with one destination, wallet data file copied to make a second wallet.  Both wallets sending payments to the
 single destinations, with poll_thread and tnum sleep enabled in this script.
 (B) Two wallets, each with one destination, both wallets sending payments to both destinations, with poll_thread enabled in
 this script. Note: this script must be started close to simultaneously on both wallets to get past the destination reuse check.
+Also, to recover the full wallet balances, it may be necessary to use the command cc.billets_release_allocated and then
+poll both destinations with cc.destination_poll.
 (C) Two wallets, each with two destinations, both wallets sending payments of random amounts to themselves and the other wallet,
 without duplicating destinations.  Do this with donations enabled and disabled, with outvalmin set to 0 and 23.
 - Above tests with and without cc.billets_release_allocated and RTEST_ALLOW_DOUBLE_SPENDS enabled.
@@ -48,11 +54,22 @@ import threading
 import logging
 import pprint
 
+if not sys.version.startswith('2.7.') or not ('GCC' in sys.version or '64 bit' in sys.version or 'AMD64' in sys.version):
+	print 'ERROR: This script requires Python 2.7.x (64 bit version).'
+	exit()
+
 TEST_THREAD_SLEEP = False
-TEST_RELEASE_ALLOCATED = False
-TEST_ABANDON_TXS = True
-TEST_CANCEL_TXS = True
 TEST_POLL_DESTINATION = False
+
+# Using the below test options may require manual polling to recover the full wallet balances.
+# The manual polling commands are:
+#		cc.billets_release_allocated
+#		cc.billets_poll_unspent
+#		cc.destination_poll <dest1>
+#		cc.destination_poll <dest2>
+TEST_RELEASE_ALLOCATED = False
+TEST_ABANDON_TXS = 0 #True
+TEST_CANCEL_TXS = 0 #True
 
 # CRITICAL, ERROR, WARNING, INFO, DEBUG
 logging.basicConfig(level=logging.WARNING, format='[%(levelname)s] (%(threadName)-10s) %(message)s')
@@ -62,25 +79,38 @@ rcp_pass = 'pwd'
 
 min_exponent = -30
 
-def do_rpc(s, method, params):
+def do_rpc(s, method, params=()):
 	req = '{"method":"' + method + '","params":['
 	for i in range(len(params)):
 		if i: req += ','
 		req += params[i]
 	req += ']}'
 	logging.info('performing rpc request %s' % req)
-	r = s.post('http://127.0.0.1:%d' % rpc_port, auth=(rpc_user, rcp_pass), data=req)
+	try:
+		r = s.post('http://127.0.0.1:%d' % rpc_port, auth=(rpc_user, rcp_pass), data=req)
+	except:
+		logging.critical('rpc post failed req %s' % req)
+		return None
 	#logging.debug('rpc done')
 	if r.status_code != 200:
 		logging.critical('rpc status code %d' % r.status_code)
-	logging.debug('rpc response %s' % r.text)
+	logging.debug('rpc response %s' % r.text.encode('ascii', 'backslashreplace'))
 	if method.startswith('cc.dump'):
 		return None
 	try:
 		j = json.loads(r.text)
-		return j['result']
+		rv = j['result']
+		if rv is None:
+			e = j['error']['message']
+			if e != 'Insufficient funds':
+				print 'rpc port', rpc_port, 'result "%s"' % e, 'req', req
+		return rv
 	except:
-		print 'json load failed:', r.text
+		#pprint.pprint(r)
+		if hasattr(r, 'text'):
+			print 'rpc port', rpc_port, 'json load failed "%s"' % r.text.encode('ascii', 'backslashreplace'), 'req', req
+		else:
+			print 'rpc port', rpc_port, 'no text returned for req', req
 		return None
 
 def poll_thread(tnum):
@@ -100,10 +130,8 @@ def poll_thread(tnum):
 def wallet_thread(tnum):
 	logging.debug('wallet_thread start tnum %d tgroup %d port %s' % (tnum, tgroup, rpc_port))
 	s = requests.Session()
-	n = 0
-	while n < nmint:
-		do_rpc(s, 'cc.mint', ())
-		n += 1
+	for iter in range(nmint):
+		do_rpc(s, 'cc.mint')
 	if prob_tx < 0:
 		print 'thread', tnum, 'done'
 		return
@@ -127,10 +155,13 @@ def wallet_thread(tnum):
 		method = random.randrange(7)
 		if not random.randrange(50 * nthreads) and tgroup and TEST_RELEASE_ALLOCATED:
 			print 'time', int(time.time()),'thread', tnum, 'group', tgroup, 'cc.billets_release_allocated'
-			do_rpc(s, 'cc.billets_release_allocated', ())	# will cause "BilletSpendInsert constraint violation" warnings
+			do_rpc(s, 'cc.billets_release_allocated')	# will cause "BilletSpendInsert constraint violation" warnings
 		elif random.random() < prob_tx:
 			destination = destinations[random.randrange(len(destinations))]
-			amount = random.randrange(15*1000) + 1
+			if random.randrange(8):
+				amount = random.randrange(15*1000) + 1
+			else:
+				amount = random.randrange(7500*1000) + 1
 			#amount = random.randrange(10) + 1	# for testing
 			#amount = random.randrange(100)		# for testing
 			amount = str(amount) + '.'
@@ -157,19 +188,19 @@ def wallet_thread(tnum):
 				if txid and random.random() < 0.5 and TEST_CANCEL_TXS:
 					do_rpc(s, 'cc.transaction_cancel', ('"' + txid + '"', ))
 		elif method == 0:
-			do_rpc(s, 'getbalance', ())
+			do_rpc(s, 'getbalance')
 		elif method == 1:
-			do_rpc(s, 'getblockcount', ())
+			do_rpc(s, 'getblockcount')
 		elif method == 2:
-			do_rpc(s, 'listtransactions', ())
+			do_rpc(s, 'listtransactions')
 		elif method == 3:
-			do_rpc(s, 'cc.billets_poll_unspent', ())
+			do_rpc(s, 'cc.billets_poll_unspent')
 		elif method == 4:
 			do_rpc(s, 'cc.dump_transactions', ('0', '100', 'true'))
 		elif method == 5:
 			do_rpc(s, 'cc.dump_billets', ('0', '100', 'true'))
 		elif method == 6:
-			do_rpc(s, 'cc.dump_tx_build', ())
+			do_rpc(s, 'cc.dump_tx_build')
 		else:
 			raise Exception
 	logging.debug('thread end')

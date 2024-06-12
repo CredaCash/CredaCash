@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * ccnode.h
 */
@@ -9,9 +9,9 @@
 #pragma once
 
 #define CCAPPNAME	"CredaCash node"
-#define CCVERSION	 "1.01" //@@!
+#define CCVERSION	"2.0" //@@!
 #define CCEXENAME	"ccnode"
-#define CCAPPDIR	"CCNode-#"
+#define CCAPPDIR	"CCNode2-#" //@@!
 
 #define TRANSACT_PORT		0
 #define RELAY_PORT			1
@@ -51,7 +51,11 @@ DECLARE_EXTERN struct global_params_struct
 	int		base_port;
 	int		torproxy_port;
 
-	wstring directory_servers_file;
+	wstring rendezvous_servers_file;
+	long long rendezvous_server_difficulty;
+	long long rendezvous_magic_nonce;
+
+	wstring history_data_file;
 
 	wstring	genesis_data_file;
 	int		genesis_nwitnesses;
@@ -59,18 +63,22 @@ DECLARE_EXTERN struct global_params_struct
 
 	uint64_t server_version;
 	uint64_t protocol_version;
-	uint64_t effective_level;
+	uint64_t params_last_modified_level;
 
 	uint64_t blockchain;
-	uint32_t default_pool;
+	uint32_t default_domain;
 	int32_t  max_param_age;
 	uint64_t tx_work_difficulty;
+	uint64_t xcx_naked_buy_work_difficulty;
+	uint64_t xcx_pay_work_difficulty;
 
 	int		max_obj_mem;
 	int		tx_validation_threads;
 	int		block_future_tolerance;
 	int		db_checkpoint_sec;
+	bool	index_txouts;
 	bool	index_mint_donations;
+	bool	test1;
 
 	int		trace_level;
 	bool	trace_tx_server;
@@ -80,17 +88,24 @@ DECLARE_EXTERN struct global_params_struct
 	bool	trace_host_dir;
 	bool	trace_witness;
 	bool	trace_tx_validation;
+	bool	trace_xreq_validation;
 	bool	trace_block_validation;
 	bool	trace_serialnum_check;
 	bool	trace_commitments;
+	bool	trace_exchange;
+	bool	trace_exchange_mining;
 	bool	trace_delibletx_check;
 	bool	trace_blockchain;
-	bool	trace_persistent_db;
+	bool	trace_foreign_rpc;
+	bool	trace_foreign_conn;
+	bool	trace_persistent_db_reads;
+	bool	trace_persistent_db_writes;
 	bool	trace_wal_db;
 	bool	trace_pending_serialnum_db;
 	bool	trace_relay_db;
 	bool	trace_validation_q_db;
 	bool	trace_validobj_db;
+	bool	trace_exchange_db;
 	bool	trace_expire;
 
 } g_params;
@@ -103,6 +118,7 @@ DECLARE_EXTERN struct global_params_struct
 #include "relay.hpp"
 #include "blockserve.hpp"
 #include "blocksync.hpp"
+#include "foreign-rpc.hpp"
 #include "hostdir.hpp"
 
 #define TOR_TRANSACT_SUBDIR		TOR_HOSTNAMES_SUBDIR PATH_DELIMITER "transact"
@@ -118,6 +134,7 @@ class RelayService g_relay_service("Relay", g_params.app_data_dir, TOR_RELAY_SUB
 class RelayService g_privrelay_service("Private-relay", g_params.app_data_dir, TOR_WITNESS_SUBDIR, true);
 class BlockService g_blockserve_service("Blockserve", g_params.app_data_dir, TOR_BLOCKSERVE_SUBDIR);
 class BlockSyncClient g_blocksync_client("Blocksync", g_params.app_data_dir, "");
+class ForeignRpcClient g_foreignrpc_client("ForeignRpc", g_params.app_data_dir, "");
 class ControlService g_control_service("Node-control", g_params.app_data_dir, TOR_NODE_CONTROL_SUBDIR);
 class TorControlService g_tor_control_service("Tor-control", g_params.app_data_dir, TOR_TOR_CONTROL_SUBDIR);
 class HostDir g_hostdir;
@@ -130,6 +147,7 @@ DECLARE_EXTERN class RelayService g_relay_service;
 DECLARE_EXTERN class RelayService g_privrelay_service;
 DECLARE_EXTERN class BlockService g_blockserve_service;
 DECLARE_EXTERN class BlockSyncClient g_blocksync_client;
+DECLARE_EXTERN class ForeignRpcClient g_foreignrpc_client;
 DECLARE_EXTERN class ControlService g_control_service;
 DECLARE_EXTERN class TorControlService g_tor_control_service;
 DECLARE_EXTERN class HostDir g_hostdir;

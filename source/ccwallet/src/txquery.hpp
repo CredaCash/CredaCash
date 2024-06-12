@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * txquery.hpp
 */
@@ -10,31 +10,41 @@
 
 #include "txconn.hpp"
 
+#include <CCobjdefs.h>
 #include <CCbigint.hpp>
 #include <CCparams.h>
+#include <BlockChainStatus.hpp>
+#include <xmatch.hpp>
 
 #include <jsoncpp/json/json.h>
 
-#define WALLET_MAX_QUERY_ADDRESS_RESULTS	8
-
-class TxParams;
-struct TxPay;
+#define WALLET_QUERY_ADDRESS_MAX_RESULTS		8
+#define WALLET_QUERY_XREQS_MAX_RESULTS			200
+#define WALLET_QUERY_XMATCHREQ_MAX_MATCHNUMS	6
+#define WALLET_QUERY_XMATCHREQ_MAX_RESULTS		6
 
 #define SERIALNUM_STATUS_UNSPENT	0
 #define SERIALNUM_STATUS_PENDING	1
 #define SERIALNUM_STATUS_SPENT		2
+
+#define CCXFLOAT_STRING_PREFIX		"ccxfloat:"
+
+class TxParams;
+struct TxPay;
 
 enum PowType
 {
 	PowType_None = 0,
 	PowType_Query,
 	PowType_Tx,
+	PowType_Xcx_Pay
 };
 
 struct QueryAddressResult
 {
 	uint64_t blockchain;
-	uint32_t pool;
+	uint32_t domain;
+	uint16_t is_special_domain;
 	uint16_t asset_bits;
 	uint16_t amount_bits;
 	uint16_t exponent_bits;
@@ -44,13 +54,23 @@ struct QueryAddressResult
 	uint64_t commitnum;
 	snarkfront::bigint_t commit_iv;
 	snarkfront::bigint_t commitment;
+
+	void Clear()
+	{
+		memset((void*)this, 0, sizeof(*this));
+	}
 };
 
 struct QueryAddressResults
 {
 	unsigned nresults;
 	bool more_results;
-	QueryAddressResult results[WALLET_MAX_QUERY_ADDRESS_RESULTS];
+	QueryAddressResult results[WALLET_QUERY_ADDRESS_MAX_RESULTS];
+
+	void Clear()
+	{
+		memset((void*)this, 0, sizeof(*this));
+	}
 };
 
 struct QueryInputResults
@@ -59,16 +79,97 @@ struct QueryInputResults
 	uint64_t param_time;
 	snarkfront::bigint_t merkle_root;
 	snarkfront::bigint_t merkle_paths[TX_MAXINPATH][TX_MERKLE_DEPTH];
+
+	void Clear()
+	{
+		memset((void*)this, 0, sizeof(*this));
+	}
+};
+
+class QueryXreqsResults
+{
+public:
+	uint64_t server_timestamp;
+	uint64_t blockchain;
+	BlockChainStatus blockchain_status;
+	unsigned nresults;
+	bool more_results;
+	Json::Value json;
+
+	void Clear()
+	{
+		memset((void*)this, 0, (uintptr_t)&json - (uintptr_t)this);
+
+		json.clear();
+	}
+};
+
+class QueryXmatchreqResults
+{
+public:
+	uint64_t xreqnum;
+	uint64_t server_timestamp;
+	BlockChainStatus blockchain_status;
+	unsigned disposition;
+	snarkfront::bigint_t open_amount;
+	unsigned nresults;
+	bool more_results;
+	Xmatch xmatches[WALLET_QUERY_XMATCHREQ_MAX_RESULTS];
+
+	void Clear()
+	{
+		memset((void*)this, 0, (uintptr_t)&xmatches - (uintptr_t)this);
+
+		for (unsigned i = 0; i < WALLET_QUERY_XMATCHREQ_MAX_RESULTS; ++i)
+			xmatches[i].Clear();
+	}
+};
+
+class QueryXmatchResults
+{
+public:
+	uint64_t server_timestamp;
+	BlockChainStatus blockchain_status;
+	Xmatch xmatch;
+
+	void Clear()
+	{
+		memset((void*)this, 0, (uintptr_t)&xmatch - (uintptr_t)this);
+
+		xmatch.Clear();
+	}
+};
+
+class QueryXreqsMiningInfoResults
+{
+public:
+	uint64_t blockchain;
+	uint64_t server_timestamp;
+	Json::Value json;
+
+	void Clear()
+	{
+		memset((void*)this, 0, (uintptr_t)&json - (uintptr_t)this);
+
+		json.clear();
+	}
 };
 
 class TxQuery : public TxConnection
 {
 	int TryQuery(PowType powtype, bool is_retry, vector<char> *pquery = NULL);
-	int SubmitQuery(PowType powtype, bool is_retry, Json::Value *root = NULL, vector<char> *pquery = NULL);
+	int SubmitQuery(PowType powtype, bool is_retry, Json::Value *root = NULL, vector<char> *pquery = NULL, bool debug = false);
 
 	int ParseParams(Json::Value& root, TxParams& txparams);
+	int ParseBlockChainStatus(Json::Value& root, BlockChainStatus& blockchain_status);
 	int ParseInputParams(Json::Value& root, TxParams& txparams);
-	int ParseQueryAddressQueryResults(const snarkfront::bigint_t& address, const uint64_t commitstart, Json::Value root, QueryAddressResults &results);
+	int ParseQueryAddressResults(const snarkfront::bigint_t& address, const uint64_t commitstart, Json::Value root, QueryAddressResults &results);
+	int ParseQueryXreqsResults(const unsigned xcx_type, const snarkfront::bigint_t& min_amount, const snarkfront::bigint_t& max_amount, const double& min_rate, const double& base_costs, const double& quote_costs, const uint64_t base_asset, const uint64_t quote_asset, const string& foreign_asset, unsigned maxret, unsigned offset, QueryXreqsResults &results);
+	int ParseQueryXmatchreq(Json::Value root, Xmatch &match, Xmatchreq &matchreq);
+	int ParseQueryXmatch(Json::Value root, Xmatch &match);
+	int ParseQueryXmatchreqResults(uint64_t blockchain, const ccoid_t& objid, uint64_t reqnum, uint64_t matchnum_start, Json::Value root, QueryXmatchreqResults &results);
+	int ParseQueryXmatchResults(uint64_t blockchain, uint64_t matchnum, Json::Value root, QueryXmatchResults &results);
+	int ParseQueryXminingInfoResults(QueryXreqsMiningInfoResults &results);
 
 	unsigned m_host_index;
 
@@ -89,14 +190,18 @@ public:
 		return m_possibly_sent;
 	}
 
-	static int ReadHostsFile(const wstring &path);
+	static int ReadHostsFile(const wstring& path);
 	void ClearHost();
 	const string& GetHost();
 
-	int SubmitTx(const TxPay& ts, uint64_t& next_commitnum);
+	int SubmitTx(TxPay& ts, uint64_t& next_commitnum);
 
 	int QueryParams(TxParams& txparams, vector<char> &querybuf);
 	int QueryAddress(uint64_t blockchain, const snarkfront::bigint_t& address, const uint64_t commitstart, QueryAddressResults &results);
 	int QuerySerialnums(uint64_t blockchain, const snarkfront::bigint_t *serialnums, unsigned nserials, uint16_t *statuses, snarkfront::bigint_t *hashkeys, uint64_t *tx_commitnums);
 	int QueryInputs(const uint64_t *commitnum, const unsigned ncommits, TxParams& txparams, QueryInputResults &inputs);
+	int QueryXreqs(const unsigned xcx_type, const snarkfront::bigint_t& min_amount, const snarkfront::bigint_t& max_amount, const double& min_rate, const double& base_costs, const double& quote_costs, const uint64_t base_asset, const uint64_t quote_asset, const string& foreign_asset, unsigned maxret, unsigned offset, unsigned flags, QueryXreqsResults &results);
+	int QueryXmatchreq(uint64_t blockchain, const ccoid_t& objid, uint64_t reqnum, uint64_t matchnum_start, QueryXmatchreqResults &results);
+	int QueryXmatch(uint64_t blockchain, uint64_t matchnum, QueryXmatchResults &results);
+	int QueryXminingInfo(QueryXreqsMiningInfoResults &results);
 };

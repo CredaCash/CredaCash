@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * CCbigint.hpp
 */
@@ -32,5 +32,7 @@ void bigint_shift_up(snarkfront::bigint_t& bigval, unsigned nbits);
 void bigint_shift_down(snarkfront::bigint_t& bigval, unsigned nbits);
 void bigint_mask(snarkfront::bigint_t& bigval, unsigned nbits);
 unsigned bigint_bytes_in_use(snarkfront::bigint_t& bigval);
+unsigned bigint_end_bytes_in_use(snarkfront::bigint_t& bigval);
+void bigint_byteswap(const snarkfront::bigint_t& bigval, snarkfront::bigint_t& swapped);
 
 void bigint_test();

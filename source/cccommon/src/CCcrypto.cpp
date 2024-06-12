@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * CCcrypto.cpp
  *
@@ -12,7 +12,7 @@
 #include "CCcrypto.hpp"
 #include "SpinLock.hpp"
 
-#include <blake2/blake2.h>
+#include <siphash/siphash.h>
 
 #if defined(__cplusplus)
 extern "C"
@@ -25,7 +25,7 @@ void CCRandom(void *data, unsigned nbytes)
 {
 #ifdef _WIN32
 	static HCRYPTPROV hProvider = 0;
-	static FastSpinLock rnd_lock;
+	static FastSpinLock rnd_lock(__FILE__, __LINE__);
 
 	{
 		lock_guard<FastSpinLock> lock(rnd_lock);
@@ -56,7 +56,7 @@ extern "C"
 #endif
 void CCPseudoRandom(void *data, unsigned nbytes)
 {
-	static thread_local mt19937_64 *prnd = NULL;
+	thread_local static mt19937_64 *prnd = NULL;
 
 	if (!prnd)
 	{
@@ -106,6 +106,53 @@ void PseudoRandomLetters(void *data, unsigned nbytes)
 	}
 }
 
+#if defined(__cplusplus)
+extern "C"
+#endif
+int ComputePOW(const void *data, unsigned nbytes, uint64_t difficulty, uint64_t deadline, uint64_t& nonce)
+{
+	if (!difficulty)
+		return 0;
+
+	//cerr << "ComputePOW size " << nbytes << " data " << buf2hex(data, nbytes) << endl;
+
+	for (nonce = 0; nonce < (uint64_t)(-1) && !g_shutdown; ++nonce)
+	{
+		if (deadline && !(nonce & (((uint64_t)1 << 26) - 1)))
+		{
+			uint64_t t1 = unixtime();
+			if (t1 > deadline)
+				return 1;
+			//cerr << "ComputePOW time " << t1 << endl;
+		}
+
+		auto hash = siphash(data, nbytes, &nonce, sizeof(nonce));
+
+		if (hash < difficulty)
+			return 0;
+	}
+
+	return -1;
+}
+
+#if defined(__cplusplus)
+extern "C"
+#endif
+int CheckPOW(const void *data, unsigned nbytes, uint64_t difficulty, uint64_t nonce)
+{
+	if (!difficulty)
+		return 0;
+
+	//cerr << "CheckPOW   size " << nbytes << " data " << buf2hex(data, nbytes) << endl;
+
+	auto hash = siphash(data, nbytes, &nonce, sizeof(nonce));
+
+	if (hash < difficulty)
+		return 0;
+
+	return 1;
+}
+
 #if TEST_EXTRA_RANDOM
 
 #include <blake2/blake2.h>
@@ -137,7 +184,7 @@ void CCRandom(void *data, unsigned nbytes)
 	for (unsigned i = 0; i < nbytes; ++i)
 		*((uint8_t*)data + i) ^= hash[i];
 
-	//cerr << "CCRandom " << counter << " " << buf2hex(data, nbytes, 0) << endl;
+	//cerr << "CCRandom " << counter << " " << buf2hex(data, nbytes) << endl;
 }
 
 // ODROID-C2 GPIO
@@ -148,7 +195,7 @@ void CCRandom(void *data, unsigned nbytes)
 
 #define GPIO_BANKS_OFFSET		136
 #define	GPIOY_PIN_START			(GPIO_BANKS_OFFSET + 75)
-#define GPIOY_INP_REG_OFFSET    0x111
+#define GPIOY_INP_REG_OFFSET	0x111
 
 static volatile uint32_t *gpio = 0;
 
@@ -202,7 +249,7 @@ static void collect_gpio(uint8_t *data, unsigned ndata)
 	unsigned tcheck = 0xffffff;
 	unsigned tchecks = 0;
 
-	while (1)
+	while (true)
 	{
 		if ((++counter & tcheck) == 0 && t0)
 		{

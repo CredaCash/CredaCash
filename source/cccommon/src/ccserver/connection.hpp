@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * connection.hpp
 */
@@ -17,9 +17,12 @@
 #include <SmartBuf.hpp>
 #include <SpinLock.hpp>
 
-#define TRACE_CCSERVER		1		// !!! TODO: make this a property of the connection
+extern bool g_trace_ccserver;
+
+#define TRACE_CCSERVER		g_trace_ccserver		// !!! TODO: make this a property of the connection
 #define TRACE_CCSERVER_RW	0		// !!! TODO: make this a property of the connection
 
+//!#define RTEST_CUZZ_CONN				32
 //!#define RTEST_READ_ERRORS			128
 //!#define RTEST_WRITE_ERRORS			128
 //!#define RTEST_TIMER_ERRORS			128
@@ -27,10 +30,11 @@
 
 //!#define RTEST_VALIDATION_FAILURES	64
 
-//!#define RTEST_CUZZ_TIMER				32
-//!#define RTEST_TIMER_TIMEOUT			32
-
 //!#define RTEST_DELAY_CONN_RELEASE		32
+
+#ifndef RTEST_CUZZ_CONN
+#define RTEST_CUZZ_CONN				0	// don't test
+#endif
 
 #ifndef RTEST_READ_ERRORS
 #define RTEST_READ_ERRORS				0	// don't test
@@ -52,19 +56,11 @@
 #define RTEST_VALIDATION_FAILURES		0	// don't test
 #endif
 
-#ifndef RTEST_CUZZ_TIMER
-#define RTEST_CUZZ_TIMER				0	// don't test
-#endif
-
-#ifndef RTEST_TIMER_TIMEOUT
-#define RTEST_TIMER_TIMEOUT				0	// don't test
-#endif
-
 #ifndef RTEST_DELAY_CONN_RELEASE
 #define RTEST_DELAY_CONN_RELEASE		0	// don't test
 #endif
 
-#define PROCESS_RESULT_STOP_THRESHOLD	-10
+#define PROCESS_RESULT_STOP_THRESHOLD	-1000
 
 using namespace std;
 
@@ -72,6 +68,11 @@ namespace CCServer {
 
 class ConnectionManagerBase;
 typedef class Connection *pconnection_t;
+
+typedef function<void(const boost::system::error_code& e, size_t bytes)> ReadHandler;
+typedef function<void(const boost::system::error_code& e, size_t bytes)> WriteHandler;
+typedef function<void(const boost::system::error_code& e)> TimerHandler;
+typedef function<void()> PostHandler;
 
 /// Represents a single Connection from a client.
 class Connection
@@ -87,9 +88,9 @@ public:
 		CONN_STOPPING
 	} m_conn_state;
 
-	char * ReadBuf() const
+	char * ReadBufDebug(unsigned min_chars = 1, char* defval = NULL) const
 	{
-		return m_pread;
+		return (char*)(m_readbuf.size() >= min_chars ? m_readbuf.data() : defval);
 	}
 
 	/// Counter increments each time a read operation completes
@@ -107,6 +108,15 @@ public:
 	/// Initialize member values for a new connection
 	virtual void InitNewConnection();
 
+	/// Reference Counting
+	bool IncRef();
+	void DecRef();
+	bool CheckOpCount(AutoCount& pending_op_counter);
+
+	/// Queue asynchronous function
+	bool Post(const char *function, PostHandler handler);
+	void PostDirect(PostHandler handler);
+
 	/// Start incoming connection
 	virtual void HandleStartIncomingConnection(AutoCount pending_op_counter);
 
@@ -117,7 +127,7 @@ public:
 	void HandleTorProxyRead(const string host, const boost::system::error_code& e, size_t bytes_transferred, SmartBuf msgbuf, AutoCount pending_op_counter);
 
 	// Waits for a read operation to complete
-	void WaitForReadComplete(unsigned last_read_count, bool abort_on_shutdown = false);
+	void WaitForReadComplete(unsigned last_read_count, bool abort_on_shutdown = true);
 
 	/// Initiates close of the connection
 	void Stop();
@@ -135,12 +145,10 @@ public:
 	/// Free connection
 	void FreeConnection();
 
-	/// Test Op Counter for connection close
-	bool CheckOpCount(AutoCount& pending_op_counter);
-
 	/// Timeout functions
 	virtual bool SetTimer(unsigned sec);
 	bool CancelTimer();
+	bool TimerWaitAsync(const char *function, int ms, TimerHandler handler);
 	virtual void HandleTimeout(const boost::system::error_code& e, AutoCount pending_op_counter);
 
 	/// Start a new read
@@ -158,67 +166,27 @@ public:
 	/// Handle completion of reading a full message
 	virtual void HandleReadComplete();
 
+	/// Write data
+	bool WriteAsync(const char *function, boost::asio::const_buffer buffer, WriteHandler handler, bool already_own_mutex = false);
+	void CheckWriteComplete(const char *function, boost::asio::const_buffer buffer, WriteHandler handler, const boost::system::error_code& e, size_t bytes_transferred);
+
 	/// Handle completion of a write operation.
 	virtual void HandleWrite(const boost::system::error_code& e, AutoCount pending_op_counter);
 	void HandleWriteSmartBuf(const boost::system::error_code& e, SmartBuf buf, AutoCount pending_op_counter);
 	void HandleWriteString(const boost::system::error_code& e, shared_ptr<string> buf, AutoCount pending_op_counter);
-	void HandleWriteOstream(const boost::system::error_code& e, shared_ptr<ostringstream> buf, AutoCount pending_op_counter);
 
 	/// Processing function callback
-	virtual void HandleValidateDone(uint32_t callback_id, int64_t result);
+	virtual void HandleValidateDone(uint64_t level, uint32_t callback_id, int64_t result);
 
-	// Templated asynchronous functions
-
-	bool IncRef();
-	void DecRef();
-
-	/* for Post, ReadAsync, WriteAsync and AsyncTimerWait:
-		The caller creates an AutoCount object and passes it to the boost asio handler.
-		This object prevents the connection from closing completely until the handler function
-		has completed and the AutoCount object is destroyed.
-		If the connection was closing when the calling function attempted to create the AutoCount object,
-		the AutoCount IncRef will fail and the AutoCount will not hold a reference to the connection.
-		The easiest way to test of this is for Post, ReadAsync, WriteAsync and AsyncTimerWait
-		to test m_stopping and return true if m_stopping is set.  This indicates to the caller
-		that the async operation was not started and it should abort or otherwise handle this condition.
-		For comments on what happens when boost asio calls the handler, see the source code for CheckOpCount()
-	*/
-
-	template <typename Handler>
-	bool Post(const char *function, Handler handler)
+	/// Asynchronous read (templated for CompletionCondition)
+	template <typename CompletionCondition>
+	bool ReadAsync(const char *function, boost::asio::mutable_buffer buffer, CompletionCondition completion_condition, ReadHandler handler)
 	{
-		if (RandTest(RTEST_DELAY_CONN_RELEASE)) sleep(1);
+		if (RandTest(RTEST_CUZZ_CONN)) sleep(1);
 
-		lock_guard<FastSpinLock> lock(m_conn_lock);
+		lock_guard<mutex> lock(m_conn_lock);
 
-		if (g_shutdown || m_stopping.load())
-		{
-			if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " " << function << " skipping Post because connection is closing";
-
-			return true;
-		}
-
-		PostDirect(handler);	// post is async, and may need a refcount to prevent Stop from running while the post is pending
-
-		return false;
-	};
-
-	template <typename Handler>
-	void PostDirect(Handler handler)
-	{
-		#if BOOST_VERSION < 107000
-		m_socket.get_io_service().post(handler);
-		#else
-		post(m_socket.get_executor(), handler);
-		#endif
-	}
-
-	template <typename Buffer, typename CompletionCondition, typename Handler>
-	bool ReadAsync(const char *function, Buffer buffer, CompletionCondition completion_condition, Handler handler)
-	{
-		if (RandTest(RTEST_DELAY_CONN_RELEASE)) sleep(1);
-
-		lock_guard<FastSpinLock> lock(m_conn_lock);
+		if (RandTest(RTEST_CUZZ_CONN)) sleep(1);
 
 		if (g_shutdown || m_stopping.load())
 		{
@@ -234,129 +202,6 @@ public:
 		// !!! TODO: add a stub handler that simulates errors and fuzzes input buffer if allowed by flag in connection
 
 		boost::asio::async_read(m_socket, buffer, completion_condition, handler);
-
-		return false;
-	};
-
-	//@@! add a function parameter that determines if timer is cancelled?
-
-	template <typename Buffer, typename Handler>
-	bool WriteAsync(const char *function, Buffer buffer, Handler handler, bool already_own_mutex = false)
-	{
-		// if multiple threads are trying to write, then queuing up on this mutex should help prevent thread starvation
-		unique_lock<mutex> next_writer_lock(next_writer_mutex, defer_lock);
-		if (!already_own_mutex)
-			next_writer_lock.lock();
-
-		unsigned wait_count = 0;
-
-		/* boost asio only allows one async_write to be in progess at a time.  In other words, async_write cannot be called again
-			until the completion handler from the last async_write is called.
-			In order to enforce this, WriteAsync increments m_write_in_progress and subsequently calls to WriteAsync
-			will block until m_write_in_progress is cleared.  The handler function for WriteAsync should clear m_write_in_progress.
-			At some point, this might be changed to add a chained handler in the middle that clears m_write_in_progress
-			so the ultimate handler doesn't have to worry about this.
-		*/
-
-		while (!g_shutdown && !m_stopping.load() && !already_own_mutex && m_write_in_progress.test_and_set())
-		{
-			if (!(++wait_count & 4095))	// about 82 seconds
-				BOOST_LOG_TRIVIAL(warning) << Name() << " Conn " << m_conn_index << " " << function << " WriteAsync may be hung waiting for prior write to complete";
-
-			//BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " " << function << " WriteAsync waiting for prior write to complete...";
-
-			usleep(20*1000);
-		}
-
-		if (RandTest(RTEST_WRITE_ERRORS))
-		{
-			BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " " << function << " simulating write error";
-
-			Stop();	// !!! why Stop()?
-
-			return true;
-		}
-
-		if (RandTest(RTEST_DELAY_CONN_RELEASE)) sleep(1);
-
-		lock_guard<FastSpinLock> lock(m_conn_lock);
-
-		if (g_shutdown || m_stopping.load())
-		{
-			if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " " << function << " skipping WriteAsync because connection is closing";
-
-			return true;
-		}
-
-		if (TRACE_CCSERVER_RW) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " " << function << " starting WriteAsync buffer " << (uintptr_t)boost::asio::buffer_cast<const void*>(buffer) << " size " << boost::asio::buffer_size(buffer);
-
-		// !!! TODO: fuzz the output buffer if allowed by a flag in connection
-		// !!! TODO: add a chained handler that clears m_write_in_progress, and can also simulate errors
-
-		boost::asio::async_write(m_socket, buffer, handler);
-
-		return false;
-	};
-
-	template <typename Handler>
-	bool AsyncTimerWait(const char *function, int ms, Handler handler)
-	{
-		// note there is only one timer object m_timer associated with the connection, and all AsyncTimerWait calls wait on this same timer
-		// according to boost asio documentation, starting a wait on a timer cancels an already pending wait on the same timer
-
-		if (RandTest(RTEST_TIMER_ERRORS))
-		{
-			BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " " << function << " simulating timer error";
-
-			Stop();	// !!! why Stop()?
-
-			return true;
-		}
-
-		if (ms > 0 && RandTest(RTEST_CUZZ_TIMER))
-		{
-			auto newms = rand() % ms;
-			newms = rand() % (newms + 1);	// generate random distribution skewed toward smaller values
-
-			BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " " << function << " AsyncTimerWait test changing timer ms from " << ms << " to " << newms;
-
-			ms = newms;
-		}
-
-		if (RandTest(RTEST_DELAY_CONN_RELEASE)) sleep(1);
-
-		lock_guard<FastSpinLock> lock(m_conn_lock);
-
-		if (g_shutdown || m_stopping.load())
-		{
-			if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " " << function << " skipping AsyncTimerWait because connection is closing";
-
-			return true;
-		}
-
-		boost::system::error_code e;
-		m_timer.expires_from_now(boost::posix_time::milliseconds(ms), e);
-		if (e)
-		{
-			BOOST_LOG_TRIVIAL(error) << Name() << " Conn " << m_conn_index << " " << function << " boost asio expires_from_now failed error " << e << " " << e.message();
-
-			Stop();
-
-			return true;
-		}
-
-		if (RandTest(RTEST_TIMER_TIMEOUT))
-		{
-			BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " " << function << " AsyncTimerWait test sleeping until timer has expired";
-
-			ccsleep((ms + 1200) / 1000);
-
-			ms = 0;
-		}
-
-		if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " " << function << " starting AsyncTimerWait for " << ms << " ms; ops pending " << m_ops_pending.load();
-
-		m_timer.async_wait(handler);
 
 		return false;
 	};
@@ -404,10 +249,10 @@ protected:
 	boost::asio::deadline_timer m_timer;
 
 	// lock for m_socket and m_timer -- boost docs say socket is not thread safe (at minimum, close must be serialized)
-	FastSpinLock m_conn_lock;
+	mutex m_conn_lock;
 
 	// lock for reference counter
-	FastSpinLock m_ref_lock;
+	mutex m_ref_lock;
 
 	atomic<int> m_stopping;				// don't queue more reads or writes if connection stopping
 	atomic<int> m_ops_pending;			// don't stop until all pending aync ops are done

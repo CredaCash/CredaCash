@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * rpcserve.cpp
 */
@@ -22,15 +22,15 @@
 #define CRLF	"\x0d\x0a"
 #define CLZ		CRLF "Content-Length: 0" CRLF CRLF
 
-thread_local DbConn *dbconn;
+thread_local static DbConn *dbconn;
 
 void RpcConnection::StartRead()
 {
 	if (TRACE_RPCSERVE) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " RpcConnection::StartRead";
 
 	m_parse_point = 0;
+	m_content_start = 0;
 	m_content_length = -1;
-	m_content_start = -1;
 	m_has_auth = false;
 
 	Connection::StartRead();
@@ -51,6 +51,9 @@ void RpcConnection::HandleReadComplete()
 		auto termscan = m_parse_point;
 		while (true)
 		{
+			if (g_shutdown)
+				return Stop();
+
 			if (termscan >= m_nred)
 				return QueueRead(1);
 
@@ -169,7 +172,7 @@ void RpcConnection::HandleReadComplete()
 
 			if (TRACE_RPCSERVE) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " RpcConnection::HandleReadComplete " << clheader << "\"" << bufp << "\"";
 
-			m_content_length = buf2int(bufp);
+			m_content_length = buf2uint(bufp);
 
 			if (TRACE_RPCSERVE) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " RpcConnection::HandleReadComplete " << clheader << m_content_length;
 		}
@@ -205,7 +208,7 @@ void RpcConnection::HandleReadComplete()
 
 	if (m_maxread >= m_readbuf.size() - 1)
 	{
-		BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " RpcConnection::HandleReadComplete content " << m_content_length << " will overflow buffer " << m_readbuf.size();
+		BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " RpcConnection::HandleReadComplete content " << m_content_length << " will overrun buffer " << m_readbuf.size();
 
 		return Stop();
 	}
@@ -255,34 +258,36 @@ void RpcConnection::HandleContentReadComplete(const boost::system::error_code& e
 
 	if (TRACE_RPCSERVE) BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " RpcConnection::HandleContentReadComplete content " << &m_pread[m_parse_point];
 
-	shared_ptr<ostringstream> response(new ostringstream);
-
+	auto rbuf = make_shared<string>();
 	int result = 0;
-	unsigned rlen = 0;
 
 	if (m_method == POST && m_has_auth)
 	{
 		if (0)
 		{
-			lock_guard<FastSpinLock> lock(g_cout_lock);
+			lock_guard<mutex> lock(g_cerr_lock);
+			check_cerr_newline();
 			cerr << time(NULL) << " " << m_conn_index << " in  >>" << &m_pread[m_parse_point] << "<<" << endl;
 		}
 
 		if (TRACE_RPCSERVE) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " RpcConnection::HandleContentReadComplete do_json_rpc";
 
-		result = do_json_rpc(&m_pread[m_parse_point], dbconn, m_txquery, *response);
+		ostringstream rstream;
+
+		result = do_json_rpc(&m_pread[m_parse_point], dbconn, m_txquery, rstream);
 		if (result)
 			m_keepalive = false;
 
+		*rbuf = rstream.str();
+
 		if (0)
 		{
-			lock_guard<FastSpinLock> lock(g_cout_lock);
-			cerr << time(NULL) << " " << m_conn_index << " out  <" << response->str() << "<<" << endl;
+			lock_guard<mutex> lock(g_cerr_lock);
+			check_cerr_newline();
+			cerr << time(NULL) << " " << m_conn_index << " out  <" << *rbuf << "<<" << endl;
 		}
 
-		rlen = response->str().length();
-
-		if (!rlen)
+		if (!result && !rbuf->size())
 			return Stop();	// no response
 	}
 
@@ -297,25 +302,25 @@ void RpcConnection::HandleContentReadComplete(const boost::system::error_code& e
 	bufp += n;
 	bufsize -= n;
 
-	auto now = time(NULL);
+	auto now = unixtime();
 	auto n2 = strftime(bufp, bufsize, "Date: %a, %d %b %Y %H:%M:%S GMT" CRLF, gmtime(&now));
 	CCASSERT(n2);
 	bufp += n2;
 	bufsize -= n2;
 
-	const char format2[] = "Content-Type: application/json" CRLF "Content-Length: %u" CRLF CRLF;
-	n = snprintf(bufp, bufsize, format2, rlen);
+	const char format2[] = "Content-Type: application/json" CRLF "Content-Length: %lu" CRLF CRLF;
+	n = snprintf(bufp, bufsize, format2, (unsigned long)rbuf->size());
 	CCASSERT(n >= 0 && (unsigned)n < bufsize);
 	bufp += n;
 	bufsize -= n;
 
 	if (TRACE_RPCSERVE) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " RpcConnection::HandleContentReadComplete response headers >>" << m_writebuf.data() << "<<";
-	if (TRACE_RPCSERVE) BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " RpcConnection::HandleContentReadComplete response body >>" << response->str() << "<<";
+	if (TRACE_RPCSERVE) BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " RpcConnection::HandleContentReadComplete response body >>" << *rbuf << "<<";
 
 	m_noclose = m_keepalive;
 
 	WriteAsync("RpcConnection::HandleContentReadComplete", boost::asio::buffer(m_writebuf.data(), bufp - m_writebuf.data()),
-			boost::bind(&RpcConnection::HandleWriteHeader, this, boost::asio::placeholders::error, response, AutoCount(this)));
+			boost::bind(&RpcConnection::HandleWriteHeader, this, boost::asio::placeholders::error, rbuf, AutoCount(this)));
 
 	// can't StartRead here because the client may have already half-closed the connection
 	// StartRead would then get an eof error and hard stop the connection before the response can be sent
@@ -327,29 +332,26 @@ void RpcConnection::HandleContentReadComplete(const boost::system::error_code& e
 	#endif
 }
 
-void RpcConnection::HandleWriteHeader(const boost::system::error_code& e, shared_ptr<ostringstream> response, AutoCount pending_op_counter)
+void RpcConnection::HandleWriteHeader(const boost::system::error_code& e, shared_ptr<string> buf, AutoCount pending_op_counter)
 {
 	if (CheckOpCount(pending_op_counter))
 		return;
 
+	if (e) return Stop();
+
 	// Note: keep m_write_in_progress lock and call WriteAsync with already_own_mutex = true
-
-	bool sim_err = RandTest(RTEST_WRITE_ERRORS);
-	if (sim_err) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " RpcConnection::HandleWriteHeader simulating write error";
-
-	if (e || sim_err)
-	{
-		BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " RpcConnection::HandleWriteHeader after error " << e << " " << e.message();
-
-		return Stop();
-	}
 
 	if (TRACE_RPCSERVE) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " RpcConnection::HandleWriteHeader ok";
 
+	if (!buf->size())
+		return Stop();
+
 	// write the response body
 
-	WriteAsync("RpcConnection::HandleWriteHeader", boost::asio::buffer(response->str(), response->str().length()),
-			boost::bind(&Connection::HandleWriteOstream, this, boost::asio::placeholders::error, response, AutoCount(this)), true);
+	//if (buf->size() > 64*1024) sleep(1);	// for testing
+
+	WriteAsync("RpcConnection::HandleWriteHeader", boost::asio::buffer(buf->data(), buf->size()),
+			boost::bind(&Connection::HandleWriteString, this, boost::asio::placeholders::error, buf, AutoCount(this)), true);
 }
 
 void RpcConnection::SendServerError()

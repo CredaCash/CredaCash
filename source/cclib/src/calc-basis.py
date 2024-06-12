@@ -1,12 +1,18 @@
+#!/usr/bin/env python2
  #
  # CredaCash (TM) cryptocurrency and blockchain
  #
- # Copyright (C) 2015-2020 Creda Software, Inc.
+ # Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  #
  # calc-basis.py
 #
 
+import sys
 import hashlib
+
+if not sys.version.startswith('2.7.') or not ('GCC' in sys.version or '64 bit' in sys.version or 'AMD64' in sys.version):
+	print 'ERROR: This script requires Python 2.7.x (64 bit version).'
+	exit()
 
 wordm = (1 << 64) - 1
 

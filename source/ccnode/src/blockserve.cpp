@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * blockserve.cpp
 */
@@ -14,6 +14,7 @@
 #include "transact.hpp"
 #include "hostdir.hpp"
 #include "dbconn.hpp"
+#include "witness.hpp"
 
 #include <CCobjects.hpp>
 
@@ -23,21 +24,23 @@
 
 #define TRACE_BLOCKSERVE		(g_params.trace_block_serve)
 
-#define BLOCKSERVE_DIR_REFRESH	(30*60)
-//#define BLOCKSERVE_DIR_REFRESH	10		// for testing
+#define BLOCKSERVE_DIR_REFRESH		(26*60)
+//#define BLOCKSERVE_DIR_REFRESH	(18*60)
+//#define BLOCKSERVE_DIR_REFRESH	60		// for testing
 
-#define BLOCKSERVE_TIMEOUT			15
+#define BLOCKSERVE_TIMEOUT			30
 #define BLOCKSERVE_BYTES_PER_SEC	500
 
 #define BLOCKSERVE_MSG_SIZE		(CC_MSG_HEADER_SIZE + 8 + 2)	// incoming size: level + nblocks
 
 #pragma pack(push, 1)
 
+static const uint32_t Ack_Reply[2] =					{CC_MSG_HEADER_SIZE, CC_ACK};
 static const uint32_t No_Level_Reply[2] =				{CC_MSG_HEADER_SIZE, CC_RESULT_NO_LEVEL};
 
 #pragma pack(pop)
 
-thread_local DbConn *blockserve_dbconn;
+thread_local static DbConn *blockserve_dbconn;
 
 void BlockServeConnection::StartConnection()
 {
@@ -55,12 +58,9 @@ void BlockServeConnection::StartConnection()
 
 void BlockServeConnection::HandleReadComplete()
 {
-	if (CancelTimer())
-		return;
-
-	if (m_nred != BLOCKSERVE_MSG_SIZE)
+	if (m_nred < CC_MSG_HEADER_SIZE)
 	{
-		BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " BlockServeConnection::HandleReadComplete error wrong read size " << m_nred;
+		BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " BlockServeConnection::HandleReadComplete error short read " << m_nred;
 
 		return Stop();
 	}
@@ -68,7 +68,26 @@ void BlockServeConnection::HandleReadComplete()
 	unsigned size = *(uint32_t*)m_pread;
 	unsigned tag = *(uint32_t*)(m_pread + 4);
 
-	if (TRACE_BLOCKSERVE) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " BlockServeConnection::HandleReadComplete read " << m_nred << " bytes msg size " << size << " tag " << tag;
+	if (TRACE_BLOCKSERVE) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " BlockServeConnection::HandleReadComplete read " << m_nred << " bytes msg size " << size << " tag " << hex << tag << dec;
+
+	if (size == CC_MSG_HEADER_SIZE && tag == CC_CMD_PING)
+	{
+		if (TRACE_BLOCKSERVE) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " BlockServeConnection::HandleReadComplete received CC_CMD_PING";
+
+		m_read_after_write = true;
+
+		WriteAsync("BlockServeConnection::HandleReadComplete", boost::asio::buffer(Ack_Reply, sizeof(Ack_Reply)),
+				boost::bind(&Connection::HandleWrite, this, boost::asio::placeholders::error, AutoCount(this)));
+
+		return;
+	}
+
+	if (m_nred < BLOCKSERVE_MSG_SIZE)
+	{
+		m_maxread = BLOCKSERVE_MSG_SIZE;
+
+		return QueueRead(m_maxread - m_nred);
+	}
 
 	if (size != BLOCKSERVE_MSG_SIZE)
 	{
@@ -79,7 +98,7 @@ void BlockServeConnection::HandleReadComplete()
 
 	if (tag != CC_CMD_SEND_LEVELS)
 	{
-		BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " BlockServeConnection::HandleReadComplete error wrong tag " << tag;
+		BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " BlockServeConnection::HandleReadComplete error wrong tag " << hex << tag << dec;
 
 		return Stop();
 	}
@@ -128,12 +147,10 @@ void BlockServeConnection::DoSend()
 
 		m_nreqlevels.store(0);
 
-		StartRead();
-
 		if (SetTimer(BLOCKSERVE_TIMEOUT))
 			return;
 
-		return;
+		return StartRead();
 	}
 
 	uint64_t level = m_reqlevel.fetch_add(1);
@@ -149,7 +166,9 @@ void BlockServeConnection::DoSend()
 
 	if (level > last_indelible_level)
 	{
-		BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " BlockServeConnection::DoSend level " << level << " > last_indelible_level " << last_indelible_level;
+		if (TRACE_BLOCKSERVE) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " BlockServeConnection::DoSend level " << level << " > last_indelible_level " << last_indelible_level;
+
+		m_read_after_write = false;
 
 		WriteAsync("BlockServeConnection::DoSend", boost::asio::buffer(No_Level_Reply, sizeof(No_Level_Reply)),
 				boost::bind(&Connection::HandleWrite, this, boost::asio::placeholders::error, AutoCount(this)));
@@ -181,36 +200,30 @@ void BlockServeConnection::DoSend()
 		return Stop();
 	}
 
-	if (TRACE_BLOCKSERVE) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " BlockServeConnection::DoSend level " << level << " size " << obj->ObjSize() << " tag " << obj->ObjTag();
-
-	WriteAsync("BlockServeConnection::DoSend", boost::asio::buffer(obj->ObjPtr(), size),
-			boost::bind(&BlockServeConnection::HandleBlockWrite, this, boost::asio::placeholders::error, smartobj, AutoCount(this)));
+	if (TRACE_BLOCKSERVE) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " BlockServeConnection::DoSend level " << level << " size " << obj->ObjSize() << " tag " << hex << obj->ObjTag() << dec;
 
 	if (SetTimer(BLOCKSERVE_TIMEOUT + size / BLOCKSERVE_BYTES_PER_SEC))
 		return;
+
+	m_read_after_write = false;
+
+	WriteAsync("BlockServeConnection::DoSend", boost::asio::buffer(obj->ObjPtr(), size),
+			boost::bind(&BlockServeConnection::HandleBlockWrite, this, boost::asio::placeholders::error, smartobj, AutoCount(this)));
 }
 
 void BlockServeConnection::HandleBlockWrite(const boost::system::error_code& e, SmartBuf smartobj, AutoCount pending_op_counter)
 {
-	m_write_in_progress.clear();
-
 	smartobj.ClearRef();	// we're done with this, so might as well free it now
-
-	if (CheckOpCount(pending_op_counter))
-		return;
 
 	if (CancelTimer())
 		return;
 
-	bool sim_err = RandTest(RTEST_WRITE_ERRORS);
-	if (sim_err) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " BlockServeConnection::HandleBlockWrite simulating write error";
+	if (CheckOpCount(pending_op_counter))
+		return;
 
-	if (e || sim_err)
-	{
-		BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " BlockServeConnection::HandleBlockWrite after error " << e << " " << e.message();
+	if (e) return Stop();
 
-		return Stop();
-	}
+	m_write_in_progress.clear();
 
 	if (TRACE_BLOCKSERVE) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " BlockServeConnection::HandleBlockWrite ok";
 
@@ -227,7 +240,7 @@ void BlockService::Start()
 	if (TRACE_BLOCKSERVE) BOOST_LOG_TRIVIAL(trace) << Name() << " BlockService port " << port;
 
 	// unsigned conn_nreadbuf, unsigned conn_nwritebuf, unsigned sock_nreadbuf, unsigned sock_nwritebuf, unsigned headersize, bool noclose, bool bregister
-	CCServer::ConnectionFactoryInstantiation<BlockServeConnection> connfac(BLOCKSERVE_MSG_SIZE + 2, 0, -1, -1, BLOCKSERVE_MSG_SIZE, 0, 0);
+	CCServer::ConnectionFactoryInstantiation<BlockServeConnection> connfac(BLOCKSERVE_MSG_SIZE + 2, 0, -1, -1, CC_MSG_HEADER_SIZE, 0, 0);
 	CCThreadFactoryInstantiation<BlockServeThread> threadfac;
 
 	unsigned maxconns = (unsigned)(max_inconns + max_outconns);
@@ -237,7 +250,7 @@ void BlockService::Start()
 	m_service.Start(boost::asio::ip::tcp::endpoint(address, port),
 			nthreads, maxconns, max_inconns, 0, connfac, threadfac);
 
-	// ConnMonitorProc runs even when the server isn't running
+	// ConnMonitorProc reregisters with rendezvous servers every BLOCKSERVE_DIR_REFRESH seconds
 
 	BOOST_LOG_TRIVIAL(trace) << Name() << " BlockService creating thread for ConnMonitorProc this = " << this;
 	thread worker(&BlockService::ConnMonitorProc, this);
@@ -246,26 +259,26 @@ void BlockService::Start()
 
 void BlockService::ConnMonitorProc()
 {
-	BOOST_LOG_TRIVIAL(trace) << Name() << " BlockService::ConnMonitorProc(" << this << ") started";
+	BOOST_LOG_TRIVIAL(info) << Name() << " BlockService::ConnMonitorProc(" << this << ") started";
 
-	ccsleep(10);
+	ccsleep(120); // wait for tor to start up
 
 	while (!g_shutdown)
 	{
-		if (TRACE_BLOCKSERVE) BOOST_LOG_TRIVIAL(info) << Name() << " BlockService::ConnMonitorProc refreshing peer directory entry...";
+		BOOST_LOG_TRIVIAL(info) << Name() << " BlockService::ConnMonitorProc refreshing peer directory entry...";
 
 		g_hostdir.GetHostName((HostDir::HostType)(-1));
 
 		if (RTEST_READ_ERRORS || RTEST_WRITE_ERRORS)
 		{
-			for (unsigned i = 0; i < 10; ++i)	// make sure name gets uploaded even if there is a simulated error
+			for (unsigned i = 0; i < 5; ++i)	// make sure name gets uploaded even if there's a simulated error
 				g_hostdir.GetHostName((HostDir::HostType)(-1));
 		}
 
 		ccsleep(BLOCKSERVE_DIR_REFRESH);
 	}
 
-	BOOST_LOG_TRIVIAL(trace) << Name() << " BlockService::ConnMonitorProc(" << this << ") ended";
+	BOOST_LOG_TRIVIAL(info) << Name() << " BlockService::ConnMonitorProc(" << this << ") ended";
 }
 
 void BlockService::StartShutdown()

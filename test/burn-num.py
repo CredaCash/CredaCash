@@ -1,9 +1,11 @@
+#!/usr/bin/env python2
+
 '''
 CredaCash(TM) Test Script
 
 Part of the CredaCash (TM) cryptocurrency and blockchain
 
-Copyright (C) 2015-2020 Creda Software, Inc.
+Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
 
 This script tests the parsing of JSON numbers in the CredaCash transaction library
 
@@ -21,7 +23,7 @@ TRACE = 0
 PRIMEMOD = 21888242871839275222246405745257275088548364400416034343698204186575808495617
 
 if not sys.version.startswith('2.7.') or not ('GCC' in sys.version or '64 bit' in sys.version or 'AMD64' in sys.version):
-	print 'This script requires Python 2.7x for x86-64.'
+	print 'ERROR: This script requires Python 2.7.x (64 bit version).'
 	exit()
 
 #random.seed(0)	# for testing

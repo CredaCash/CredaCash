@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * walletdb-accounts.cpp
 */
@@ -12,39 +12,34 @@
 
 #include <dblog.h>
 
-#define TRACE_DBCONN	(g_params.trace_db)
+#define TRACE_DB_READ	(g_params.trace_db_reads)
+#define TRACE_DB_WRITE	(g_params.trace_db_writes)
 
 int DbConn::AccountInsert(Account& account, bool lock_optional)
 {
-	CCASSERT(TestDebugWriteLocking(lock_optional));
+	CCASSERT(lock_optional || GetTxnState() == SQLITE_TXN_WRITE);
 
 	//lock_guard<boost::shared_mutex> lock(db_mutex);
 	Finally finally(boost::bind(&DbConn::DoDbFinish, this));
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::AccountInsert " << account.DebugString();
-
-	sqlite3_stmt *insert_update = NULL;
+	if (TRACE_DB_WRITE) BOOST_LOG_TRIVIAL(trace) << "DbConn::AccountInsert " << account.DebugString();
 
 	// Id, Name
 	if (account.id)
 	{
-		insert_update = Accounts_update;
-
-		if (dblog(sqlite3_bind_int64(insert_update, 1, account.id))) return -1;
+		if (dblog(sqlite3_bind_int64(Accounts_insert, 1, account.id))) return -1;
 	}
 	else
 	{
-		insert_update = Accounts_insert;
-
-		if (dblog(sqlite3_bind_null(insert_update, 1))) return -1;
+		if (dblog(sqlite3_bind_null(Accounts_insert, 1))) return -1;
 	}
 	if (account.name[0])
 	{
-		if (dblog(sqlite3_bind_text(insert_update, 2, account.name, -1, SQLITE_STATIC))) return -1;
+		if (dblog(sqlite3_bind_text(Accounts_insert, 2, account.name, -1, SQLITE_STATIC))) return -1;
 	}
 	else
 	{
-		if (dblog(sqlite3_bind_null(insert_update, 2))) return -1;
+		if (dblog(sqlite3_bind_null(Accounts_insert, 2))) return -1;
 	}
 
 	if (RandTest(RTEST_DB_ERRORS))
@@ -54,7 +49,7 @@ int DbConn::AccountInsert(Account& account, bool lock_optional)
 		return -1;
 	}
 
-	auto rc = sqlite3_step(insert_update);
+	auto rc = sqlite3_step(Accounts_insert);
 
 	if (dbresult(rc) == SQLITE_CONSTRAINT)
 	{
@@ -77,7 +72,7 @@ int DbConn::AccountInsert(Account& account, bool lock_optional)
 	if (!account.id)
 		account.id = sqlite3_last_insert_rowid(Wallet_db);
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(debug) << "DbConn::AccountInsert inserted " << account.DebugString();
+	if (TRACE_DB_WRITE) BOOST_LOG_TRIVIAL(debug) << "DbConn::AccountInsert inserted " << account.DebugString();
 
 	return 0;
 }
@@ -97,43 +92,43 @@ int DbConn::AccountSelect(sqlite3_stmt *select, Account& account, bool expect_ro
 
 	if (dbresult(rc) == SQLITE_DONE)
 	{
-		if (expect_row) BOOST_LOG_TRIVIAL(warning) << "DbConn::AccountSelect select returned SQLITE_DONE";
-		else if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::AccountSelect select returned SQLITE_DONE";
+		if (expect_row) BOOST_LOG_TRIVIAL(warning) << "DbConn::AccountSelect returned SQLITE_DONE";
+		else if (TRACE_DB_READ) BOOST_LOG_TRIVIAL(trace) << "DbConn::AccountSelect returned SQLITE_DONE";
 
 		return 1;
 	}
 
 	if (dbresult(rc) != SQLITE_ROW)
 	{
-		BOOST_LOG_TRIVIAL(error) << "DbConn::AccountSelect select returned " << rc;
+		BOOST_LOG_TRIVIAL(error) << "DbConn::AccountSelect returned " << rc;
 
 		return -1;
 	}
 
 	if (sqlite3_data_count(select) != 2)
 	{
-		BOOST_LOG_TRIVIAL(error) << "DbConn::AccountSelect select returned " << sqlite3_data_count(select) << " columns";
+		BOOST_LOG_TRIVIAL(error) << "DbConn::AccountSelect returned " << sqlite3_data_count(select) << " columns";
 
 		return -1;
 	}
 
-	// Id, Name
 	uint64_t id = sqlite3_column_int64(select, 0);
 
 	if (required_id && required_id != id)
 	{
 		if (expect_row) BOOST_LOG_TRIVIAL(warning) << "DbConn::AccountSelect result id " << id << " != required_id " << required_id << " returning SQLITE_DONE";
-		else if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::AccountSelect result id " << id << " != required_id " << required_id << " returning SQLITE_DONE";
+		else if (TRACE_DB_READ) BOOST_LOG_TRIVIAL(trace) << "DbConn::AccountSelect result id " << id << " != required_id " << required_id << " returning SQLITE_DONE";
 
 		return 1;
 	}
 
+	// Id, Name
 	auto name_text = sqlite3_column_text(select, 1);
 	unsigned name_size = sqlite3_column_bytes(select, 1);
 
 	if (name_size >= sizeof(account.name))
 	{
-		BOOST_LOG_TRIVIAL(warning) << "DbConn::AccountSelect select returned name size " << name_size << " >= " << sizeof(account.name);
+		BOOST_LOG_TRIVIAL(warning) << "DbConn::AccountSelect returned name size " << name_size << " >= " << sizeof(account.name);
 
 		name_size = sizeof(account.name) - 1;
 	}
@@ -151,7 +146,7 @@ int DbConn::AccountSelect(sqlite3_stmt *select, Account& account, bool expect_ro
 	memcpy(account.name, name_text, name_size);
 	account.name[name_size] = 0;	// ensure null terminated
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(debug) << "DbConn::AccountSelect returning " << account.DebugString();
+	if (TRACE_DB_READ) BOOST_LOG_TRIVIAL(debug) << "DbConn::AccountSelect returning " << account.DebugString();
 
 	return 0;
 }
@@ -161,13 +156,13 @@ int DbConn::AccountSelectId(uint64_t id, Account& account, bool or_greater)
 	//boost::shared_lock<boost::shared_mutex> lock(db_mutex);
 	Finally finally(boost::bind(&DbConn::DoDbFinish, this));
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::AccountSelectId id " << id << " or_greater = " << or_greater;
+	if (TRACE_DB_READ) BOOST_LOG_TRIVIAL(trace) << "DbConn::AccountSelectId id " << id << " or_greater " << or_greater;
 
 	CCASSERT(id);
 
 	account.Clear();
 
-	// >= Id
+	// Id >=
 	if (dblog(sqlite3_bind_int64(Accounts_select, 1, id))) return -1;
 
 	return AccountSelect(Accounts_select, account, !or_greater, !or_greater * id);
@@ -180,7 +175,7 @@ int DbConn::AccountSelectName(const char *name, unsigned size, Account& account)
 
 	account.Clear();
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::AccountSelectName name " << name;
+	if (TRACE_DB_READ) BOOST_LOG_TRIVIAL(trace) << "DbConn::AccountSelectName name " << name;
 
 	// Name
 	if (dblog(sqlite3_bind_text(Accounts_select_name, 1, name, -1, SQLITE_STATIC))) return -1;

@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * cctracker.h
 */
@@ -21,10 +21,15 @@
 #include <boost/program_options/variables_map.hpp>
 
 extern boost::program_options::variables_map g_config_options;
+extern wstring g_datadir;
+extern string g_tor_hostname;
+extern long long g_difficulty;
+extern long long g_magic_nonce;
 extern int g_trace_level;
 extern int g_port;
 extern int g_nthreads;
 extern int g_nconns;
+extern int g_time_allowance;
 extern int g_datamem;
 extern int g_blockfrac;
 extern int g_hashfill;
@@ -36,10 +41,15 @@ extern class Dir g_blockdir;
 #ifdef DECLARE_GLOBALS
 
 boost::program_options::variables_map g_config_options;
+wstring g_datadir;
+string g_tor_hostname;
+long long g_difficulty;
+long long g_magic_nonce;
 int g_trace_level;
 int g_port;
 int g_nthreads;
 int g_nconns;
+int g_time_allowance;
 int g_datamem;
 int g_blockfrac;
 int g_hashfill;

@@ -14,20 +14,8 @@ CPP_SRCS += \
 ../src/dblog.cpp \
 ../src/osutil.cpp \
 ../src/socks.cpp \
-../src/tor.cpp 
-
-OBJS += \
-./src/CCassert.o \
-./src/CCcrypto.o \
-./src/CCobjects.o \
-./src/CCticks.o \
-./src/CCutil.o \
-./src/SmartBuf.o \
-./src/apputil.o \
-./src/dblog.o \
-./src/osutil.o \
-./src/socks.o \
-./src/tor.o 
+../src/tor.cpp \
+../src/unifloat.cpp 
 
 CPP_DEPS += \
 ./src/CCassert.d \
@@ -40,15 +28,37 @@ CPP_DEPS += \
 ./src/dblog.d \
 ./src/osutil.d \
 ./src/socks.d \
-./src/tor.d 
+./src/tor.d \
+./src/unifloat.d 
+
+OBJS += \
+./src/CCassert.o \
+./src/CCcrypto.o \
+./src/CCobjects.o \
+./src/CCticks.o \
+./src/CCutil.o \
+./src/SmartBuf.o \
+./src/apputil.o \
+./src/dblog.o \
+./src/osutil.o \
+./src/socks.o \
+./src/tor.o \
+./src/unifloat.o 
 
 
 # Each subdirectory must supply rules for building sources it contributes
-src/%.o: ../src/%.cpp
+src/%.o: ../src/%.cpp src/subdir.mk
 	@echo 'Building file: $<'
 	@echo 'Invoking: Cross G++ Compiler'
-	g++ -std=c++11 -D_DEBUG=1 -I$(CREDACASH_BUILD)/source/cccommon/src -I$(CREDACASH_BUILD)/source/3rdparty/src -I$(CREDACASH_BUILD)/depends -I$(CREDACASH_BUILD)/depends/boost -O0 -g3 -fno-omit-frame-pointer -fno-optimize-sibling-calls -Wall -Wextra $(CPPFLAGS) -c -fmessage-length=0 -Wno-unused-parameter -Werror=sign-compare -isystem $(CREDACASH_BUILD)/depends/boost -MMD -MP -MF"$(@:%.o=%.d)" -MT"$(@)" -o "$@" "$<"
+	g++ -std=c++11 -DBOOST_BIND_GLOBAL_PLACEHOLDERS=1 -I$(CREDACASH_BUILD)/source/cccommon/src -I$(CREDACASH_BUILD)/source/3rdparty/src -I$(CREDACASH_BUILD)/depends -I$(CREDACASH_BUILD)/depends/boost -O0 -g3 -fno-omit-frame-pointer -fno-optimize-sibling-calls -Wall -Wextra $(CPPFLAGS) -c -fmessage-length=0 -Wno-unused-parameter -isystem $(CREDACASH_BUILD)/depends/boost -MMD -MP -MF"$(@:%.o=%.d)" -MT"$@" -o "$@" "$<"
 	@echo 'Finished building: $<'
 	@echo ' '
 
+
+clean: clean-src
+
+clean-src:
+	-$(RM) ./src/CCassert.d ./src/CCassert.o ./src/CCcrypto.d ./src/CCcrypto.o ./src/CCobjects.d ./src/CCobjects.o ./src/CCticks.d ./src/CCticks.o ./src/CCutil.d ./src/CCutil.o ./src/SmartBuf.d ./src/SmartBuf.o ./src/apputil.d ./src/apputil.o ./src/dblog.d ./src/dblog.o ./src/osutil.d ./src/osutil.o ./src/socks.d ./src/socks.o ./src/tor.d ./src/tor.o ./src/unifloat.d ./src/unifloat.o
+
+.PHONY: clean-src
 

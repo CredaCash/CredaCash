@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * connection_registry.hpp
 */
@@ -25,6 +25,7 @@ class ConnectionRegistry
 
 public:
 	ConnectionRegistry()
+	 :	m_conn_registry_lock(__FILE__, __LINE__)
 	{
 		last_unmapped_index = 0;
 		m_connections.push_back(NULL);	// leave entry zero NULL to guard against bugs

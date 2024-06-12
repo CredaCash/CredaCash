@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * CCticks.hpp
 */
@@ -10,11 +10,22 @@
 
 #include <cstdint>
 #include <time.h>
+#include <sys/timeb.h>
 
 // ticks are measured in milliseconds
 // maximum elapsed is 2^31/1000 = 24 days
 
+#define TX_TIME_DIVISOR					30
+#define TX_TIME_OFFSET					1704067200	//@@! must be divisible by TX_TIME_DIVISOR
+
 #define CCTICKS_PER_SEC		1000
+
+extern std::int64_t g_clock_offset;
+std::int64_t unixtime();
+void unixtimeb(timeb *t);
+
+std::uint64_t highres_ticks();
+bool report_highres_ticks(std::uint64_t dt);
 
 std::uint32_t ccticks(clockid_t clock_id = CLOCK_MONOTONIC);
 std::uint32_t ccticksnz(std::uint32_t non_zero = 1, clockid_t clock_id = CLOCK_MONOTONIC);

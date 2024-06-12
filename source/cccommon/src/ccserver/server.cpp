@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * server.cpp
 */
@@ -10,13 +10,15 @@
 #include "CCboost.hpp"
 #include "server.hpp"
 
+bool g_trace_ccserver = false;
+
 namespace CCServer {
 
 void Server::Init(const boost::asio::ip::tcp::endpoint& endpoint, unsigned maxconns, unsigned maxincoming, unsigned backlog, const class ConnectionFactory& connfac)
 {
 	if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " Server::Init maxconns " << maxconns << " maxincoming " << maxincoming << " port " << endpoint.port() << " backlog " << backlog;
 
-	lock_guard<FastSpinLock> lock(m_new_connection_lock);	// not really needed, but doesn't hurt
+	lock_guard<mutex> lock(m_new_connection_lock);	// not really needed, but doesn't hurt
 
 	// Register to handle the signals that indicate when the CCServer should exit.
 	// It is safe to register for the same signal multiple times in a program,
@@ -103,9 +105,16 @@ void Server::Run()
 
 void Server::StartAccept(bool new_connection_used)
 {
+	if (!m_acceptor.is_open())
+	{
+		//if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " Server::StartAccept acceptor is closed";
+
+		return;
+	}
+
 	//if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " Server::StartAccept acquiring m_new_connection_lock...";
 
-	lock_guard<FastSpinLock> lock(m_new_connection_lock);
+	lock_guard<mutex> lock(m_new_connection_lock);
 
 	StartAcceptWithLock(new_connection_used);
 }
@@ -160,7 +169,7 @@ void Server::HandleAccept(const boost::system::error_code& e)
 	if (e) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_new_connection->m_conn_index << " Server::HandleAccept after error " << e << " " << e.message();
 	else if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " Server::HandleAccept";
 
-	lock_guard<FastSpinLock> lock(m_new_connection_lock);
+	lock_guard<mutex> lock(m_new_connection_lock);
 
 	// Check whether the server was stopped by a signal before this completion
 	// handler had a chance to run.
@@ -215,7 +224,7 @@ pconnection_t Server::Connect(const string& host, unsigned port, bool use_tor)
 		rc = connection->Post("Server::Connect", boost::bind(&Connection::HandleConnectOutgoing, connection, host, port, AutoCount(connection)));
 	if (rc)
 	{
-		BOOST_LOG_TRIVIAL(trace) << Name() << " Server::Connect post failed m_stopping " << m_stopping.load();
+		BOOST_LOG_TRIVIAL(trace) << Name() << " Server::Connect post failed; m_stopping " << m_stopping.load();
 
 		connection->FreeConnection();
 
@@ -253,7 +262,7 @@ void Server::HandleStop()
 	BOOST_LOG_TRIVIAL(info) << Name() << " Server::HandleStop shutting down...";
 
 	{
-		lock_guard<FastSpinLock> lock(m_new_connection_lock);
+		lock_guard<mutex> lock(m_new_connection_lock);
 
 		// The server is stopped by cancelling all outstanding asynchronous
 		// operations. Once all operations have finished the io_service::run() call

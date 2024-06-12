@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * rpc_errors.h
 */
@@ -26,7 +26,10 @@ enum RPCErrorCode
 	RPC_INTERNAL_ERROR   = -32603,			// Internal JSON-RPC error.
 	RPC_PARSE_ERROR      = -32700,			// Invalid JSON was received by the server. An error occurred on the server while parsing the JSON text.
 
-	RPC_WALLET_SIMULATED_ERROR = -32099,		// simulated test error
+	RPC_SERVER_ERROR			= -32000,
+	RPC_SYNC_ERROR				= -32001,
+	RPC_WALLET_INTERNAL_ERROR	= -32090,
+	RPC_WALLET_SIMULATED_ERROR	= -32090,	// simulated test error
 
 	//! General application defined errors
 	RPC_MISC_ERROR                  = -1,  //!< std::exception thrown in command handling
@@ -59,7 +62,8 @@ enum RPCErrorCode
 	// CredaCash errors
 	RPC_TRANSACTION_TIMEOUT			= -1001,
 	RPC_TRANSACTION_MISMATCH		= -1002,
-	RPC_TRANSACTION_FAILED			= -1003
+	RPC_TRANSACTION_FAILED			= -1003,
+	RPC_TRANSACTION_EXPIRED         = -1004
 };
 
 /*

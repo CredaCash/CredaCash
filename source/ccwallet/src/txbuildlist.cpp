@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * txbuildlist.cpp
 */
@@ -12,27 +12,76 @@
 #include "billets.hpp"
 #include "transactions.hpp"
 #include "txbuildlist.hpp"
+#include "txparams.hpp"
 #include "rpc_errors.hpp"
 #include "walletdb.hpp"
+
+#include <xtransaction.hpp>
 
 #define TRACE_TRANSACTIONS	(g_params.trace_transactions)
 
 TxBuildList g_txbuildlist;
 
+TxBuildEntry::TxBuildEntry()
+ :	xtx(new Xtx()),
+	ref_count(1),
+	is_done(false)
+{ }
+
+TxBuildEntry::~TxBuildEntry()
+{
+	delete xtx;
+}
+
 string TxBuildEntry::DebugString() const
 {
 	ostringstream out;
 
-	out << "start_time " << start_time;
+	out << "TxBuildEntry";
+	out << " start_time " << start_time;
 	out << " ref_id " << ref_id;
+	out << " type " << type << " = " << Transaction::TypeString(type);
 	out << " ref_count " << ref_count;
 	out << " is_done " << is_done;
 	out << " dest " << encoded_dest;
 	out << " dest_chain " << dest_chain;
-	//out << " destination " << hex << destination << dec;
+	//out << " destination " << buf2hex(&destination, sizeof(destination));
 	out << " amount " << amount;
+	out << " txbody " << txbody.size();
+	if (xtx)
+		out << " " << xtx->DebugString();
 
 	return out.str();
+}
+
+void TxBuildEntry::SetTxBody(TxParams& txparams, unsigned retry)
+{
+	uint32_t bufpos;
+
+	xtx->expire_time = unixtime() + txparams.clock_diff + xtx->expiration + retry * XTX_TIME_DIVISOR;
+
+	if (0) // for testing
+	{
+		if (xtx->type == CC_TYPE_XCX_NAKED_BUY)
+			xtx->expire_time = (unixtime()/60) * 60 + 30;
+		cerr << "type " << xtx->type << " expire_time " << xtx->expire_time << " in " << xtx->expire_time - unixtime() << endl;
+	}
+
+	try
+	{
+		txbody.resize(TX_MAX_APPEND);
+
+		auto rc = xtx->ToWire("SetTxBody", txbody.data(), txbody.size(), bufpos);
+		if (rc) throw txrpc_wallet_error;
+	}
+	catch (const exception& e)
+	{
+		throw RPC_Exception(RPC_WALLET_INTERNAL_ERROR, e.what());
+	}
+
+	txbody.resize(bufpos);
+
+	//cerr << "txbody nbytes " << txbody.size() << " data " << buf2hex(txbody.data(), txbody.size()) << endl;
 }
 
 void TxBuildList::Dump(ostream& out)
@@ -66,7 +115,7 @@ TxBuildEntry* TxBuildList::FindEntry(const string& ref_id, bool remove)
 	return NULL;
 }
 
-int TxBuildList::StartBuild(DbConn *dbconn, const string& ref_id, const string& encoded_dest, const uint64_t dest_chain, const bigint_t& destination, const bigint_t& amount, TxBuildEntry **pentry, Transaction& tx)
+int TxBuildList::StartBuild(DbConn *dbconn, TxParams& txparams, const string& ref_id, const unsigned type, const string& encoded_dest, const uint64_t dest_chain, const bigint_t& destination, const bigint_t& amount, const Xtx *xtx, TxBuildEntry **pentry, Transaction& tx)
 {
 	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(debug) << "TxBuildList::StartBuild ref_id " << ref_id << " encoded_dest " << encoded_dest << " amount " << amount;
 
@@ -78,7 +127,7 @@ int TxBuildList::StartBuild(DbConn *dbconn, const string& ref_id, const string& 
 
 	if (entry)
 	{
-		if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "TxBuildList::StartBuild found entry " << entry->DebugString();
+		if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "TxBuildList::StartBuild found " << entry->DebugString();
 
 		if (entry->encoded_dest != encoded_dest || entry->amount != amount)
 			throw txrpc_tx_mismatch;
@@ -92,7 +141,7 @@ int TxBuildList::StartBuild(DbConn *dbconn, const string& ref_id, const string& 
 	if (rc < 0) throw txrpc_wallet_db_error;
 	if (!rc)
 	{
-		if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "TxBuildList::StartBuild found tx " << tx.DebugString();
+		if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "TxBuildList::StartBuild found " << tx.DebugString();
 
 		if (tx.nout < 1 || tx.output_bills[0].blockchain != dest_chain || tx.output_destinations[0].value != destination || tx.output_bills[0].amount != amount) // this amount comparison would need to be fixed for "subfee" option
 		{
@@ -106,16 +155,25 @@ int TxBuildList::StartBuild(DbConn *dbconn, const string& ref_id, const string& 
 	entry = new TxBuildEntry();
 	CCASSERT(entry);
 
-	entry->start_time = time(NULL);
+	entry->start_time = unixtime();
 	entry->ref_id = ref_id;
+	entry->type = type;
 	entry->encoded_dest = encoded_dest;
 	entry->dest_chain = dest_chain;
 	entry->destination = destination;
 	entry->amount = amount;
 
+	if (xtx)
+	{
+		delete entry->xtx;
+		entry->xtx = xtx->Clone();
+
+		entry->SetTxBody(txparams);
+	}
+
 	m_list.push_back(entry);
 
-	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "TxBuildList::StartBuild created new entry " << entry->DebugString();
+	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "TxBuildList::StartBuild created new " << entry->DebugString();
 
 	return 0;
 }
@@ -144,7 +202,7 @@ void TxBuildList::WaitForCompletion(DbConn *dbconn, TxBuildEntry *entry, Transac
 	if (rc < 0) throw txrpc_wallet_db_error;
 	if (!rc)
 	{
-		if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "TxBuildList::WaitForCompletion read tx " << tx.DebugString();
+		if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "TxBuildList::WaitForCompletion read " << tx.DebugString();
 
 		if (tx.nout < 1 || tx.output_bills[0].blockchain != entry->dest_chain || tx.output_destinations[0].value != entry->destination || tx.output_bills[0].amount != entry->amount) // this amount comparison would need to be fixed for "subfee" option
 		{
@@ -205,6 +263,9 @@ void TxBuildList::ReleaseEntryWithLock(TxBuildEntry *entry)
 	if (!--entry->ref_count)
 	{
 		auto rc = FindEntry(entry->ref_id, true);
-		CCASSERT(rc);
+		(void)rc;
+
+		//CCASSERT(rc); // triggered if StartBuild fails
+		//if (!rc) BOOST_LOG_TRIVIAL(error) << "TxBuildList::ReleaseEntry FindEntry ref_id " << entry->ref_id << " failed";
 	}
 }

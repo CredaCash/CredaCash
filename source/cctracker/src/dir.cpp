@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * dir.cpp
 */
@@ -137,7 +137,7 @@ uint64_t Dir::HashIndex(const string& namestr, hostname_t& name) const
 
 uint64_t Dir::HashIndex2(const string& namestr, const hostname_t& name) const
 {
-	uint64_t hash_index = siphash_keyed(&m_hash_key[0], &name[0], sizeof(hostname_t)) % m_hash_size;
+	auto hash_index = siphash(name.data(), name.size(), m_hash_key.data(), m_hash_key.size()) % m_hash_size;
 
 	//BOOST_LOG_TRIVIAL(trace) << m_label << ": hostname " << namestr << " hashes to " << hash_index;
 
@@ -169,7 +169,7 @@ int Dir::Add(const string& namestr)
 	uint64_t hash_find = hash_index;
 	uint64_t hash_add = NULL_INDEX;
 
-	while (true)
+	while (!g_shutdown)
 	{
 		pointer_t p = m_hashtable[hash_find].pointer;
 		//BOOST_LOG_TRIVIAL(trace) << m_label << ": hashtable index " << hash_find << " pointer " << p;
@@ -215,7 +215,7 @@ int Dir::Update(const string& namestr, const hostname_t& name, uint64_t hash_fin
 
 	int expires = FindExpire(list_find);
 
-	if (expires < 0 || expires * 4 > g_expire * SECONDS_PER_EXPIRE_COUNT)
+	if (expires < 0 || expires * 2 > g_expire * SECONDS_PER_EXPIRE_COUNT)
 	{
 		BOOST_LOG_TRIVIAL(trace) << m_label << ": keeping existing entry for hostname " << namestr << " that expires in " << expires;
 
@@ -276,6 +276,9 @@ void Dir::PickN(unsigned seed, unsigned n, string& namestr, char *buf, unsigned 
 
 		while (pos != nextpos)
 		{
+			if (g_shutdown)
+				return;
+
 			hostname_t& hostname = m_namelist[m_list_head + pos];
 			if (IsClearedHostname(hostname))
 			{
@@ -371,7 +374,7 @@ void Dir::ExpireHead()
 	BOOST_LOG_TRIVIAL(trace) << m_label << ": hostname " << namestr << " expired from hashlist at index " << list_find << " (new head " << m_list_head << " nentries " << m_list_nentries << ") and hashtable at index " << hash_find;
 
 	// look to right to see if there are any entries in use
-	while (true)
+	while (!g_shutdown)
 	{
 		if (++hash_find == m_hash_size)
 			hash_find = 0;
@@ -386,7 +389,7 @@ void Dir::ExpireHead()
 	}
 
 	// found no entry in use on right, so all pointers to left of the HASH_POINTER_NULL should also be set to HASH_POINTER_NULL
-	while (true)
+	while (!g_shutdown)
 	{
 		if (--hash_find >= m_hash_size)
 			hash_find = m_hash_size - 1;
@@ -447,7 +450,7 @@ void Dir::ExpireProc()
 				m_expire_count_index = 0;
 		}
 
-		ccsleep(1);
+		sleep(1);
 	}
 }
 

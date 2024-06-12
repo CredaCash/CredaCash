@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * block.hpp
 */
@@ -14,14 +14,13 @@
 #include <PackedInt.hpp>
 #include <CCparams.h>
 
-#define BLOCKLEVEL_BYTES			(32/8)
-#define BLOCKTIME_BYTES				(32/8)
+#include <ed25519/ed25519.h>
 
 #define MAX_NWITNESSES				21
 
 #define ROTATE_BLOCK_SIGNING_KEYS	0		// if true, witnesses generate a new signing key with each block signed; not currently supported because there is currently no way to reset a witness's signing key which might be required to restart the witness after a server outage
 
-//#define TEST_SIM_ALL_WITNESSES		1
+//#define TEST_SIM_ALL_WITNESSES	1
 
 #ifndef TEST_SIM_ALL_WITNESSES
 #define TEST_SIM_ALL_WITNESSES		0	// don't test
@@ -33,10 +32,13 @@
 #define TEST_SEQ_BLOCK_OID		0	// don't test
 #endif
 
-typedef array<uint8_t, 256/8> block_signing_private_key_t;
-typedef array<uint8_t, 256/8> block_signing_public_key_t;
-typedef array<uint8_t, 512/8> block_signature_t;
+typedef ed25519_secret_key block_signing_private_key_t;
+typedef ed25519_public_key block_signing_public_key_t;
+typedef ed25519_signature block_signature_t;
 typedef array<uint8_t, 512/8> block_hash_t;
+
+typedef PackedUnsigned<CC_BLOCKLEVEL_WIRE_BYTES> block_level_t;
+typedef PackedUnsigned<CC_BLOCKTIME_WIRE_BYTES, 1, TX_TIME_OFFSET> block_timestamp_t;
 
 #pragma pack(push, 1)
 
@@ -49,23 +51,12 @@ public:
 	block_signing_public_key_t witness_next_signing_public_key;
 #endif
 	ccoid_t prior_oid;
-	PackedUnsigned<BLOCKLEVEL_BYTES> level;
-	PackedUnsigned<BLOCKTIME_BYTES, 1, TX_TIME_OFFSET> timestamp;
+	block_level_t level;
+	block_timestamp_t timestamp;
 	uint8_t witness;
 };
 
-struct BlockSignedData
-{
-	block_hash_t prior_block_hash;
-	block_hash_t block_hash;
-#if ROTATE_BLOCK_SIGNING_KEYS
-	block_signing_public_key_t witness_next_signing_public_key;
-#endif
-	uint32_t block_size;
-	uint8_t witness;
-};
-
-#pragma pack(pop)
+#pragma pack(16)
 
 class BlockAux
 {
@@ -115,6 +106,8 @@ public:
 	void SetHash(const block_hash_t& block_hash);
 	void SetOid(const ccoid_t& oid);
 };
+
+#pragma pack(pop)
 
 class Block : public CCObject
 {

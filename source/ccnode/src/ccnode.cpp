@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * ccnode.cpp
 */
@@ -12,6 +12,8 @@
 #include "blockchain.hpp"
 #include "processblock.hpp"
 #include "processtx.hpp"
+#include "process-xreq.hpp"
+#include "foreign-query.hpp"
 #include "witness.hpp"
 #include "expire.hpp"
 
@@ -20,31 +22,38 @@
 
 #include <tor.h>
 
-#include <sqlite/sqlite3.h>
 #include <dblog.h>
+#include <sqlite/sqlite3.h>
 
 #include <boost/program_options/options_description.hpp>
 #include <boost/program_options/parsers.hpp>
 
-//#define TEST_TX_DIFFICULTY_ZERO			1
 //#define TEST_SKIP_RELAY_CONNS_CHECK		1
+//#define TEST_SKIP_OBJ_MEM_CHECK			1
 
-#ifndef TEST_TX_DIFFICULTY_ZERO
-#define TEST_TX_DIFFICULTY_ZERO			0	// don't test
-#endif
+//#define TEST_TX_DIFFICULTY_ZERO			1
 
 #ifndef TEST_SKIP_RELAY_CONNS_CHECK
 #define TEST_SKIP_RELAY_CONNS_CHECK		0	// don't skip
+#endif
+
+#ifndef TEST_SKIP_OBJ_MEM_CHECK
+#define TEST_SKIP_OBJ_MEM_CHECK			0	// don't skip
+#endif
+
+#ifndef TEST_TX_DIFFICULTY_ZERO
+#define TEST_TX_DIFFICULTY_ZERO			0	// don't test
 #endif
 
 #define DEFAULT_TX_VALIDATION_THREADS	16
 
 #define DEFAULT_DIR_SERVERS_FILE			"rendezvous-#.lis"
 #define DEFAULT_GENESIS_DATA_FILE			"genesis-#.dat"
+#define DEFAULT_HISTORY_DATA_FILE			"history-#.dat"
 #define DEFAULT_PRIVATE_RELAY_HOSTS_FILE	"private_relay_hosts.lis"
 
 #define DEFAULT_TRACE_LEVEL	4
-#define TRACE_SHUTDOWN		1
+#define TRACE_SHUTDOWN		0
 
 #if 0 // not yet used
 static void set_storage()
@@ -78,16 +87,23 @@ static void set_storage()
 }
 #endif
 
-void set_service_configs()
+void set_service_pre_configs()
 {
 	g_tor_services.push_back(&g_transact_service);
 	g_tor_services.push_back(&g_relay_service);
 	g_tor_services.push_back(&g_privrelay_service);
 	g_tor_services.push_back(&g_blockserve_service);
 	g_tor_services.push_back(&g_blocksync_client);
+	g_tor_services.push_back(&g_foreignrpc_client);
 	g_tor_services.push_back(&g_control_service);
 	g_tor_services.push_back(&g_tor_control_service);
 
+	for (unsigned i = 0; i < g_tor_services.size(); ++i)
+		g_tor_services[i]->ConfigPreset();
+}
+
+void set_service_configs()
+{
 	TorService::SetPorts(g_tor_services, g_params.base_port + TRANSACT_PORT);
 
 	g_params.torproxy_port = g_tor_services[g_tor_services.size()-1]->port + 1;
@@ -107,23 +123,27 @@ static void do_show_config()
 	cout << "   proof key directory = " << w2s(g_params.proof_key_dir) << endl;
 	cout << "   path to Tor exe = " << w2s(g_params.tor_exe) << endl;
 	cout << "   path to Tor config file = " << w2s(g_params.tor_config) << endl;
-	cout << "   rendezvous servers file = " << w2s(g_params.directory_servers_file) << endl;
+	cout << "   rendezvous servers file = " << w2s(g_params.rendezvous_servers_file) << endl;
 	cout << "   genesis block data file = " << w2s(g_params.genesis_data_file) << endl;
+	if (g_params.blockchain == MAINNET_BLOCKCHAIN)
+		cout << "   blockchain history data file = " << w2s(g_params.history_data_file) << endl;
 	//cout << "   store blocks = " << yesno(g_store_blocks) << endl;
 	//cout << "   store created bills = " << yesno(g_store_created) << endl;
 	//cout << "   store spent bills = " << yesno(g_store_spent) << endl;
 	cout << "   base port = " << g_params.base_port << endl;
+	cout << "   rendezvous server difficulty = " << g_params.rendezvous_server_difficulty << endl;
 	cout << "   max object memory in MB = " << g_params.max_obj_mem << endl;
 	cout << "   tx validation threads = " << g_params.tx_validation_threads << endl;
 	cout << "   block future tolerance = " << g_params.block_future_tolerance << endl;
 	cout << "   db checkpoint interval = " << g_params.db_checkpoint_sec << endl;
+	cout << "   index transaction outputs = " << yesno(g_params.index_txouts) << endl;
 
 	cout << endl;
 
 	for (unsigned i = 0; i < g_tor_services.size(); ++i)
 		g_tor_services[i]->DumpConfig();
 
-	if (g_witness.IsWitness())
+	if (IsWitness())
 	{
 	cout << "Witness settings:" << endl;
 	cout << "   witness index = " << g_witness.witness_index << endl;
@@ -144,18 +164,26 @@ static void do_show_config()
 	cout << "   trace host directory queries = " << yesno(g_params.trace_host_dir) << endl;
 	cout << "   trace witness = " << yesno(g_params.trace_witness) << endl;
 	cout << "   trace tx validation = " << yesno(g_params.trace_tx_validation) << endl;
+	cout << "   trace exchange request validation = " << yesno(g_params.trace_xreq_validation) << endl;
 	cout << "   trace block validation = " << yesno(g_params.trace_block_validation) << endl;
 	cout << "   trace serialnum check = " << yesno(g_params.trace_serialnum_check) << endl;
 	cout << "   trace commitments = " << yesno(g_params.trace_commitments) << endl;
+	cout << "   trace exchange = " << yesno(g_params.trace_exchange) << endl;
+	cout << "   trace exchange mining = " << yesno(g_params.trace_exchange_mining) << endl;
 	cout << "   trace delible tx_check = " << yesno(g_params.trace_delibletx_check) << endl;
 	cout << "   trace blockchain = " << yesno(g_params.trace_blockchain) << endl;
-	cout << "   trace persistent DB = " << yesno(g_params.trace_persistent_db) << endl;
+	cout << "   trace foreign RPC queries = " << yesno(g_params.trace_foreign_rpc) << endl;
+	cout << "   trace foreign RPC communication = " << yesno(g_params.trace_foreign_conn) << endl;
+	cout << "   trace persistent DB reads = " << yesno(g_params.trace_persistent_db_reads) << endl;
+	cout << "   trace persistent DB writes = " << yesno(g_params.trace_persistent_db_writes) << endl;
 	cout << "   trace WAL DB operations = " << yesno(g_params.trace_wal_db) << endl;
 	cout << "   trace pending serialnum DB = " << yesno(g_params.trace_pending_serialnum_db) << endl;
 	cout << "   trace relay DB = " << yesno(g_params.trace_relay_db) << endl;
 	cout << "   trace validation queue DB = " << yesno(g_params.trace_validation_q_db) << endl;
 	cout << "   trace valid object DB = " << yesno(g_params.trace_validobj_db) << endl;
+	cout << "   trace exchange DB = " << yesno(g_params.trace_exchange_db) << endl;
 	cout << "   trace object expiration = " << yesno(g_params.trace_expire) << endl;
+	cout << "   trace connections = " << yesno(g_trace_ccserver) << endl;
 	cout << endl;
 }
 
@@ -170,8 +198,12 @@ static void check_config_values()
 	if (g_params.genesis_maxmal < 0 || g_params.genesis_maxmal >= (g_params.genesis_nwitnesses + 1) / 2)
 		throw range_error("Invalid value for genesis malicious witness allowance");
 
+	#if !TEST_SKIP_OBJ_MEM_CHECK
+
 	if (g_params.max_obj_mem < 100 || g_params.max_obj_mem > 4096)
 		throw range_error("Max object memory MB not in valid range");
+
+	#endif
 
 	if (g_params.tx_validation_threads < 1 || g_params.tx_validation_threads > 2000)
 		throw range_error("Tx validation threads value not in valid range");
@@ -181,6 +213,9 @@ static void check_config_values()
 
 	if (g_params.db_checkpoint_sec < 0 || g_params.db_checkpoint_sec > 3600)
 		throw range_error("Database checkpoint seconds not in valid range");
+
+	if (g_transact_service.enabled && !g_params.index_txouts)
+		throw range_error("transactions must be indexed for the transaction service to work correctly");
 
 	if (g_params.base_port < 1 || g_params.base_port > 0xFFFF - TOR_PORT)
 		throw range_error("baseport value not in valid range");
@@ -209,6 +244,24 @@ static void check_config_values()
 		throw range_error("Maximum number of incoming relay connections must be at least 1.5 * the number of outgoing relay connections");
 
 	#endif
+
+	if (IsWitness())
+	{
+		if (!g_foreignrpc_client.enabled || g_foreignrpc_client.max_outconns < 1)
+			throw range_error("Witness must have foreign RPC enabled");
+
+		if (!g_foreignrpc_client.rpc_port[XREQ_BLOCKCHAIN_BTC])
+			throw range_error("Witness must have Bitcoin (BTC) RPC enabled");
+
+		if (!g_foreignrpc_client.rpc_port[XREQ_BLOCKCHAIN_BCH])
+			throw range_error("Witness must have Bitcoin Cash (BCH) RPC enabled");
+
+		if (g_foreignrpc_client.verify_level[XREQ_BLOCKCHAIN_BTC] < ForeignRpcClient::VerifyLevel::Strict_Relay)
+			throw range_error("Witness must have Bitcoin (BTC) verify set to " + to_string(ForeignRpcClient::VerifyLevel::Strict_Relay) + " or higher");
+
+		if (g_foreignrpc_client.verify_level[XREQ_BLOCKCHAIN_BCH] < ForeignRpcClient::VerifyLevel::Strict_Relay)
+			throw range_error("Witness must have Bitcoin Cash (BCH) verify set to " + to_string(ForeignRpcClient::VerifyLevel::Strict_Relay) + " or higher");
+	}
 }
 
 static int process_options(int argc, char **argv)
@@ -235,7 +288,8 @@ static int process_options(int argc, char **argv)
 #else
 				"~/." CCAPPDIR "\").")
 #endif
-		("rendezvous-file", po::wvalue<wstring>(&g_params.directory_servers_file), "Path to file containing a list of peer rendezvous servers; a \"#\" character in this path will be replaced by the blockchain number (default: \"" DEFAULT_DIR_SERVERS_FILE "\" in same directory as this program).")
+		("rendezvous-file", po::wvalue<wstring>(&g_params.rendezvous_servers_file), "Path to file containing a list of peer rendezvous servers; a \"#\" character in this path will be replaced by the blockchain number (default: \"" DEFAULT_DIR_SERVERS_FILE "\" in same directory as this program).")
+		("rendezvous-difficulty", po::wvalue<long long>(&g_params.rendezvous_server_difficulty)->default_value(360000), "Proof of work difficulty for peer rendezvous server.")
 		("genesis-file", po::wvalue<wstring>(&g_params.genesis_data_file), "Path to file containing data for the genesis block; a \"#\" character in this path will be replaced by the blockchain number (default: \"" DEFAULT_GENESIS_DATA_FILE "\" in same directory as this program).")
 		("genesis-generate", "Generate new genesis block data files.")
 		("genesis-nwitnesses", po::value<int>(&g_params.genesis_nwitnesses)->default_value(1), "Initial # of witnesses when generating new genesis block data files.")
@@ -245,7 +299,7 @@ static int process_options(int argc, char **argv)
 		("tor-config", po::wvalue<wstring>(&g_params.tor_config), "Path to Tor configuration file (default: \"" TOR_CONFIG "\" in same directory as this program).")
 		("obj-memory-max", po::value<int>(&g_params.max_obj_mem)->default_value(500), "Maximum object (block and transaction) memory in MB.")
 		("tx-validation-threads", po::value<int>(&g_params.tx_validation_threads)->default_value(-1), "Transaction validation threads (-1 = auto config).")
-		("block-future-tolerance", po::value<int>(&g_params.block_future_tolerance)->default_value(3800), "Block future timestamp tolerance in seconds.")
+		("block-future-tolerance", po::value<int>(&g_params.block_future_tolerance)->default_value(3900), "Block future timestamp tolerance in seconds.")
 		("db-checkpoint-sec", po::value<int>(&g_params.db_checkpoint_sec)->default_value(21), "Database checkpoint interval in seconds (0 = continuous).")
 		("baseport", po::value<int>(&g_params.base_port)->default_value(0), (string("Base port for node interfaces\n")
 			+ "(default: " STRINGIFY(BASE_PORT) "+20*(blockchain modulo " + to_string((BASE_PORT_TOP-BASE_PORT)/20) + ")"
@@ -264,7 +318,7 @@ static int process_options(int argc, char **argv)
 		("transact-threads", po::value<float>(&g_transact_service.threads_per_conn)->default_value(1), "Threads per connection for transaction support service.")
 		("transact-difficulty", po::value<uint64_t>(&g_transact_service.query_work_difficulty)->default_value(0), "Proof-of-work difficulty for transaction server queries (0 = none, otherwise lower numbers have more difficulty).")
 		("transact-max-network-sec", po::value<int32_t>(&g_transact_service.max_net_sec)->default_value(420), "Maximum time in seconds since last block received for transaction server to be considered connected to the network (0 = disabled).")
-		("transact-max-block-sec", po::value<int32_t>(&g_transact_service.max_block_sec)->default_value(50400), "Maximum timestamp age in seconds of last indelible block for transaction server to be considered connected to the network (0 = disabled).")
+		("transact-max-block-sec", po::value<int32_t>(&g_transact_service.max_block_sec)->default_value(3600), "Maximum timestamp age in seconds of last indelible block for transaction server to be considered connected to the network (0 = disabled).")
 		("relay", po::value<bool>(&g_relay_service.enabled)->default_value(1), "Fetch and relay blocks and transactions (at port baseport+" STRINGIFY(RELAY_PORT) ");\n"
 				"if no relay is enabled, this node will receive no updates and will only use data previously stored.")
 		("relay-addr", po::value<string>(&g_relay_service.address_string)->default_value(LOCALHOST), "Network address for relay service;\n"
@@ -294,6 +348,15 @@ static int process_options(int argc, char **argv)
 		("blockserve-tor-auth", po::value<string>(&g_blockserve_service.tor_auth_string)->default_value("none"), "Tor hidden service authentication method (none, basic, or v3).")
 		("blockserve-conns", po::value<int>(&g_blockserve_service.max_inconns)->default_value(1), "Maximum number of incoming connections for blockchain service.")
 		("blocksync-conns", po::value<int>(&g_blocksync_client.max_outconns)->default_value(10), "Maximum number of outgoing connections for blockchain synchonization.")
+		("foreign-rpc-conns", po::value<int>(&g_foreignrpc_client.max_outconns)->default_value(4), "Maximum number of outgoing connections for foreign blockchain RPC.")
+		("foreign-btc-verify-level", po::value<int>(&g_foreignrpc_client.verify_level[XREQ_BLOCKCHAIN_BTC])->default_value(ForeignRpcClient::VerifyLevel::If_Possible), "Verification level for BTC exchange requests (0=No RPC, 1=If possible, 2=Strict Relay, 3=Strict Blocks).")
+		("foreign-rpc-btc-port", po::value<int>(&g_foreignrpc_client.rpc_port[XREQ_BLOCKCHAIN_BTC])->default_value(0), "Local port for BTC node RPC.")
+		("foreign-rpc-btc-username", po::value<string>(&g_foreignrpc_client.rpc_username[XREQ_BLOCKCHAIN_BTC])->default_value("btc"), "Username for BTC node RPC.")
+		("foreign-rpc-btc-password", po::value<string>(&g_foreignrpc_client.rpc_password[XREQ_BLOCKCHAIN_BTC])->default_value(""), "Password for BTC node RPC.")
+		("foreign-bch-verify-level", po::value<int>(&g_foreignrpc_client.verify_level[XREQ_BLOCKCHAIN_BCH])->default_value(ForeignRpcClient::VerifyLevel::If_Possible), "Verification level for BTC exchange requests (0=No RPC, 1=If possible, 2=Strict Relay, 3=Strict Blocks).")
+		("foreign-rpc-bch-port", po::value<int>(&g_foreignrpc_client.rpc_port[XREQ_BLOCKCHAIN_BCH])->default_value(0), "Local port for BCH node RPC.")
+		("foreign-rpc-bch-username", po::value<string>(&g_foreignrpc_client.rpc_username[XREQ_BLOCKCHAIN_BCH])->default_value("bch"), "Username for BCH node RPC.")
+		("foreign-rpc-bch-password", po::value<string>(&g_foreignrpc_client.rpc_password[XREQ_BLOCKCHAIN_BCH])->default_value(""), "Password for BCH node RPC.")
 		("witness-index", po::value<int>(&g_witness.witness_index)->default_value(-1), "Witness index (-1 = disable).")
 		("witness-block-ms", po::value<int>(&g_witness.block_time_ms)->default_value(2000), "Nominal milliseconds between blocks.")
 		("witness-block-min-work-ms", po::value<int>(&g_witness.block_min_work_ms)->default_value(200), "Minimum milliseconds to work assembling a block.")
@@ -321,24 +384,35 @@ static int process_options(int argc, char **argv)
 		("trace-block-sync", po::value<bool>(&g_params.trace_block_sync)->default_value(1), "Trace block sync service")
 		("trace-host-dir", po::value<bool>(&g_params.trace_host_dir)->default_value(1), "Trace host directory queries")
 		("trace-witness", po::value<bool>(&g_params.trace_witness)->default_value(1), "Trace witness")
-		("trace-tx-validation", po::value<bool>(&g_params.trace_tx_validation)->default_value(1), "Trace tx validation")
+		("trace-tx-validation", po::value<bool>(&g_params.trace_tx_validation)->default_value(1), "Trace transaction validation")
+		("trace-xreq-validation", po::value<bool>(&g_params.trace_xreq_validation)->default_value(1), "Trace exchange request validation")
 		("trace-block-validation", po::value<bool>(&g_params.trace_block_validation)->default_value(1), "Trace block validation")
 		("trace-serialnum-check", po::value<bool>(&g_params.trace_serialnum_check)->default_value(1), "Trace serial number check")
 		("trace-commitments", po::value<bool>(&g_params.trace_commitments)->default_value(0), "Trace commitments")
+		("trace-exchange", po::value<bool>(&g_params.trace_exchange)->default_value(0), "Trace exchange")
+		("trace-exchange-mining", po::value<bool>(&g_params.trace_exchange_mining)->default_value(0), "Trace exchange mining")
 		("trace-delibletx-check", po::value<bool>(&g_params.trace_delibletx_check)->default_value(0), "Trace delible tx check")
 		("trace-blockchain", po::value<bool>(&g_params.trace_blockchain)->default_value(1), "Trace blockchain")
-		("trace-persistent-db", po::value<bool>(&g_params.trace_persistent_db)->default_value(0), "Trace persistent DB")
+		("trace-foreign-rpc", po::value<bool>(&g_params.trace_foreign_rpc)->default_value(0), "Trace foreign RPC queries")
+		("trace-foreign-conn", po::value<bool>(&g_params.trace_foreign_conn)->default_value(0), "Trace communication with foreign RPC server")
+		("trace-persistent-db-reads", po::value<bool>(&g_params.trace_persistent_db_reads)->default_value(0), "Trace persistent DB reads")
+		("trace-persistent-db-writes", po::value<bool>(&g_params.trace_persistent_db_writes)->default_value(0), "Trace persistent DB writes")
 		("trace-wal-db", po::value<bool>(&g_params.trace_wal_db)->default_value(0), "Trace write-ahead-log DB operations")
 		("trace-pending-serialnum-db", po::value<bool>(&g_params.trace_pending_serialnum_db)->default_value(0), "Trace pending serial number DB")
 		("trace-relay-db", po::value<bool>(&g_params.trace_relay_db)->default_value(0), "Trace relay DB")
 		("trace-validation-q-db", po::value<bool>(&g_params.trace_validation_q_db)->default_value(0), "Trace validation queue DB")
 		("trace-valid-obj-db", po::value<bool>(&g_params.trace_validobj_db)->default_value(0), "Trace valid object DB")
+		("trace-exchange-db", po::value<bool>(&g_params.trace_exchange_db)->default_value(0), "Trace exchange DB")
 		("trace-expire", po::value<bool>(&g_params.trace_expire)->default_value(0), "Trace object expiration")
+		("trace-connections", po::value<bool>(&g_trace_ccserver)->default_value(0), "Trace low level connection operations")
 	;
 
 	po::options_description hidden_options("");
 	hidden_options.add_options()
+		("db-index-txouts", po::value<bool>(&g_params.index_txouts)->default_value(1))
 		("db-index-mint-donations", po::value<bool>(&g_params.index_mint_donations)->default_value(0))
+		("rendezvous-magic-nonce", po::value<long long>(&g_params.rendezvous_magic_nonce)->default_value(0))
+		("test1", po::value<bool>(&g_params.test1)->default_value(0))
 	;
 
 	po::options_description all;
@@ -348,9 +422,9 @@ static int process_options(int argc, char **argv)
 
 	if (g_params.config_options.count("help"))
 	{
-		cout << CCAPPNAME " v" CCVERSION << endl << endl;
-		cout << basic_options << endl;
-		cout << advanced_options << endl;
+		cerr << CCAPPNAME " v" CCVERSION << endl;
+		cerr << basic_options << endl;
+		cerr << advanced_options << endl;
 
 		return 1;
 	}
@@ -377,14 +451,23 @@ static int process_options(int argc, char **argv)
 
 	// !!! move these to a function
 
-	if (!g_params.directory_servers_file.length())
+	if (!g_params.rendezvous_servers_file.length())
 	{
 		string def = DEFAULT_DIR_SERVERS_FILE;
 		expand_number(def, g_params.blockchain);
-		g_params.directory_servers_file = g_params.process_dir + WIDE(PATH_DELIMITER) + s2w(def);
+		g_params.rendezvous_servers_file = g_params.process_dir + WIDE(PATH_DELIMITER) + s2w(def);
 	}
 	else
-		expand_number_wide(g_params.directory_servers_file, g_params.blockchain);
+		expand_number_wide(g_params.rendezvous_servers_file, g_params.blockchain);
+
+	if (!g_params.history_data_file.length())
+	{
+		string def = DEFAULT_HISTORY_DATA_FILE;
+		expand_number(def, g_params.blockchain);
+		g_params.history_data_file = g_params.process_dir + WIDE(PATH_DELIMITER) + s2w(def);
+	}
+	else
+		expand_number_wide(g_params.history_data_file, g_params.blockchain);
 
 	if (!g_params.genesis_data_file.length())
 	{
@@ -401,25 +484,33 @@ static int process_options(int argc, char **argv)
 	if (g_privrelay_service.priv_host_index == -1)
 		g_privrelay_service.priv_host_index = g_witness.witness_index;
 
+	g_privrelay_service.ConfigPrivateRelay();
+
 	if (!g_params.tor_exe.length())
 		g_params.tor_exe = g_params.process_dir + WIDE(PATH_DELIMITER) + s2w(TOR_EXE);
 
 	if (!g_params.tor_config.length())
 		g_params.tor_config = g_params.process_dir + WIDE(PATH_DELIMITER) + s2w(TOR_CONFIG);
 
-	g_params.server_version = (uint64_t)1 << 32;	//@@!
-	g_params.protocol_version = (uint64_t)1 << 32;	//@@!
-	g_params.effective_level = 0;
+	g_params.server_version = (uint64_t)2 << 32;	//@@!
+	g_params.protocol_version = (uint64_t)2 << 32;	//@@!
+	g_params.params_last_modified_level = 0;
 
-	g_params.default_pool = 1;		//@@!
+	g_params.default_domain = 1;						//@@!
 
 	g_params.max_param_age = 16*60*60;
 	//g_params.max_param_age = 30;	// for testing
 
-	g_params.tx_work_difficulty = (uint64_t)1 << 43; //@@! larger number is easier
+	g_params.tx_work_difficulty = (uint64_t)1 << 41; //@@! larger number is easier
+	g_params.xcx_naked_buy_work_difficulty = g_params.tx_work_difficulty >> 8; //@@!
+	g_params.xcx_pay_work_difficulty = g_params.tx_work_difficulty >> 3; //@@!
+	if (IsTestnet(g_params.blockchain))
+		g_params.xcx_naked_buy_work_difficulty <<= 4; //@@!
 
 	#if TEST_TX_DIFFICULTY_ZERO
 	g_params.tx_work_difficulty = 0;
+	g_params.xcx_naked_buy_work_difficulty = 0;
+	g_params.xcx_pay_work_difficulty = 0;
 	#endif
 
 	//set_storage(); // not implemented
@@ -461,20 +552,20 @@ int _dowildcard = 0;	// disable wildcard globbing
 
 int main(int argc, char **argv)
 {
+	//srand(0);
+	srand(time(NULL));
+
+	//ccticks_test();
+
 	cerr << endl;
 
 	set_handlers();
-
-	//srand(0);
-	srand(time(NULL));
 
 	#if TEST_EXTRA_RANDOM
 	#ifndef _WIN32
 	CCCollectEntropy();
 	#endif
 	#endif
-
-	//ccticks_test();
 
 	g_params.trace_level = DEFAULT_TRACE_LEVEL;
 	//g_params.trace_level = 9;
@@ -483,6 +574,8 @@ int main(int argc, char **argv)
 	g_params.process_dir = get_process_dir();
 	if (!g_params.process_dir.length())
 		return -1;
+
+	set_service_pre_configs();
 
 	try
 	{
@@ -517,6 +610,8 @@ int main(int argc, char **argv)
 	bool need_tor_proxy = true;	// always true?
 	thread tor_thread(tor_start, g_params.process_dir, g_params.tor_exe, g_params.tor_config, g_params.app_data_dir, need_tor_proxy, ref(g_tor_services), g_tor_services.size()-1);
 
+	Xreq::Init();
+
 	CCProof_Init(g_params.proof_key_dir);
 	CCProof_PreloadVerifyKeys(true);
 
@@ -530,6 +625,34 @@ int main(int argc, char **argv)
 	g_blockchain.Init();
 	if (g_blockchain.HasFatalError())
 		goto do_fatal;
+
+	g_foreignrpc_client.Start();
+
+	for (unsigned i = 1; i <= XREQ_BLOCKCHAIN_MAX; ++i)
+	{
+		if (g_foreignrpc_client.GetVerifyLevel(i) < ForeignRpcClient::VerifyLevel::Strict_Blocks)
+			continue;
+
+		cerr << "Waiting for foreign blockchain " << i << endl;
+
+		while (!g_shutdown)
+		{
+			uint64_t height;
+
+			ForeignQuery::QueryBlockHeight(i, height);
+
+			//cerr << "height " << height << endl;
+
+			if (height)
+			{
+				cerr << "Foreign blockchain " << i << " responded with block height " << height << endl;
+
+				break;
+			}
+
+			ccsleep(8);
+		}
+	}
 
 	g_processtx.Init();
 	g_processblock.Init();
@@ -545,7 +668,7 @@ int main(int argc, char **argv)
 	if (0) // for testing
 	{
 		//string in;
-		//cout << "Press return to exit..." << endl;
+		//cerr << "Press return to exit..." << endl;
 		//getline(cin, in); // gdb breakpoints don't work when used?
 	}
 
@@ -557,75 +680,82 @@ int main(int argc, char **argv)
 	start_shutdown();
 
 	{
-		lock_guard<FastSpinLock> lock(g_cout_lock);
+		lock_guard<mutex> lock(g_cerr_lock);
+		check_cerr_newline();
 		cerr << "Shutting down..." << endl;
 	}
 
-		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 1...";
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(info) << "shutdown 1...";
 
 	g_processtx.Stop();
 
-		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 2...";
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(info) << "shutdown 2...";
 
 	g_processblock.Stop();
 
-		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 3...";
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(info) << "shutdown 3...";
 
 	g_transact_service.StartShutdown();
 	g_privrelay_service.StartShutdown();
 	g_relay_service.StartShutdown();
 	g_blocksync_client.StartShutdown();
 	g_blockserve_service.StartShutdown();
+	g_foreignrpc_client.StartShutdown();
 	g_hostdir.DeInit();
 
-		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 4...";
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(info) << "shutdown 4...";
 
 	g_witness.DeInit();
 
-		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 5...";
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(info) << "shutdown 5...";
 
 	g_transact_service.WaitForShutdown();
 	g_privrelay_service.WaitForShutdown();
 	g_relay_service.WaitForShutdown();
 	g_blocksync_client.WaitForShutdown();
 	g_blockserve_service.WaitForShutdown();
+	g_foreignrpc_client.WaitForShutdown();
 
-		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 6...";
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(info) << "shutdown 6...";
 
 	g_processblock.DeInit();
 
-		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 7...";
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(info) << "shutdown 7...";
 
 	g_processtx.DeInit();
 
-		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 8...";
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(info) << "shutdown 8...";
+
+	g_process_xreqs.DeInit();
+
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(info) << "shutdown 9...";
 
 	g_expire.DeInit();
 
 do_fatal:
 
-		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 9...";
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(info) << "shutdown 10...";
 
 	start_shutdown();
 	wait_for_shutdown();
 
-		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 10...";
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(info) << "shutdown 11...";
 
 	g_blockchain.DeInit();
 
-		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 11...";
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(info) << "shutdown 12...";
 
 	dbinit.DeInit();
 
-		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 12...";
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(info) << "shutdown 14...";
 
 	dblog(sqlite3_shutdown());
 
-		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 14...";
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(info) << "shutdown 15...";
 
 	tor_thread.join();
 
-		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(debug) << "shutdown 15...";
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(info) << "shutdown 16...";
 
 	BOOST_LOG_TRIVIAL(info) << CCEXENAME << " done";
 	cerr << CCEXENAME << " done" << endl;

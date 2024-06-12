@@ -1,20 +1,30 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * amounts.cpp
 */
 
-#include "ccwallet.h"
+#include "cclib.h"
 #include "amounts.h"
-
-#include <CCparams.h>
-#include <jsonutil.h>
+#include "CCparams.h"
+#include "jsonutil.h"
 
 #include <boost/math/special_functions/round.hpp>
 
+#ifdef _WIN32
+#define bswap_64	_bswap64
+#else
+#include <byteswap.h>
+#endif
+
+//#define TRACE_AMOUNTS	1
 //#define TEST_AMOUNTS	1
+
+#ifndef TRACE_AMOUNTS
+#define TRACE_AMOUNTS	0 // don't test
+#endif
 
 #ifndef TEST_AMOUNTS
 #define TEST_AMOUNTS	0 // don't test
@@ -111,7 +121,7 @@ static void test_experiment_conversion()
 	test_experiment_convert_one(mm::round(vf * amtfloat_t("1E30")));
 	test_experiment_convert_one(mm::round(vf * amtfloat_t("1E66")));
 	test_experiment_convert_one(mm::round(vf * amtfloat_t("1E67")));
-	test_experiment_convert_one(mm::round(vf * amtfloat_t("1E68")));	// will throw exception with 256 bit checked ints
+	//test_experiment_convert_one(mm::round(vf * amtfloat_t("1E68")));	// will throw exception with 256 bit checked ints
 }
 
 static int test_result_code(bool convert, bool pack_signed, bool pack_unsigned)
@@ -121,7 +131,7 @@ static int test_result_code(bool convert, bool pack_signed, bool pack_unsigned)
 
 static int test_one_amount(const bigint_t& v)
 {
-	cout << "\ntest_one_amount " << hex << v << dec << endl;
+	cout << "\ntest_one_amount " << v << " = " << hex << v << dec << endl;
 
 	bigint_t maxv, minv;
 
@@ -178,7 +188,7 @@ static int test_one_amount(const bigint_t& v)
 	amtfloat_t f2, f3, f4;
 	packed_unsigned_amount_t p1, p2;
 	packed_signed_amount_t p3, p4;
-	const uint64_t asset = 32 - 27;
+	const uint64_t asset = ASSET_NO_SCALE;
 	int rc = 0;
 
 	#define CATCH_AMOUNT_TEST_EXCEPTIONS
@@ -190,20 +200,30 @@ static int test_one_amount(const bigint_t& v)
 		// bigint_t <--> amtint_t
 		amount_from_bigint(v, i1);
 		amount_to_bigint(i1, b1);
+		if (TRACE_AMOUNTS) cout << "i1 " << i1 << " = " << hex << (i1 > 0 ? i1 : 0) << dec << endl;
+		if (TRACE_AMOUNTS) cout << "b1 " << b1 << " = " << hex << b1 << dec << endl;
 
 		// bigint_t <--> amtfloat_t
 		amount_to_float(asset, v, f2);
 		rc |= amount_from_float(asset, f2, b2);
+		if (TRACE_AMOUNTS) cout << "f2 " << f2 << endl;
+		if (TRACE_AMOUNTS) cout << "b2 " << b2 << " = " << hex << b2 << dec << endl;
 
 		// amtint_t <--> amtfloat_t --> bigint_t
 		amount_to_float(asset, i1, f3);
 		rc |= amount_from_float(asset, f3, i3);
 		rc |= amount_from_float(asset, f3, b3);
+		if (TRACE_AMOUNTS) cout << "f3 " << f3 << endl;
+		if (TRACE_AMOUNTS) cout << "i3 " << i3 << " = " << hex << (i3 > 0 ? i3 : 0) << dec << endl;
+		if (TRACE_AMOUNTS) cout << "b3 " << b3 << " = " << hex << b3 << dec << endl;
 
 		// amtfloat_t <--> amtint_t --> bigint_t
 		rc |= amount_from_float(asset, f2, i4);
 		amount_to_float(asset, i4, f4);
 		amount_to_bigint(i4, b4);
+		if (TRACE_AMOUNTS) cout << "i4 " << i4 << " = " << hex << (i4 > 0 ? i4 : 0) << dec << endl;
+		if (TRACE_AMOUNTS) cout << "f4 " << f4 << endl;
+		if (TRACE_AMOUNTS) cout << "b4 " << b4 << " = " << hex << b4 << dec << endl;
 	}
 	#ifdef CATCH_AMOUNT_TEST_EXCEPTIONS
 	catch (...)
@@ -219,8 +239,6 @@ static int test_one_amount(const bigint_t& v)
 	CCASSERTZ(isbad && !rc);
 
 	if (rc) return test_result_code(rc, 0, 0);
-
-	//cout << "b2 " << hex << b2 << dec << endl;
 
 	CCASSERT(v == b1);
 	CCASSERT(v == b2);
@@ -522,7 +540,7 @@ void amount_from_bigint(const bigint_t& amount, amtint_t& val)
 	if (neg)
 		subBigInt(bigint_t(0UL), adj_amount, adj_amount, false);
 
-	if (TEST_AMOUNTS) cout << "amount_from_bigint neg " << neg << " amount " << hex << amount << " adj_amount " << adj_amount << dec << endl;
+	if (TRACE_AMOUNTS) cout << "amount_from_bigint neg " << neg << " amount " << amount << " = " << hex << amount << dec << " adj_amount " << adj_amount << " = " << hex << adj_amount << dec << endl;
 
 	val = BIGWORD(adj_amount, 3);
 	val <<= 64;
@@ -542,7 +560,7 @@ void amount_to_bigint(const amtint_t& amount, bigint_t& val)
 	if (amount < 0)
 		adj_amount = -amount;
 
-	if (TEST_AMOUNTS) cout << "amount_to_bigint (amount < 0) " << (amount < 0) << " adj_amount " << hex << adj_amount << dec << endl;
+	if (TRACE_AMOUNTS) cout << "amount_to_bigint (amount < 0) " << (amount < 0) << " adj_amount " << adj_amount << " = " << hex << adj_amount << dec << endl;
 
 	BIGWORD(val, 0) = (uint64_t)(adj_amount & UINT64_MAX);
 	adj_amount >>= 64;
@@ -628,11 +646,16 @@ static const amtfloat_t scale_from_int[32] =
 	amtfloat_t("1E-31")
 };
 
+amtfloat_t asset_scale_factor(uint64_t asset)
+{
+	return scale_to_int[(asset - ASSET_NO_SCALE) & 31];
+}
+
 int amount_from_float(uint64_t asset, const amtfloat_t& val, amtint_t& amount)
 {
-	auto v2 = mm::round(val * scale_to_int[(asset + 27) & 31]);
+	auto v2 = mm::round(val * scale_to_int[(asset - ASSET_NO_SCALE) & 31]);
 
-	if (TEST_AMOUNTS) cout << "amount_from_float asset " << asset << " val " << fixed << val << " amount_float_max " << amount_float_max << " amount_int_max " << amount_int_max << " hex " << hex << amount_int_max << dec << endl;
+	if (TRACE_AMOUNTS) cout << "amount_from_float asset " << asset << " val " << fixed << val << " amount_float_max " << amount_float_max << " amount_int_max " << amount_int_max << " hex " << hex << amount_int_max << dec << endl;
 
 	if (v2 < -amount_float_max)	// INT64_MIN is not allowed because some functions compute -amount
 	{
@@ -653,7 +676,7 @@ int amount_from_float(uint64_t asset, const amtfloat_t& val, amtint_t& amount)
 
 	ss >> amount;
 
-	if (TEST_AMOUNTS) cout << "amount_from_float ss " << ss.str() << " amount " << amount << endl;
+	if (TRACE_AMOUNTS) cout << "amount_from_float ss " << ss.str() << " amount " << amount << endl;
 
 	return 0;
 }
@@ -676,7 +699,7 @@ void amount_to_float(uint64_t asset, const amtint_t& amount, amtfloat_t& val)
 	if (dotest)
 	{
 		dotest = false;
-		//test_experiment_conversion();
+		test_experiment_conversion();
 		test_amounts();
 	}
 	#endif
@@ -685,28 +708,34 @@ void amount_to_float(uint64_t asset, const amtint_t& amount, amtfloat_t& val)
 	if (amount < 0)
 		adj_amount = -amount;
 
-	if (TEST_AMOUNTS) cout << "amount_to_float asset " << asset << " (amount < 0) " << (amount < 0) << " adj_amount " << hex << adj_amount << dec << endl;
+	if (TRACE_AMOUNTS) cout << "amount_to_float asset " << asset << " (amount < 0) " << (amount < 0) << " adj_amount " << hex << adj_amount << dec << endl;
 
 	static const amtfloat_t upshift = (amtfloat_t)((uint64_t)1 << 63) * 2;
-	auto scale = scale_from_int[(asset + 27) & 31];
+	auto scale = scale_from_int[(asset - ASSET_NO_SCALE) & 31];
 
-	val  = (uint64_t)((adj_amount >> (3*64)) & UINT64_MAX);
-	val *= upshift;
-	val += (uint64_t)((adj_amount >> (2*64)) & UINT64_MAX);
-	val *= upshift;
-	val += (uint64_t)((adj_amount >> (1*64)) & UINT64_MAX);
-	val *= upshift;
-	val += (uint64_t)((adj_amount >> (0*64)) & UINT64_MAX);
-	val *= scale;
+	mp::cpp_dec_float_100 big_val;
+	big_val  = (uint64_t)((adj_amount >> (3*64)) & UINT64_MAX);
+	big_val *= upshift;
+	big_val += (uint64_t)((adj_amount >> (2*64)) & UINT64_MAX);
+	big_val *= upshift;
+	big_val += (uint64_t)((adj_amount >> (1*64)) & UINT64_MAX);
+	big_val *= upshift;
+	big_val += (uint64_t)((adj_amount >> (0*64)) & UINT64_MAX);
+	big_val *= scale;
 
 	if (amount < 0)
-		val = -val;
+		big_val = -big_val;
 
-	//cout << "amount_to_float amount " << amount << " upshift " << upshift << " asset " << asset << " scale "<< scale << " val " << val << endl;
-	//stringstream ss;
-	//ss.precision(100);
-	//ss << fixed << val;
-	//cout << "amount_to_float    val " << ss.str() << endl;
+	val = (amtfloat_t)big_val;
+
+	if (TRACE_AMOUNTS)
+	{
+		cout << "amount_to_float amount " << amount << " upshift " << upshift << " asset " << asset << " scale " << scale << " val " << big_val << endl;
+		stringstream ss;
+		ss.precision(100);
+		ss << fixed << val;
+		cout << "amount_to_float    val " << ss.str() << endl;
+	}
 }
 
 void amount_to_float(uint64_t asset, const bigint_t& amount, amtfloat_t& val)
@@ -718,27 +747,27 @@ void amount_to_float(uint64_t asset, const bigint_t& amount, amtfloat_t& val)
 	amount_to_float(asset, vi, val);
 }
 
-void amount_to_string(uint64_t asset, const amtint_t& amount, string& s)
+void amount_to_string(uint64_t asset, const amtint_t& amount, string& s, bool add_decimal)
 {
 	amtfloat_t val;
 
 	amount_to_float(asset, amount, val);
 
-	amount_to_string(val, s);
+	amount_to_string(val, s, add_decimal);
 }
 
-void amount_to_string(uint64_t asset, const bigint_t& amount, string& s)
+void amount_to_string(uint64_t asset, const bigint_t& amount, string& s, bool add_decimal)
 {
 	amtfloat_t val;
 
 	amount_to_float(asset, amount, val);
 
-	amount_to_string(val, s);
+	amount_to_string(val, s, add_decimal);
 }
 
-void amount_to_string(amtfloat_t& amount, string& s)
+void amount_to_string(const amtfloat_t& amount, string& s, bool add_decimal)
 {
-	if (TEST_AMOUNTS) cout << "amount_to_string " << hex << amount << dec << endl;
+	if (TRACE_AMOUNTS) cout << "amount_to_string " << hex << amount << dec << endl;
 
 	//amount = (amtfloat_t)("12345678911234567892123456789312345678941234567895123456789612345678971234567898e-90");
 	//amount = (amtfloat_t)("1e-31");
@@ -766,6 +795,9 @@ void amount_to_string(amtfloat_t& amount, string& s)
 			else if (z != string::npos)
 				s.erase(z + 1);
 		}
+
+		if (add_decimal && s.find('.') == string::npos)
+			s.append(".0");
 	}
 
 	//cout << "amount_to_string out " << s << endl;
@@ -773,7 +805,7 @@ void amount_to_string(amtfloat_t& amount, string& s)
 
 void unpack_unsigned_amount(const packed_unsigned_amount_t& packed, bigint_t& amount)
 {
-	if (TEST_AMOUNTS) cout << "unpack_unsigned_amount " << hex << packed.hi << ":" << packed.lo << dec << endl;
+	if (TRACE_AMOUNTS) cout << "unpack_unsigned_amount " << hex << packed.hi << ":" << packed.lo << dec << endl;
 
 	BIGWORD(amount, 0) = bswap_64(packed.lo);
 	BIGWORD(amount, 1) = bswap_64(packed.hi);
@@ -800,7 +832,7 @@ void unpack_unsigned_amount(const void *packed, amtint_t& amount)
 
 int pack_unsigned_amount(const bigint_t& amount, packed_unsigned_amount_t& packed)
 {
-	if (TEST_AMOUNTS) cout << "pack_unsigned_amount " << hex << amount << dec << endl;
+	if (TRACE_AMOUNTS) cout << "pack_unsigned_amount " << hex << amount << dec << endl;
 
 	packed.lo = bswap_64(BIGWORD(amount, 0));				// byte-swapped so binary sort order is same as numeric sort order
 	packed.hi = bswap_64(BIGWORD(amount, 1));
@@ -811,7 +843,7 @@ int pack_unsigned_amount(const bigint_t& amount, packed_unsigned_amount_t& packe
 
 	auto rc = (unpacked != amount);
 
-	if (rc) BOOST_LOG_TRIVIAL(error) << "pack_unsigned_amount error packing amount " << amount << " hex " << hex << amount << " unpacked " << unpacked << " packed " << packed.hi << ":" << packed.lo << dec;
+	if (rc) cout << "pack_unsigned_amount error packing amount " << amount << " hex " << hex << amount << " unpacked " << unpacked << " packed " << packed.hi << ":" << packed.lo << dec << " thread " << cc_thread_id() << endl;
 
 	return rc;
 }
@@ -829,7 +861,7 @@ const static bigint_t pack_offset = (bigint_t)((uint64_t)1 << 63) * (bigint_t)((
 
 void unpack_signed_amount(const packed_signed_amount_t& packed, bigint_t& amount)
 {
-	if (TEST_AMOUNTS) cout << "unpack_signed_amount " << hex << packed.hi << ":" << packed.mid << ":" << packed.lo << dec << endl;
+	if (TRACE_AMOUNTS) cout << "unpack_signed_amount " << hex << packed.hi << ":" << packed.mid << ":" << packed.lo << dec << endl;
 
 	BIGWORD(amount, 0) = bswap_64(packed.lo);
 	BIGWORD(amount, 1) = bswap_64(packed.mid);
@@ -864,7 +896,7 @@ void unpack_signed_amount(const void *packed, amtint_t& amount)
 
 int pack_signed_amount(const bigint_t& amount, packed_signed_amount_t& packed)
 {
-	if (TEST_AMOUNTS) cout << "pack_signed_amount " << hex << amount << " pack_offset " << pack_offset << dec << endl;
+	if (TRACE_AMOUNTS) cout << "pack_signed_amount " << hex << amount << " pack_offset " << pack_offset << dec << endl;
 
 	bigint_t adj_amount = amount;
 
@@ -880,7 +912,7 @@ int pack_signed_amount(const bigint_t& amount, packed_signed_amount_t& packed)
 
 	auto rc = (unpacked != amount);
 
-	if (rc) BOOST_LOG_TRIVIAL(error) << "pack_signed_amount error packing amount " << amount << " hex " << hex << amount << " unpacked " << unpacked << " packed " << packed.hi << ":" << packed.lo << dec;
+	if (rc) cout << "pack_signed_amount error packing amount " << amount << " hex " << hex << amount << " unpacked " << unpacked << " packed " << packed.hi << ":" << packed.lo << dec << endl;
 
 	return rc;
 }

@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * interactive.cpp
 */
@@ -10,14 +10,14 @@
 #include "interactive.h"
 #include "jsonrpc.h"
 #include "walletdb.hpp"
-#include "amounts.h"
 
+#include <amounts.h>
 #include <jsoncpp/json/json.h>
 
 static bool add_quotes(const string& p)
 {
 	// add double quotes unless the param is true, false, null,
-	// or a base10 integer or decimal number
+	// or a base10 integer, decimal number or floating point number
 
 	if (!p.length())
 		return true;
@@ -26,6 +26,7 @@ static bool add_quotes(const string& p)
 		return false;
 
 	bool decimal = false;
+	bool exp = false;
 
 	for (unsigned j = 0; j < p.length(); ++j)
 	{
@@ -34,12 +35,25 @@ static bool add_quotes(const string& p)
 		if (j == 0 && c == '-')
 			continue;
 
-		if (c == '.')
+		if (c == '.' && !decimal && !exp)
 		{
-			if (decimal)
+			decimal = true;
+
+			continue;
+		}
+
+		if (j && (c == 'e' || c == 'E') && !exp)
+		{
+			exp = true;
+
+			if (j + 1 == p.length())
 				return true;
 
-			decimal = true;
+			if (p[j + 1] == '+' || p[j + 1] == '-')
+				++j;
+
+			if (j + 1 == p.length())
+				return true;
 
 			continue;
 		}
@@ -55,40 +69,43 @@ string command_line_to_json()
 {
 	string json;
 
-	if (g_params.config_options.count("command"))
+	if (!g_params.config_options.count("command"))
+		return json;
+
+	auto cmd = g_params.config_options["command"].as<vector<string>>();
+
+	if (cmd[0] == "stop" || cmd[0] == "STOP")
+		return "stop";
+
+	json = "{\"method\":\"";
+	json += cmd[0];
+	json += "\",\"params\":[";
+	for (unsigned i = 1; i < cmd.size(); ++i)
 	{
-		auto cmd = g_params.config_options["command"].as<vector<string>>();
+		if (i > 1)
+			json += ",";
 
-		json = "{\"method\":\"";
-		json += cmd[0];
-		json += "\",\"params\":[";
-		for (unsigned i = 1; i < cmd.size(); ++i)
+		auto p = cmd[i];
+		auto plen = p.length();
+
+		if (p[0] == '\'' && p[plen-1] == '\'')
 		{
-			if (i > 1)
-				json += ",";
-
-			auto p = cmd[i];
-			auto plen = p.length();
-
-			if (p[0] == '\'' && p[plen-1] == '\'')
-			{
-				p.erase(plen-1);
-				p.erase(0, 1);
-			}
-
-			auto quote = add_quotes(p);
-
-			if (quote)
-				json += "\"";
-
-			json += p;
-
-			if (quote)
-				json += "\"";
+			p.erase(plen-1);
+			p.erase(0, 1);
 		}
 
-		json += "]}";
+		auto quote = add_quotes(p);
+
+		if (quote)
+			json += "\"";
+
+		json += p;
+
+		if (quote)
+			json += "\"";
 	}
+
+	json += "]}";
 
 	return json;
 }
@@ -114,7 +131,7 @@ static string input_to_json(const string& input)
 	{
 		auto c = cstr[i];
 
-		//cerr << "input parse ntokens " << ntokens << " needs_comma " << needs_comma << " tstart " << tstart << " tend " << tend << " quoted " << quoted<< " escaped " << escaped << " pos " << i << " char " << (unsigned)c << " = '" << c << "' token '" << token << "' json " << json << endl;
+		//cerr << "input parse ntokens " << ntokens << " needs_comma " << needs_comma << " tstart " << tstart << " tend " << tend << " quoted " << quoted << " escaped " << escaped << " pos " << i << " char " << (unsigned)c << " = '" << c << "' token '" << token << "' json " << json << endl;
 
 		if (c && c < ' ')
 			continue;						// ignore all control chars
@@ -178,7 +195,7 @@ static string input_to_json(const string& input)
 			continue;
 		}
 
-		//cerr << "input add ntokens " << ntokens << " needs_comma " << needs_comma << " tstart " << tstart << " tend " << tend << " quoted " << quoted<< " escaped " << escaped << " pos " << i << " char " << (unsigned)c << " = '" << c << "' token '" << token << "' json " << json << endl;
+		//cerr << "input add ntokens " << ntokens << " needs_comma " << needs_comma << " tstart " << tstart << " tend " << tend << " quoted " << quoted << " escaped " << escaped << " pos " << i << " char " << (unsigned)c << " = '" << c << "' token '" << token << "' json " << json << endl;
 
 		if (!ntokens++)
 		{
@@ -229,7 +246,8 @@ void do_interactive(DbConn *dbconn, TxQuery& txquery)
 		while (!input.length())
 		{
 			{
-				lock_guard<FastSpinLock> lock(g_cout_lock);
+				lock_guard<mutex> lock(g_cerr_lock);
+				check_cerr_newline();
 				cerr << CCEXENAME "> ";
 			}
 
@@ -254,7 +272,8 @@ void do_interactive(DbConn *dbconn, TxQuery& txquery)
 		}
 
 		{
-			lock_guard<FastSpinLock> lock(g_cout_lock);
+			lock_guard<mutex> lock(g_cerr_lock);
+			check_cerr_newline();
 			cerr << endl;
 		}
 
@@ -272,15 +291,16 @@ void do_interactive(DbConn *dbconn, TxQuery& txquery)
 		{
 			input = "help";
 
-			lock_guard<FastSpinLock> lock(g_cout_lock);
+			lock_guard<mutex> lock(g_cerr_lock);
+			check_cerr_newline();
 
 			cerr <<
 			"command [params ...]\n"
 			"\n"
-			"- Spaces or commas separate parameters, except when escaped or inside double quotes\n"
-			"- {} and [] delimit objects and lists, except when escaped or inside double quotes\n"
-			"- The \\ is an escape character and is not included in the parameter value except for \\n\n"
-			"- A double quote only closes a quoted string when followed by a space or delimiter\n"
+			"- Spaces or commas separate parameters, except when escaped or inside double quotes.\n"
+			"- {} and [] delimit objects and lists, except when escaped or inside double quotes.\n"
+			"- The \\ is an escape character and is not included in the parameter value except for \\n.\n"
+			"- A double quote only closes a quoted string when followed by a space or delimiter.\n"
 			"\n"
 			//"==Local commands==\n"
 			//"stop - Shutdown RPC server and exit\n"
@@ -298,38 +318,33 @@ void do_interactive(DbConn *dbconn, TxQuery& txquery)
 	}
 }
 
-class CCStyledStreamWriter : public Json::StyledStreamWriter
+class InteractiveJsonWriter : public Json::StyledStreamWriter
 {
 	string json;
 
-	void writeValue(const Json::Value& value)
+	void writeValue(const Json::Value& value) override
 	{
+		//cerr << "InteractiveJsonWriter writeValue" << endl;
+
 		if (value.type() != Json::realValue)
 			StyledStreamWriter::writeValue(value);
 		else
 		{
 			//cerr << "json " << json << endl;
 			//cerr << "OffsetStart " << value.getOffsetStart() << " OffsetLimit " << value.getOffsetLimit() << endl;
-			//cerr << "substr " << json.substr(value.getOffsetStart(), value.getOffsetLimit() - value.getOffsetStart()) << endl;
 
-			amtfloat_t amount = (amtfloat_t)(json.substr(value.getOffsetStart(), value.getOffsetLimit() - value.getOffsetStart()));
-			string s;
-			amount_to_string(amount, s);
+			auto s = json.substr(value.getOffsetStart(), value.getOffsetLimit() - value.getOffsetStart());
 			//cerr << s << endl;
+
 			pushValue(s);
 		}
 	}
 
 public:
-	CCStyledStreamWriter(const string& s)
+	InteractiveJsonWriter(const string& s)
 	 :	StyledStreamWriter("  "),
 		json(s)
 	{ }
-
-	void write(JSONCPP_OSTREAM& out, const Json::Value& root)
-	{
-		StyledStreamWriter::write(out, root);
-	}
 };
 
 int interactive_do_json_command(const string& json, DbConn *dbconn, TxQuery& txquery)
@@ -338,26 +353,36 @@ int interactive_do_json_command(const string& json, DbConn *dbconn, TxQuery& txq
 		return 0;
 
 	{
-		lock_guard<FastSpinLock> lock(g_cout_lock);
+		lock_guard<mutex> lock(g_cerr_lock);
+		check_cerr_newline();
 		cerr << "Executing JSON command:\n" << json << "\n" << endl;
 	}
 
-	ostringstream response;
+	string response;
+	int result;
+
+	{
+		ostringstream rstream;
+
+		result = do_json_rpc(json, dbconn, txquery, rstream);
+
+		response = rstream.str();
+	}
+
 	Json::Reader reader;
 	Json::Value root, value;
 	string key;
 
-	auto result = do_json_rpc(json, dbconn, txquery, response);
+	reader.parse(response, root);
 
-	reader.parse(response.str(), root);
+	InteractiveJsonWriter writer(response);
 
-	CCStyledStreamWriter writer(response.str());
-
-	lock_guard<FastSpinLock> lock(g_cout_lock);
+	lock_guard<mutex> lock(g_cerr_lock);
+	check_cerr_newline();
 
 	if (!reader.good())
 	{
-		cerr << "Command result: " << response.str() << endl;
+		cerr << "Command result: " << response << endl;
 		cerr << "\nError parsing command result: " << reader.getFormattedErrorMessages() << endl;
 		result = -1;
 	}
@@ -411,7 +436,7 @@ int interactive_do_json_command(const string& json, DbConn *dbconn, TxQuery& txq
 		}
 		else if (!has_result)
 		{
-			cerr << "Unrecognized command result:" << response.str() << endl;
+			cerr << "Unrecognized command result:" << response << endl;
 			result = -1;
 		}
 

@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * cclib.h
 */
@@ -67,3 +67,4 @@ using namespace snarkfront;
 
 #include "CCapi.h"
 
+extern volatile bool g_shutdown;

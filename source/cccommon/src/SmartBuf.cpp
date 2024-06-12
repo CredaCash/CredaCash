@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * SmartBuf.cpp
 */
@@ -381,10 +381,13 @@ SmartBuf& SmartBuf::operator= (SmartBuf&& s)
 {
 	if (0 && TRACE_SMARTBUF) BOOST_LOG_TRIVIAL(debug) << "SmartBuf " << (uintptr_t)this << " bufp " << (uintptr_t)buf.load() << " moved from smartbuf " << (uintptr_t)&s << " bufp " << (uintptr_t)s.buf.load();
 
-	DecRef();
+	if (this != &s)
+	{
+		DecRef();
 
-	buf.store(s.buf.load());
-	s.buf.store(NULL);
+		buf.store(s.buf.load());
+		s.buf.store(NULL);
+	}
 
 	return *this;
 }

@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * rpcserve.hpp
 */
@@ -44,7 +44,7 @@ private:
 	void StartRead();
 	void HandleReadComplete();
 	void HandleContentReadComplete(const boost::system::error_code& e, size_t bytes_transferred, AutoCount pending_op_counter);
-	void HandleWriteHeader(const boost::system::error_code& e, shared_ptr<ostringstream> response, AutoCount pending_op_counter);
+	void HandleWriteHeader(const boost::system::error_code& e, shared_ptr<string> rbuf, AutoCount pending_op_counter);
 
 	void SendServerError();
 	void SendBadRequest();

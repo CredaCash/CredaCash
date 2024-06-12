@@ -1,13 +1,19 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * CCbigint.cpp
 */
 
 #include "cclib.h"
 #include "CCbigint.hpp"
+
+#ifdef _WIN32
+#define bswap_64	_bswap64
+#else
+#include <byteswap.h>
+#endif
 
 bool bigint_bit(const bigint_t& bigval, unsigned bit)
 {
@@ -16,7 +22,7 @@ bool bigint_bit(const bigint_t& bigval, unsigned bit)
 	unsigned shift = bit - word * bpl;
 	unsigned result = 0;
 
-	if (word < bigval.numberLimbs())
+	if ((int)word < bigval.numberLimbs())
 		result = (bool)(BIGWORD(bigval, word) & ((mp_limb_t)1 << shift));
 
 	//cerr << "bigint_bit " << hex << bigval << dec << " bit " << bit << " shift " << shift << " = " << result << endl;
@@ -59,7 +65,7 @@ void bigint_shift_down(bigint_t& bigval, unsigned nbits)
 
 	while (nbits >= bpl)
 	{
-		for (unsigned i = 0; i < bigval.numberLimbs() - 1; ++i)
+		for (int i = 0; i < bigval.numberLimbs() - 1; ++i)
 			BIGWORD(bigval, i) = BIGWORD(bigval, i + 1);
 
 		BIGWORD(bigval, bigval.numberLimbs() - 1) = 0;
@@ -67,7 +73,7 @@ void bigint_shift_down(bigint_t& bigval, unsigned nbits)
 		nbits -= bpl;
 	}
 
-	for (unsigned i = 0; i < bigval.numberLimbs() && nbits; ++i)
+	for (int i = 0; i < bigval.numberLimbs() && nbits; ++i)
 	{
 		BIGWORD(bigval, i) >>= nbits;
 
@@ -84,7 +90,7 @@ void bigint_mask(bigint_t& bigval, unsigned nbits)
 
 	unsigned bpl = sizeof(BIGWORD(bigval, 0)) * CHAR_BIT;
 
-	for (unsigned i = 0; i < bigval.numberLimbs(); ++i)
+	for (int i = 0; i < bigval.numberLimbs(); ++i)
 	{
 		if (i * bpl >= nbits)
 			BIGWORD(bigval, i) = 0;
@@ -105,13 +111,38 @@ unsigned bigint_bytes_in_use(bigint_t& bigval)
 {
 	//cerr << "bigint_bytes_in_use " << hex << bigval << dec << endl;
 
-	for (int i = bigval.numberLimbs() * sizeof(BIGWORD(bigval, 0)) - 1; i >= 0; --i)
+	int nb = bigval.numberLimbs() * sizeof(BIGWORD(bigval, 0));
+
+	for (int i = nb - 1; i >= 0; --i)
 	{
 		if (*(((uint8_t*)&bigval) + i))
 			return i + 1;
 	}
 
 	return 0;
+}
+
+unsigned bigint_end_bytes_in_use(bigint_t& bigval)
+{
+	//cerr << "bigint_high_bytes_in_use " << hex << bigval << dec << endl;
+
+	int nb = bigval.numberLimbs() * sizeof(BIGWORD(bigval, 0));
+
+	for (int i = 0; i < nb; ++i)
+	{
+		if (*(((uint8_t*)&bigval) + i))
+			return nb - i;
+	}
+
+	return 0;
+}
+
+void bigint_byteswap(const bigint_t& bigval, bigint_t& swapped)
+{
+	BIGWORD(swapped, 0) = bswap_64(BIGWORD(bigval, 3));
+	BIGWORD(swapped, 1) = bswap_64(BIGWORD(bigval, 2));
+	BIGWORD(swapped, 2) = bswap_64(BIGWORD(bigval, 1));
+	BIGWORD(swapped, 3) = bswap_64(BIGWORD(bigval, 0));
 }
 
 void bigint_test()
@@ -123,7 +154,7 @@ void bigint_test()
 	for (unsigned i = 0; i < 300; ++i)
 		CCASSERTZ(bigint_bit(bigval, i));
 
-	for (unsigned i = 0; i < bigval.numberLimbs(); ++i)
+	for (int i = 0; i < bigval.numberLimbs(); ++i)
 		BIGWORD(bigval, i) = -1;
 
 	for (unsigned i = 0; i < 300; ++i)

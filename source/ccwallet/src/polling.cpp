@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * polling.cpp
 */
@@ -9,13 +9,61 @@
 #include "ccwallet.h"
 #include "polling.hpp"
 #include "lpcserve.hpp"
+#include "accounts.hpp"
 #include "secrets.hpp"
 #include "billets.hpp"
+#include "transactions.hpp"
+#include "exchange.hpp"
 #include "walletdb.hpp"
 
+#include <xmatch.hpp>
+#include <BlockChainStatus.hpp>
 #include <dblog.h>
+#include <SpinLock.hpp>
+
+static FastSpinLock lastblocktime_lock(__FILE__, __LINE__);
+static atomic<uint64_t> lastblocktime;
+static atomic<uint64_t> lastblocktime_update_time;
+
+//#define TEST_NO_POLL_DELAY	1
+
+#ifndef TEST_NO_POLL_DELAY
+#define TEST_NO_POLL_DELAY	0	// don't test
+#endif
+
+#if TEST_NO_POLL_DELAY
+#define CONSERVATIVE_LASTBLOCKTIME_DELAY	0
+#else
+#define CONSERVATIVE_LASTBLOCKTIME_DELAY	(2*60)
+#endif
 
 #define TRACE_POLLING	(g_params.trace_polling)
+
+uint64_t Polling::EstimatedBlocktime(uint64_t checktime, uint64_t *conservative_lastblocktime)
+{
+	lock_guard<FastSpinLock> lock(lastblocktime_lock);
+
+	uint64_t estimated_lastblocktime;
+
+	if (!lastblocktime_update_time)
+	{
+		estimated_lastblocktime = checktime;
+		if (conservative_lastblocktime)
+			*conservative_lastblocktime = checktime - CONSERVATIVE_LASTBLOCKTIME_DELAY;
+	}
+	else
+	{
+		auto elapsed = max((int64_t)0, (int64_t)(checktime - lastblocktime_update_time));
+		estimated_lastblocktime = lastblocktime + elapsed;
+		if (conservative_lastblocktime)
+		{
+			elapsed = max((int64_t)0, (int64_t)(checktime - lastblocktime_update_time) - CONSERVATIVE_LASTBLOCKTIME_DELAY);
+			*conservative_lastblocktime = lastblocktime + elapsed;
+		}
+	}
+
+	return estimated_lastblocktime;
+}
 
 void Polling::Start(unsigned nthreads)
 {
@@ -107,7 +155,7 @@ void PollThread::WaitForShutdown()
 }
 
 static mutex poll_mutex;
-static uint64_t last_empty_time;
+static atomic<uint64_t> last_empty_time;
 
 void PollThread::ThreadProc()
 {
@@ -121,7 +169,7 @@ void PollThread::ThreadProc()
 
 		while (!g_shutdown)
 		{
-			ftime(&t1);
+			unixtimeb(&t1);
 
 			//if (TRACE_POLLING) BOOST_LOG_TRIVIAL(trace) << "PollThread::ThreadProc now " << t1.time << "." << t1.millitm;
 
@@ -143,32 +191,49 @@ void PollThread::ThreadProc()
 		while (!g_shutdown)
 		{
 			auto rc = DoPoll(t0);
-			if (rc)
+			if (rc < 0)
 				break;
-
-			++poll_count;
+			else if (!rc)
+				++poll_count;
 		}
 
-		if (poll_count && TRACE_POLLING) BOOST_LOG_TRIVIAL(info) << "PollThread::DoPoll polled " << poll_count << " addresses";
+		if (poll_count > 1) BOOST_LOG_TRIVIAL(info) << "PollThread::DoPoll polled " << poll_count << " addresses";
+		else if (poll_count && TRACE_POLLING) BOOST_LOG_TRIVIAL(debug) << "PollThread::DoPoll polled " << poll_count << " addresses";
 	}
 
 	if (TRACE_POLLING) BOOST_LOG_TRIVIAL(trace) << "PollThread::ThreadProc done";
 }
 
+/* returns:
+	-1 = nothing polled
+	0 = one address polled
+	1 = nothing polled but retry
+*/
+
 int PollThread::DoPoll(uint64_t checktime)
 {
 	auto dbconn = m_dbconn;
 
+	bool poll_xreq = false;
+	Xmatchreq xreq;
+	Transaction tx;
+
+	bool poll_secret = false;
 	Secret secret;
+
+	bool poll_xmatch = false;
+	Xmatch xmatch;
+
+	bool full_round = false;
 
 	{
 		lock_guard<mutex> lock(poll_mutex);
 
 		if (g_shutdown)
-			return 1;
+			return -1;
 
 		if (checktime <= last_empty_time)
-			return 1;
+			return -1;
 
 		if (TRACE_POLLING) BOOST_LOG_TRIVIAL(debug) << "PollThread::DoPoll m_dbconn " << (uintptr_t)m_dbconn << " m_txquery " << (uintptr_t)m_txquery << " checktime " << checktime << " last_empty_time " << last_empty_time;
 
@@ -182,29 +247,68 @@ int PollThread::DoPoll(uint64_t checktime)
 
 		Finally finally(boost::bind(&DbConn::DoDbFinishTx, dbconn, 1));		// 1 = rollback
 
-		rc = dbconn->SecretSelectNextCheck(checktime, secret);
-		if (rc)
+		while (true) // break to exit
 		{
+			static unsigned round;
+
+			round = (round + 1) & 31;	// make sure all queues get attention
+
+			if (!(round < 3))
+				full_round = true;		// only used to log # addresses polled in this pass
+
+			// check exchange first since matches can't wait
+			rc = (round < 3 ? 1 : dbconn->ExchangeRequestSelectNextPoll(checktime, xreq, &tx));
+			if (!rc)
+			{
+				rc = ExchangeRequest::UpdatePollTime(dbconn, xreq.tx_id);
+				if (rc) return -1;
+
+				poll_xreq = true;
+
+				break;
+			}
+
+			rc = (round < 1 ? 1 : dbconn->SecretSelectNextPoll(checktime, secret));
+			if (!rc)
+			{
+				CCASSERT(secret.TypeIsAddress());
+				CCASSERT(secret.next_poll <= checktime);
+
+				secret.UpdatePollTime(checktime, true);
+
+				rc = dbconn->SecretInsert(secret);
+				if (rc) return -1;
+
+				poll_secret = true;
+
+				break;
+			}
+
+			uint64_t conservative_lastblocktime;
+			auto estimated_lastblocktime = Polling::EstimatedBlocktime(checktime, &conservative_lastblocktime);
+
+			rc = dbconn->ExchangeMatchSelectNextPoll(conservative_lastblocktime, xmatch, true);
+			if (!rc)
+			{
+				ExchangeMatch::UpdatePollTime(xmatch, estimated_lastblocktime);
+
+				rc = dbconn->ExchangeMatchInsert(xmatch);
+				if (rc) return -1;
+
+				poll_xmatch = true;
+
+				break;
+			}
+
 			last_empty_time = checktime;
 
-			dbconn->DoDbFinishTx(1);
-
-			finally.Clear();
-
-			//Billet::NotifyNewBillet(true);	// for testing--send spurious new billet notification
-
-			return rc;
+			break;
 		}
 
-		CCASSERT(secret.TypeIsAddress());
-		CCASSERT(secret.next_check <= checktime);
-
-		secret.UpdatePollingTimes(checktime, true);
-
-		rc = dbconn->SecretInsert(secret);
-		if (rc) return -1;
-
 		// commit db writes
+
+		if (g_shutdown)
+			return -1;
 
 		rc = dbconn->Commit();
 		if (rc)
@@ -224,9 +328,54 @@ int PollThread::DoPoll(uint64_t checktime)
 	wait_for_shutdown(jitter);
 
 	if (g_shutdown)
-		return 1;
+		return -1;
 
-	secret.PollAddress(dbconn, *m_txquery, false);
+	if (poll_xreq)
+	{
+		BlockChainStatus blockchain_status;
 
-	return 0;
+		ExchangeRequest::PollXmatchreq(dbconn, *m_txquery, xreq, tx, blockchain_status);
+
+		if (blockchain_status.last_indelible_timestamp)
+		{
+			//BOOST_LOG_TRIVIAL(info) << "ExchangeRequest::PollXmatchreq returned lastblocktime " << blockchain_status.last_indelible_timestamp;
+
+			lock_guard<FastSpinLock> lock(lastblocktime_lock);
+
+			lastblocktime = blockchain_status.last_indelible_timestamp;
+			lastblocktime_update_time = checktime;
+		}
+
+		return 0;
+	}
+
+	if (poll_secret)
+	{
+		secret.PollAddress(dbconn, *m_txquery, false);
+
+		return 0;
+	}
+
+	if (poll_xmatch)
+	{
+		BlockChainStatus blockchain_status;
+
+		ExchangeMatch::PollXmatch(dbconn, *m_txquery, xmatch, blockchain_status);
+
+		if (blockchain_status.last_indelible_timestamp)
+		{
+			//BOOST_LOG_TRIVIAL(info) << "ExchangeRequest::PollXmatch returned lastblocktime " << blockchain_status.last_indelible_timestamp;
+
+			lock_guard<FastSpinLock> lock(lastblocktime_lock);
+
+			lastblocktime = blockchain_status.last_indelible_timestamp;
+			lastblocktime_update_time = checktime;
+		}
+
+		return 0;
+	}
+
+	//Billet::NotifyNewBillet(true);	// for testing--send spurious new billet notification
+
+	return !full_round;
 }

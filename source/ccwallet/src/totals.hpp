@@ -1,16 +1,15 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * totals.hpp
 */
 
 #pragma once
 
-#include "amounts.h"
-
 #include <CCbigint.hpp>
+#include <amounts.h>
 
 #define TOTAL_TYPE_DA_BIT			(1 << 5)
 #define TOTAL_TYPE_DA_DESTINATION	0
@@ -78,6 +77,7 @@ public:
 	static int GetTotalBalance(DbConn *dbconn, bool rpc_throw, snarkfront::bigint_t& balance, unsigned type, bool sum_pc, bool incwatch, uint64_t reference = 0, uint64_t asset = 0, unsigned min_delaytime = 0, unsigned max_delaytime = -1, uint64_t min_blockchain = 0, uint64_t max_blockchain = -1, bool begin_db_read = true);
 	static int GetTotalBalance(DbConn *dbconn, bool rpc_throw, amtint_t& balance, unsigned type, bool sum_pc, bool incwatch, uint64_t reference = 0, uint64_t asset = 0, unsigned min_delaytime = 0, unsigned max_delaytime = -1, uint64_t min_blockchain = 0, uint64_t max_blockchain = -1, bool begin_db_read = true);
 
+	static snarkfront::bigint_t GetNoWaitNetPending();
 	static snarkfront::bigint_t GetNoWaitNetRequired();
 	static int AddNoWaitAmounts(const snarkfront::bigint_t& pending, bool add_pending, const snarkfront::bigint_t& required, bool add_required);
 };

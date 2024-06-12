@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * connection_manager.hpp
 */
@@ -52,7 +52,8 @@ public:
 		m_io_service(io_service),
 		m_free_callback_obj(NULL),
 		m_maxincoming(0),
-		m_incoming_count(0)
+		m_incoming_count(0),
+		m_conn_mgr_lock(__FILE__, __LINE__)
 	{ }
 
 	~ConnectionManager();

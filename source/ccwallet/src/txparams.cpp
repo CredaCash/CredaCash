@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * txparams.cpp
 */
@@ -10,7 +10,9 @@
 #include "txparams.hpp"
 #include "txquery.hpp"
 
+#include <CCobjects.hpp>
 #include <transaction.h>
+#include <xtransaction.hpp>
 
 #include <ccserver/connection.hpp>
 
@@ -20,11 +22,6 @@ TxParamQuery g_txparams;
 
 using namespace snarkfront;
 
-TxParams::TxParams()
-{
-	memset((void*)this, 0, sizeof(*this));
-}
-
 bool TxParams::NotConnected() const
 {
 	if (!connected) BOOST_LOG_TRIVIAL(warning) << "Transaction server is not synced to the blockchain";
@@ -32,31 +29,73 @@ bool TxParams::NotConnected() const
 	return !connected;
 }
 
+//#include <transaction.hpp> // for testing
+
 unsigned TxParams::ComputeTxSize(unsigned nout, unsigned nin) const
 {
-	unsigned pred_size = 304 + nout*57;
-	if (nin)
-		pred_size += nin*48;
-	else
-		pred_size -= 2 + nout*4;
+	#if 0
+
+	TxPay tx;
+	string fn;
+	char output[128] = {0};
+	uint32_t outsize = sizeof(output);
+	char wirebuf[8000];
+	int rc;
+
+	tx_init(tx);
+	tx.tx_type = tx.tag_type = CC_TYPE_TXPAY;
+	tx.nout = tx.nin = tx.nin_with_path = 1;
+	tx.inputs[0].pathnum = tx.inputs[1].pathnum = 1;
+
+	rc = txpay_to_wire(fn, tx, 0, output, outsize, wirebuf, sizeof(wirebuf));
+	cerr << "txpay_to_wire nout " << tx.nout << " nin " << tx.nin << " size " << *(uint32_t*)wirebuf - TX_POW_SIZE << " rc " << rc << " output " << output << endl;
+
+	tx.nout = 2;
+	rc = txpay_to_wire(fn, tx, 0, output, outsize, wirebuf, sizeof(wirebuf));
+	cerr << "txpay_to_wire nout " << tx.nout << " nin " << tx.nin << " size " << *(uint32_t*)wirebuf - TX_POW_SIZE << " rc " << rc << " output " << output << endl;
+
+	tx.nin = tx.nin_with_path = 2;
+	rc = txpay_to_wire(fn, tx, 0, output, outsize, wirebuf, sizeof(wirebuf));
+	cerr << "txpay_to_wire nout " << tx.nout << " nin " << tx.nin << " size " << *(uint32_t*)wirebuf - TX_POW_SIZE << " rc " << rc << " output " << output << endl;
+
+	//txpay_to_wire nout 1 nin 1 size 409 rc 0 output --> base = 409-57-48 = 304
+	//txpay_to_wire nout 2 nin 1 size 466 rc 0 output --> nout = 466-409 = 57
+	//txpay_to_wire nout 2 nin 2 size 514 rc 0 output -->  nin = 514-466 = 48
+
+	#endif
+
+	unsigned pred_size = 304 + nout*57 + nin*48;
 
 	return pred_size;
 }
 
-void TxParams::ComputeDonation(unsigned nout, unsigned nin, bigint_t& donation) const
+void TxParams::ComputeDonation(unsigned type, unsigned nbytes, unsigned nout, unsigned nin, bigint_t& donation) const
 {
 	#define TRACE_COMPUTE_DONATION	0
 
-	if (TRACE_COMPUTE_DONATION) cerr << "ComputeDonation nout " << nout << " nin " << nin << endl;
+	if (TRACE_COMPUTE_DONATION) cerr << "ComputeDonation type " << type << " nbytes " << nbytes << " nin " << nin << " nout " << nout << endl;
 
 	bigint_t bigval;
 
-	tx_amount_decode(donation_per_tx, donation, true, donation_bits, exponent_bits);
-	if (TRACE_COMPUTE_DONATION) cerr << "donation_per_tx " << donation << endl;
+	if (Xtx::TypeHasBareMsg(type))
+	{
+		donation = 0UL;
+		return;
+	}
+
+	if (Xtx::TypeIsCrosschain(type))
+	{
+		tx_amount_decode(donation_per_xcx_req, donation, true, donation_bits, exponent_bits);
+		if (TRACE_COMPUTE_DONATION) cerr << "donation_per_xcx_req " << donation << endl;
+	}
+	else
+	{
+		tx_amount_decode(donation_per_tx, donation, true, donation_bits, exponent_bits);
+		if (TRACE_COMPUTE_DONATION) cerr << "donation_per_tx " << donation << endl;
+	}
 
 	tx_amount_decode(donation_per_byte, bigval, true, donation_bits, exponent_bits);
-	auto size = ComputeTxSize(nout, nin);
-	donation = donation + (bigint_t)(size) * bigval;
+	donation = donation + (bigint_t)(nbytes) * bigval;
 	if (TRACE_COMPUTE_DONATION) cerr << "donation_per_byte " << bigval << endl;
 
 	tx_amount_decode(donation_per_output, bigval, true, donation_bits, exponent_bits);
@@ -73,12 +112,12 @@ void TxParams::ComputeDonation(unsigned nout, unsigned nin, bigint_t& donation) 
 
 	if (TRACE_COMPUTE_DONATION) cerr << "donation " << donation << endl;
 
-	if (TRACE_TXPARAMS) BOOST_LOG_TRIVIAL(trace) << "TxParamQuery::ComputeDonation txparams " << (uintptr_t)this << " nout " << nout << " nin " << nin << " donation " << donation;
+	if (TRACE_TXPARAMS) BOOST_LOG_TRIVIAL(trace) << "TxParamQuery::ComputeDonation txparams " << (uintptr_t)this << " type " << type << " nbytes " << nbytes << " nin " << nin << " nout " << nout << " donation " << donation;
 }
 
 TxParamQuery::TxParamQuery()
 {
-	memset((void*)&m_params, 0, sizeof(m_params));
+	m_params.Clear();
 }
 
 // sets param struct from global cached values

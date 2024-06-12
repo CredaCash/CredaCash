@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * SpinLock.hpp
 */
@@ -16,17 +16,37 @@
 
 #include <CCassert.h>
 
+#include "CCticks.hpp"
+
 #define TRACE_SPINLOCK	0
+
+//!#define RTEST_CUZZ_SPINLOCK	32
+
+#ifndef RTEST_CUZZ_SPINLOCK
+#define RTEST_CUZZ_SPINLOCK		0	// don't test
+#endif
 
 class FastSpinLock
 {
 	std::atomic_flag mutex;
 
+	#if TRACE_SPINLOCK
+	std::string file;
+	unsigned line;
+	std::uint64_t max_spin;
+	#endif
+
 public:
 
-	FastSpinLock()
+	FastSpinLock(const char *_file, unsigned _line)
 	{
-        mutex.clear();
+		mutex.clear();
+
+		#if TRACE_SPINLOCK
+		file = _file;
+		line = _line;
+		max_spin = 0;
+		#endif
 	}
 
 	~FastSpinLock()
@@ -36,19 +56,34 @@ public:
 
 	void lock()
 	{
-		if (TRACE_SPINLOCK) std::cerr << "FastSpinLock " << (uintptr_t)this << " locking..." << std::endl;
+		#if TRACE_SPINLOCK
+		//std::cout << "FastSpinLock " << (uintptr_t)this << " locking..." << std::endl;
+		auto t0 = highres_ticks();
+		std::uint64_t spin = 0;
+		#endif
 
 		while (mutex.test_and_set())
+		#if TRACE_SPINLOCK
+			++spin;
+		#endif
 			;;;
 
-		if (TRACE_SPINLOCK) std::cerr << "FastSpinLock " << (uintptr_t)this << " locked" << std::endl;
+		#if TRACE_SPINLOCK
+		auto dt = highres_ticks() - t0;
+		if (spin > max_spin)
+			max_spin = spin;
+		if (spin >= max_spin/10*9 && report_highres_ticks(dt))
+			std::cout << "FastSpinLock " << (uintptr_t)this << " " << file << " " << line << " locked in " << dt << " spin " << spin << " max_spin " << max_spin << std::endl;
+		#endif
 	}
 
 	void unlock()
 	{
-		if (TRACE_SPINLOCK) std::cerr << "FastSpinLock " << (uintptr_t)this << " unlocking" << std::endl;
+		//if (TRACE_SPINLOCK) std::cout << "FastSpinLock " << (uintptr_t)this << " unlocking" << std::endl;
 
-        mutex.clear();
+		mutex.clear();
+
+		//if (RTEST_CUZZ_SPINLOCK && !(rand() % (RTEST_CUZZ_SPINLOCK > 0 ? RTEST_CUZZ_SPINLOCK : 1))) usleep(rand() & 63);
 	}
 };
 
@@ -80,7 +115,7 @@ public:
 			while (mutex.test_and_set())
 				;;;
 
-			if (TRACE_SPINLOCK) std::cerr << "thread " << std::this_thread::get_id() << " SpinLock lock " << (std::uintptr_t)this << " owning thread " << threadid.load() << " count " << count.load() << std::endl;
+			//if (TRACE_SPINLOCK) std::cout << "thread " << std::this_thread::get_id() << " SpinLock lock " << (std::uintptr_t)this << " owning thread " << threadid.load() << " count " << count.load() << std::endl;
 
 			if (!count.load())
 			{
@@ -111,12 +146,14 @@ public:
 			while (mutex.test_and_set())
 				;;;
 
-			if (TRACE_SPINLOCK) std::cerr << "thread " << std::this_thread::get_id() << " SpinLock unlock " << (std::uintptr_t)this << " owning thread " << threadid.load() << " count " << count.load() << std::endl;
+			//if (TRACE_SPINLOCK) std::cout << "thread " << std::this_thread::get_id() << " SpinLock unlock " << (std::uintptr_t)this << " owning thread " << threadid.load() << " count " << count.load() << std::endl;
 
 			CCASSERT(threadid.load() == std::this_thread::get_id());
 
 			CCASSERT(count.fetch_sub(1));
 
 			mutex.clear();
+
+			if (RTEST_CUZZ_SPINLOCK && !(rand() % (RTEST_CUZZ_SPINLOCK > 0 ? RTEST_CUZZ_SPINLOCK : 1))) usleep(rand() & 63);
 	}
 };

@@ -3,7 +3,7 @@ CredaCash(TM) Library Functions for Python
 
 Part of the CredaCash (TM) cryptocurrency and blockchain
 
-Copyright (C) 2015-2020 Creda Software, Inc.
+Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
 
 '''
 
@@ -18,7 +18,7 @@ import time
 import pprint
 
 if not sys.version.startswith('2.7.') or not ('GCC' in sys.version or '64 bit' in sys.version or 'AMD64' in sys.version):
-	print 'This script requires Python 2.7x for x86-64.'
+	print 'ERROR: This script requires Python 2.7.x (64 bit version).'
 	exit()
 
 # Global variables
@@ -44,7 +44,7 @@ TX_ACCEPT_REQ_DEST_MASK		= 0x01F
 TX_STATIC_ADDRESS_MASK		= 0xFE0
 
 TX_TIME_DIVISOR				= 30
-TX_TIME_OFFSET				= 1546300800
+TX_TIME_OFFSET				= 1704067200
 
 TX_CHAIN_BITS				= 32
 TX_TYPE_BITS				= 16
@@ -61,7 +61,7 @@ TX_DELAYTIME_BITS			= 8
 TX_PAYNUM_BITS				= 20
 TX_ADDRESS_BITS				= 128
 TX_REPEAT_BITS				= 16
-TX_POOL_BITS				= 20
+TX_DOMAIN_BITS				= 20
 TX_ASSET_BITS				= 64
 TX_ASSET_WIRE_BITS			= 32
 TX_AMOUNT_BITS				= 40
@@ -125,7 +125,7 @@ jsoncmd_maxbinsize = 2000			# size of binary buffer
 ERR = '?'
 
 class CCCmdFailed(Exception):
-    pass
+	pass
 
 def DoJsonCmd(jstr, binary = False, buf = None, returnrc = False):
 	if cclib.show_queries and not jstr.startswith('{"work-'):
@@ -371,7 +371,7 @@ def SubmitServer(label, msg, proxyuser = None, isquery = True, retry = True, ret
 	retries = 0
 	while True:
 		reply = TryServer(label, msg, proxyuser, isquery, retry)
-		if not reply.startswith('ERROR') or (return_timeout and reply == 'ERROR:server timeout'):
+		if not reply.startswith('ERROR') or (return_timeout and reply,startswith('UNKNOWN')):
 			if cclib.show_queries:
 				print '<<<', reply
 			return reply

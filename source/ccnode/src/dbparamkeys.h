@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * dbparamkeys.h
 */
@@ -17,3 +17,5 @@
 #define DB_KEY_COMMIT_NULL_INPUT		6
 #define DB_KEY_CCMINT_COUNT				7
 #define DB_KEY_DONATION_TOTALS			8
+#define DB_KEY_XMATCHING				9
+#define DB_KEY_XMINING					10

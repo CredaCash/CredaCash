@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * blocksync.cpp
 */
@@ -24,15 +24,28 @@
 
 #define TRACE_BLOCKSYNC		(g_params.trace_block_sync)
 
-#define BLOCKSYNC_TIMEOUT			20
-#define BLOCKSYNC_BYTES_PER_SEC		500
+// TODO: add mutex cuzz tests to this file
+// TODO: add sim of bad block
+// TODO: test with random read and write errors
+// TODO: prune slower connections
 
-#define BLOCKSYNC_LOST_SECS			120
-#define BLOCKSYNC_FINISH_CONNS		5
+#define BLOCKSYNC_REQ_TIMEOUT					60
+#define BLOCKSYNC_READ_TIMEOUT					15
+#define BLOCKSYNC_BYTES_PER_SEC					500
 
-#define BLOCKSYNC_NLEVELS_PER_REQ	10
+#define BLOCKSYNC_LOST_SECS						420
 
-thread_local DbConn *blocksync_dbconn;
+#define BLOCKSYNC_NLEVELS_PER_REQ				100
+
+#define BLOCKSYNC_MAX_BLOCK_PROCESSING_TIME		30
+
+#pragma pack(push, 1)
+
+static const uint32_t Ping_Req[2] =			{CC_MSG_HEADER_SIZE, CC_CMD_PING};
+
+#pragma pack(pop)
+
+thread_local static DbConn *blocksync_dbconn;
 
 void BlockSyncConnection::StartConnection()
 {
@@ -40,65 +53,143 @@ void BlockSyncConnection::StartConnection()
 
 	m_conn_state = CONN_CONNECTED;
 
-	req_msg.entry.nlevels = 0;
+	m_cur_req_msg.entry.nlevels = 0;
+	m_next_req_msg.entry.nlevels = 0;
 
-	SendReq();
+	m_validations_pending = 0;
+
+	m_has_requeues = false;
+	m_finished = false;
+
+	// start with a ping to make sure the connection is working
+
+	if (SetTimer(BLOCKSYNC_REQ_TIMEOUT))
+		return;
+
+	m_read_in_progress.test_and_set();
+
+	WriteAsync("BlockSyncConnection::StartConnection", boost::asio::buffer(Ping_Req, sizeof(Ping_Req)),
+			boost::bind(&Connection::HandleWrite, this, boost::asio::placeholders::error, AutoCount(this)));
 }
 
-void BlockSyncConnection::SendReq()
+void BlockSyncConnection::CheckSendReq(unique_lock<mutex> &lock)
 {
-	if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::SendReq";
+	BlockSyncEntry next;
 
-	if (req_msg.entry.nlevels)
+	if (m_read_in_progress.test_and_set())
 	{
-		BOOST_LOG_TRIVIAL(error) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::SendReq unexpected req_msg.nlevels " << req_msg.entry.nlevels;
+		if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::CheckSendReq deferring check until post read";
 
-		return Stop();
+		return;
 	}
 
-	req_msg.entry = g_blocksync_client.m_sync_list.GetNextEntry();
+	while (!g_shutdown)
+	{
+		if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::CheckSendReq requeues " << m_has_requeues << " finished " << m_finished << " current reqs " << m_cur_req_msg.entry.nlevels << " next reqs " << m_next_req_msg.entry.nlevels;
 
-	if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::SendReq requesting level " << req_msg.entry.level << " nlevels " << req_msg.entry.nlevels;
+		if (m_has_requeues || m_finished)
+		{
+			if (m_validations_pending.load() > 0)
+			{
+				if (SetValidationTimer())
+					return;
 
-	WriteAsync("BlockSyncConnection::SendReq", boost::asio::buffer(&req_msg, sizeof(req_msg)),
-			boost::bind(&BlockSyncConnection::HandleSendMsgWrite, this, boost::asio::placeholders::error, AutoCount(this)));
+				m_read_in_progress.clear();
 
-	if (SetTimer(BLOCKSYNC_TIMEOUT))
+				return;
+			}
+
+			return Stop();
+		}
+
+		if (m_next_req_msg.entry.nlevels)
+		{
+			if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::CheckSendReq no req needed";
+
+			return StartNextRead();
+		}
+
+		// get next level to request, ensuring it's above the last_indelible_level and not past the maximum request span
+
+		next = g_blocksync_client.m_sync_list.GetNextEntry(Name(), m_conn_index);
+
+		if (next.nlevels)
+			break;
+
+		if (m_cur_req_msg.entry.nlevels)
+		{
+			if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::CheckSendReq deferring max span req post read";
+
+			return StartNextRead();
+		}
+
+		if (m_validations_pending.load() > 0)
+		{
+			if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::CheckSendReq deferring max span req post validate";
+
+			if (SetValidationTimer())
+				return;
+
+			m_read_in_progress.clear();
+
+			return;
+		}
+
+		lock.unlock();
+
+		if (!g_blocksync_client.UnconnectedCount() && RandTest(5U * g_blocksync_client.max_outconns))
+		{
+			// randomly stop connection to ensure we rotate peers to get past invalid blocks
+
+			if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::CheckSendReq random stop at max span";
+
+			return Stop();
+		}
+
+		if (SetTimer(BLOCKSYNC_REQ_TIMEOUT))
+			return;
+
+		if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::CheckSendReq SetTimer " << BLOCKSYNC_REQ_TIMEOUT;
+
+		if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::CheckSendReq waiting for blockchain to advance at max span";
+
+		ccsleep(5);
+
+		lock.lock();
+	}
+
+	m_next_req_msg.entry = next;
+
+	lock.unlock();
+
+	if (SetTimer(BLOCKSYNC_REQ_TIMEOUT))
 		return;
+
+	if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::CheckSendReq SetTimer " << BLOCKSYNC_REQ_TIMEOUT;
+
+	if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::CheckSendReq requesting level " << m_next_req_msg.entry.level << " nlevels " << m_next_req_msg.entry.nlevels;
+
+	WriteAsync("BlockSyncConnection::CheckSendReq", boost::asio::buffer(&m_next_req_msg, sizeof(m_next_req_msg)),
+			boost::bind(&Connection::HandleWrite, this, boost::asio::placeholders::error, AutoCount(this)));
 }
 
-void BlockSyncConnection::HandleSendMsgWrite(const boost::system::error_code& e, AutoCount pending_op_counter)
+void BlockSyncConnection::StartNextRead()
 {
-	m_write_in_progress.clear();
+	unsigned sec = BLOCKSYNC_READ_TIMEOUT;
 
-	if (CheckOpCount(pending_op_counter))
+	if (g_blocksync_client.UnconnectedCount())
+		sec *= 2;
+
+	if (SetTimer(sec))
 		return;
 
-	if (CancelTimer())
-		return;
+	if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::StartNextRead SetTimer " << sec;
 
-	bool sim_err = RandTest(RTEST_WRITE_ERRORS);
-	if (sim_err) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::HandleSendMsgWrite simulating write error";
-
-	if (e || sim_err)
-	{
-		BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::HandleSendMsgWrite after error " << e << " " << e.message();
-
-		return Stop();
-	}
-
-	if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::HandleSendMsgWrite ok";
-
-	StartRead();
-
-	if (SetTimer(BLOCKSYNC_TIMEOUT))
-		return;
+	return StartRead();
 }
 
 void BlockSyncConnection::HandleReadComplete()
 {
-	// timer is canceled in HandleObjReadComplete
-
 	if (m_nred < CC_MSG_HEADER_SIZE)
 	{
 		BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::HandleReadComplete error short read " << m_nred;
@@ -109,7 +200,7 @@ void BlockSyncConnection::HandleReadComplete()
 	unsigned size = *(uint32_t*)m_pread;
 	unsigned tag = *(uint32_t*)(m_pread + 4);
 
-	if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::HandleReadComplete read " << m_nred << " bytes msg size " << size << " tag " << tag;
+	if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::HandleReadComplete read " << m_nred << " bytes msg size " << size << " tag " << hex << tag << dec;
 
 	if (size < CC_MSG_HEADER_SIZE || size > CC_BLOCK_MAX_SIZE)
 	{
@@ -118,18 +209,33 @@ void BlockSyncConnection::HandleReadComplete()
 		return Stop();
 	}
 
+	if (tag == CC_ACK)
+	{
+		BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::HandleReadComplete received CC_ACK";
+
+		unique_lock<mutex> lock(req_lock);
+
+		m_read_in_progress.clear();
+
+		return CheckSendReq(lock);
+	}
+
 	if (tag == CC_RESULT_NO_LEVEL)
 	{
 		BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::HandleReadComplete received CC_RESULT_NO_LEVEL";
 
-		g_blocksync_client.IncFinishedConns();
+		unique_lock<mutex> lock(req_lock);
 
-		return Stop();
+		m_finished = true;
+
+		m_read_in_progress.clear();
+
+		return CheckSendReq(lock);
 	}
 
 	if (tag != CC_TAG_BLOCK)
 	{
-		BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::HandleReadComplete error unrecognized msg tag " << tag;
+		BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::HandleReadComplete error unrecognized msg tag " << hex << tag << dec;
 
 		return Stop();
 	}
@@ -141,9 +247,9 @@ void BlockSyncConnection::HandleReadComplete()
 	smartobj = SmartBuf(size + sizeof(CCObject::Preamble));
 	if (!smartobj)
 	{
-		BOOST_LOG_TRIVIAL(error) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::HandleReadComplete smartobj failed";
+		BOOST_LOG_TRIVIAL(error) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::HandleReadComplete error smartobj failed";
 
-		return;
+		return Stop();
 	}
 
 	auto obj = (CCObject*)smartobj.data();
@@ -158,11 +264,21 @@ void BlockSyncConnection::HandleReadComplete()
 	{
 		if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::HandleReadComplete queueing read size " << m_maxread - m_nred;
 
+		unsigned sec = (m_maxread - m_nred) / BLOCKSYNC_BYTES_PER_SEC + 10;
+
+		if (sec < BLOCKSYNC_READ_TIMEOUT)
+			sec = BLOCKSYNC_READ_TIMEOUT;
+
+		if (g_blocksync_client.UnconnectedCount())
+			sec *= 2;
+
+		if (SetTimer(sec))
+			return;
+
+		if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::HandleReadComplete SetTimer " << sec;
+
 		ReadAsync("BlockSyncConnection::HandleReadComplete", boost::asio::buffer(m_pread + m_nred, m_maxread - m_nred), boost::asio::transfer_exactly(m_maxread - m_nred),
 				boost::bind(&BlockSyncConnection::HandleObjReadComplete, this, boost::asio::placeholders::error, boost::asio::placeholders::bytes_transferred, smartobj, AutoCount(this)));
-
-		if (SetTimer(BLOCKSYNC_TIMEOUT + (m_maxread - m_nred) / BLOCKSYNC_BYTES_PER_SEC))
-			return;
 	}
 	else
 	{
@@ -173,9 +289,6 @@ void BlockSyncConnection::HandleReadComplete()
 void BlockSyncConnection::HandleObjReadComplete(const boost::system::error_code& e, size_t bytes_transferred, SmartBuf smartobj, AutoCount pending_op_counter)
 {
 	if (CheckOpCount(pending_op_counter))
-		return;
-
-	if (CancelTimer())
 		return;
 
 	m_nred += bytes_transferred;
@@ -234,18 +347,28 @@ void BlockSyncConnection::HandleObjReadComplete(const boost::system::error_code&
 		return Stop();
 	}
 
-	if (req_msg.entry.level != wire->level.GetValue())
 	{
-		BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::HandleObjReadComplete error requested block level " << req_msg.entry.level << "; received block level " << wire->level.GetValue();
+		lock_guard<mutex> lock(req_lock);
 
-		return Stop();
-	}
+		if (!m_cur_req_msg.entry.nlevels)
+		{
+			m_cur_req_msg.entry = m_next_req_msg.entry;
+			m_next_req_msg.entry.nlevels = 0;
+		}
 
-	if (!req_msg.entry.nlevels)
-	{
-		BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::HandleObjReadComplete error unexpected object";
+		if (!m_cur_req_msg.entry.nlevels)
+		{
+			BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::HandleObjReadComplete error unexpected object";
 
-		return Stop();
+			return Stop();
+		}
+
+		if (m_cur_req_msg.entry.level != wire->level.GetValue())
+		{
+			BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::HandleObjReadComplete error requested block level " << m_cur_req_msg.entry.level << "; received block level " << wire->level.GetValue();
+
+			return Stop();
+		}
 	}
 
 	auto auxp = block->SetupAuxBuf(smartobj);
@@ -261,34 +384,140 @@ void BlockSyncConnection::HandleObjReadComplete(const boost::system::error_code&
 	prior_oid = &wire->prior_oid;
 	level = wire->level.GetValue();
 
-	BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::HandleObjReadComplete received obj bufp " << (uintptr_t)smartobj.BasePtr() << " tag " << obj->ObjTag() << " size " << obj->ObjSize() << " oid " << buf2hex(obj->OidPtr(), sizeof(ccoid_t));
+	m_validations_pending.fetch_add(1);	// assume ProcessQEnqueueValidate will succeed, because if so, the callback can happen immediately
 
-	blocksync_dbconn->ProcessQEnqueueValidate(PROCESS_Q_TYPE_BLOCK, smartobj, prior_oid, level, PROCESS_Q_STATUS_PENDING, 0, false, m_conn_index, m_use_count.load());
+	auto use_count = m_use_count.load();
 
-	++req_msg.entry.level;
-	--req_msg.entry.nlevels;
+	auto rc = blocksync_dbconn->ProcessQEnqueueValidate(PROCESS_Q_TYPE_BLOCK, smartobj, prior_oid, level, PROCESS_Q_STATUS_PENDING, PROCESS_Q_PRIORITY_BLOCK_HI, false, m_conn_index, use_count);
 
-	if (req_msg.entry.nlevels)
-	{
-		StartRead();
+	BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::HandleObjReadComplete enqueue result " << rc << " block level " << level << " validations pending " << m_validations_pending.load() << " obj bufp " << (uintptr_t)smartobj.BasePtr() << " tag " << hex << obj->ObjTag() << dec << " size " << obj->ObjSize() << " oid " << buf2hex(obj->OidPtr(), CC_OID_TRACE_SIZE);
 
-		if (SetTimer(BLOCKSYNC_TIMEOUT))
-			return;
-	}
+	if (rc < 0)
+		return Stop();
+	else if (rc)
+		HandleValidateDone(level, use_count, 1);
 	else
-		SendReq();
+	{
+		#if 0
+		static atomic<int64_t> last_time;
+
+		auto t1 = unixtime();
+		auto dt = t1 - last_time.exchange(t1);
+
+		BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::HandleObjReadComplete enqueue block level " << level << " dt " << dt << " validations pending " << m_validations_pending.load() << " obj bufp " << (uintptr_t)smartobj.BasePtr() << " tag " << hex << obj->ObjTag() << dec << " size " << obj->ObjSize() << " oid " << buf2hex(obj->OidPtr(), CC_OID_TRACE_SIZE);
+
+		lock_guard<mutex> lock(g_cerr_lock);
+		//check_cerr_newline();
+		//cerr << "BlockSync queued for validation level " << level << " time " << t1 << " dt " << dt << endl;
+
+		cerr << ".";
+		cerr.flush();
+		g_cerr_needs_newline = true;
+		#endif
+	}
+
+	unique_lock<mutex> lock(req_lock);
+
+	++m_cur_req_msg.entry.level;
+	--m_cur_req_msg.entry.nlevels;
+
+	if (!m_cur_req_msg.entry.nlevels)
+	{
+		m_cur_req_msg.entry = m_next_req_msg.entry;
+		m_next_req_msg.entry.nlevels = 0;
+	}
+
+	m_read_in_progress.clear();
+
+	CheckSendReq(lock);
+}
+
+bool BlockSyncConnection::SetValidationTimer()
+{
+	auto sec = g_blocksync_client.ConnectedCount() * BLOCKSYNC_NLEVELS_PER_REQ * BLOCKSYNC_MAX_BLOCK_PROCESSING_TIME;
+
+	if (SetTimer(sec))
+		return true;
+
+	if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::SetValidationTimer SetTimer " << sec;
+
+	return false;
+}
+
+void BlockSyncConnection::HandleValidateDone(uint64_t level, uint32_t callback_id, int64_t result)
+{
+	if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::HandleValidateDone result " << result << " level " << level << " validations pending " << m_validations_pending.load();
+
+	if (result > 1)
+		return;
+
+	if (RandTest(RTEST_CUZZ_CONN)) sleep(1);
+
+	if (callback_id != m_use_count.load())
+	{
+		BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::HandleValidateDone level " << level << " ignoring late or unexpected callback id " << callback_id << " use count " << m_use_count.load();
+
+		return;
+	}
+
+	if (result <= PROCESS_RESULT_STOP_THRESHOLD)
+	{
+		BlockSyncEntry entry(level, 1);
+
+		g_blocksync_client.m_sync_list.RequeueEntry(Name(), m_conn_index, entry);
+
+		m_has_requeues = true;
+	}
+
+	unique_lock<mutex> lock(req_lock);
+
+	auto vp = m_validations_pending.fetch_sub(1) - 1;
+
+	while (vp < 0)
+	{
+		BOOST_LOG_TRIVIAL(error) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::HandleValidateDone m_validations_pending " << vp << " < 0";
+
+		++vp;
+		m_validations_pending.fetch_add(1);
+	}
+
+	CheckSendReq(lock);
 }
 
 void BlockSyncConnection::FinishConnection()
 {
-	if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::FinishConnection";
+	if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::FinishConnection requeues " << m_has_requeues << " finished " << m_finished;
 
-	if (req_msg.entry.nlevels)
+	if (m_finished)
 	{
-		g_blocksync_client.m_sync_list.RequeueEntry(req_msg.entry);
+		int64_t dt = unixtime() - g_blockchain.GetLastIndelibleTimestamp();
 
-		req_msg.entry.nlevels = 0;
+		if (dt > max(g_params.block_future_tolerance, g_expire.GetExpireAge(1)/CCTICKS_PER_SEC - 2*60))
+			m_finished = false;
+
+		if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::FinishConnection LastIndelibleTimestamp dt " << dt << " block_future_tolerance " << g_params.block_future_tolerance << " ExpireAge " << g_expire.GetExpireAge(1)/CCTICKS_PER_SEC << " finished " << m_finished;
 	}
+
+	bool no_requeue = m_finished && g_blocksync_client.IsFinishing();
+
+	lock_guard<mutex> lock(req_lock);
+
+	if (!no_requeue && m_cur_req_msg.entry.nlevels)
+	{
+		if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::FinishConnection requeuing m_cur_req_msg.entry level " << m_cur_req_msg.entry.level << " nlevels " << m_cur_req_msg.entry.nlevels;
+
+		g_blocksync_client.m_sync_list.RequeueEntry(Name(), m_conn_index, m_cur_req_msg.entry);
+	}
+
+	if (!no_requeue && m_next_req_msg.entry.nlevels)
+	{
+		if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " BlockSyncConnection::FinishConnection requeuing m_next_req_msg.entry level " << m_next_req_msg.entry.level << " nlevels " << m_next_req_msg.entry.nlevels;
+
+		g_blocksync_client.m_sync_list.RequeueEntry(Name(), m_conn_index, m_next_req_msg.entry);
+	}
+
+	if (m_finished && !m_has_requeues)
+		g_blocksync_client.SignalFinished();
 }
 
 void BlockSyncClient::Start()
@@ -323,13 +552,11 @@ void BlockSyncClient::ConnMonitorProc()
 {
 	BOOST_LOG_TRIVIAL(trace) << Name() << " BlockSyncClient::ConnMonitorProc(" << this << ") started";
 
-	ccsleep(4);
+	ccsleep(10);
 
 	while (!g_shutdown)
 	{
 		DoSync();
-
-		ccsleep(BLOCKSYNC_LOST_SECS);	// wait at least this long before rechecking sync
 
 		// wait until out-of-sync
 
@@ -338,6 +565,8 @@ void BlockSyncClient::ConnMonitorProc()
 			if (ccticks_elapsed(g_processblock.GetLastBlockTicks(), ccticks()) > BLOCKSYNC_LOST_SECS * CCTICKS_PER_SEC)
 				break;
 
+			BOOST_LOG_TRIVIAL(debug) << Name() << " BlockSyncClient::ConnMonitorProc sync ok";
+
 			ccsleep(10);
 		}
 	}
@@ -345,88 +574,190 @@ void BlockSyncClient::ConnMonitorProc()
 	BOOST_LOG_TRIVIAL(trace) << Name() << " BlockSyncClient::ConnMonitorProc(" << this << ") ended";
 }
 
-uint64_t BlockSyncList::Init()
+void BlockSyncList::Init(int64_t level)
 {
 	lock_guard<FastSpinLock> lock(m_block_sync_list_lock);
 
 	m_list.clear();
-	m_next_level = g_blockchain.GetLastIndelibleLevel() + 1;
-
-	return m_next_level;
+	m_next_level = level;
 }
 
-class BlockSyncEntry BlockSyncList::GetNextEntry()
+BlockSyncEntry BlockSyncList::GetNextEntry(const string& name, int conn_index)
+{
+	BlockSyncEntry entry;
+
+	lock_guard<FastSpinLock> lock(m_block_sync_list_lock);
+
+	auto last_indelible_level = g_blockchain.GetLastIndelibleLevel();
+
+	while (!entry.nlevels && !g_shutdown)
+	{
+		if (!m_list.empty())
+		{
+			entry = m_list.front();
+			m_list.pop_front();
+
+			//if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(trace) << name << " Conn " << conn_index << " BlockSyncList::GetNextEntry last_indelible_level " << last_indelible_level << " entry level " << entry.level << " nlevels " << entry.nlevels;
+
+			while (entry.nlevels && entry.level <= last_indelible_level)
+			{
+				++entry.level;
+				--entry.nlevels;
+			}
+		}
+		else
+		{
+			//--m_next_level;	// for testing
+
+			auto max_span = 2 * BLOCKSYNC_NLEVELS_PER_REQ * min(max(4, g_blocksync_client.max_outconns + 1), 10);
+
+			auto max_level = last_indelible_level + max_span;
+
+			if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(trace) << name << " Conn " << conn_index << " BlockSyncList::GetNextEntry last_indelible_level " << last_indelible_level << " max_span " << max_span << " max_level " << max_level << " m_next_level " << m_next_level;
+
+			if (m_next_level <= last_indelible_level)
+				m_next_level = last_indelible_level + 1;
+
+			if (m_next_level > max_level)
+				break;
+
+			auto nlevels = BLOCKSYNC_NLEVELS_PER_REQ - (m_next_level + BLOCKSYNC_NLEVELS_PER_REQ - 1) % BLOCKSYNC_NLEVELS_PER_REQ;
+
+			entry = BlockSyncEntry(m_next_level, nlevels);
+			m_next_level += nlevels;
+		}
+	}
+
+	if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(trace) << name << " Conn " << conn_index << " BlockSyncList::GetNextEntry last_indelible_level " << last_indelible_level << " returning level " << entry.level << " nlevels " << entry.nlevels;
+
+	return entry;
+}
+
+void BlockSyncList::RequeueEntry(const string& name, int conn_index, const BlockSyncEntry& entry)
+{
+	if (!entry.nlevels)
+		return;
+
+	if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(debug) << name << " Conn " << conn_index << " BlockSyncList::RequeueEntry level " << entry.level << " nlevels " << entry.nlevels;
+
+	lock_guard<FastSpinLock> lock(m_block_sync_list_lock);
+
+	if (entry.level >= m_next_level)
+		return;
+
+	m_list.push_back(entry);
+
+	if (m_next_level < entry.level + entry.nlevels)
+		m_next_level = entry.level + entry.nlevels;
+}
+
+bool BlockSyncList::HasRequeues()
 {
 	lock_guard<FastSpinLock> lock(m_block_sync_list_lock);
 
-	if (!m_list.empty())
-	{
-		auto rv = m_list.front();
-		m_list.pop_front();
-
-		return rv;
-	}
-
-	//--m_next_level;	// for testing
-
-	auto rv = BlockSyncEntry(m_next_level, BLOCKSYNC_NLEVELS_PER_REQ);
-	m_next_level += BLOCKSYNC_NLEVELS_PER_REQ;
-
-	return rv;
+	return !m_list.empty();
 }
 
-void BlockSyncList::RequeueEntry(class BlockSyncEntry& entry)
+unsigned BlockSyncClient::ConnectedCount()
 {
-	if (entry.nlevels)
-	{
-		lock_guard<FastSpinLock> lock(m_block_sync_list_lock);
+	unsigned si = 0;
 
-		m_list.push_back(entry);
-	}
+	auto outcount = m_service.GetServer(si).GetConnectionManager().GetOutgoingConnectionCount();
+
+	//if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(trace) << Name() << " BlockSyncClient::ConnectedCount " << outcount << " of " << max_outconns;
+
+	return outcount;
+}
+
+unsigned BlockSyncClient::UnconnectedCount(int outcount)
+{
+	if (outcount < 0)
+		outcount = ConnectedCount();
+
+	auto uncount = (max_outconns > outcount ? max_outconns - outcount : 0);
+
+	//if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(trace) << Name() << " BlockSyncClient::UnconnectedCount " << uncount << " of " << max_outconns;
+
+	return uncount;
+}
+
+void BlockSyncClient::SignalFinished()
+{
+	m_nfinished++;
+}
+
+bool BlockSyncClient::IsFinishing()
+{
+	return (m_nfinished >= min(max(3, (max_outconns + 1)/2), 8));
 }
 
 void BlockSyncClient::DoSync()
 {
-	m_conns_finished.store(0);
+	auto last_indelible_level = g_blockchain.GetLastIndelibleLevel();
+	auto last_indelible_time = unixtime();
 
-	auto next_level = m_sync_list.Init();
+	BOOST_LOG_TRIVIAL(info) << Name() << " BlockSyncClient::DoSync start last_indelible_level " << last_indelible_level;
 
-	BOOST_LOG_TRIVIAL(info) << Name() << " BlockSyncClient::DoSync starting at level " << next_level;
+	m_sync_list.Init(last_indelible_level + 1);
 
-	g_expire.ChangeExpireAge(0, 2 * CCTICKS_PER_SEC);
+	m_nfinished = 0;
+
+	g_expire.ChangeExpireAge(0, 2 * CCTICKS_PER_SEC);	// while sync'ing, rapidly expire blocks in ValidObjs DB to minimize memory use
 
 	unsigned si = 0;
 
 	while (!g_shutdown)
 	{
-		unsigned outcount = m_service.GetServer(si).GetConnectionManager().GetOutgoingConnectionCount();
+		auto outcount = m_service.GetServer(si).GetConnectionManager().GetOutgoingConnectionCount();
 
-		if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(trace) << Name() << " BlockSyncClient::DoSync currently " << outcount << " outgoing connections";
+		auto uncount = UnconnectedCount(outcount);
 
-		if ((int)outcount < max_outconns)
+		auto now = unixtime();
+
+		auto check = g_blockchain.GetLastIndelibleLevel();
+		if (check != last_indelible_level)
+		{
+			last_indelible_level = check;
+			last_indelible_time = now;
+		}
+
+		int64_t indelible_dt = now - last_indelible_time;
+
+		if (indelible_dt > BLOCKSYNC_LOST_SECS)
+		{
+			auto last_indelible_block = g_blockchain.GetLastIndelibleBlock();
+			auto block = (Block*)last_indelible_block.data();
+			auto wire = block->WireData();
+			auto auxp = block->AuxPtr();
+
+			auto level = wire->level.GetValue() + 1;
+			auto last_level = level + 2 * auxp->blockchain_params.nskipconfsigs - 1 + BLOCKSYNC_NLEVELS_PER_REQ - 1;
+
+			last_level -= last_level % BLOCKSYNC_NLEVELS_PER_REQ;
+
+			BlockSyncEntry entry(level, last_level - level + 1);
+
+			g_blocksync_client.m_sync_list.RequeueEntry(Name(), 0, entry);
+
+			m_nfinished = 0;
+			last_indelible_time = now;
+		}
+
+
+		bool done = IsFinishing() && !m_sync_list.HasRequeues();
+
+		if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(debug) << Name() << " BlockSyncClient::DoSync last_indelible_level " << last_indelible_level << " indelible dt " << indelible_dt << " conns connected " << outcount << " finished " << m_nfinished << " have requeues " << m_sync_list.HasRequeues() << " done " << done;
+
+		if (done && !outcount)
+			break;
+
+		if (!done && uncount)
 			ConnectOutgoing();
 
-		ccsleep(4);
-
-		auto finished = m_conns_finished.load();
-
-		if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(trace) << Name() << " BlockSyncClient::DoSync currently " << finished << " connections finished";
-
-		if (finished >= BLOCKSYNC_FINISH_CONNS)
-			break;
+		ccsleep(8);
 	}
 
-	while (!g_shutdown)
-	{
-		unsigned outcount = m_service.GetServer(si).GetConnectionManager().GetOutgoingConnectionCount();
-
-		if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(trace) << Name() << " BlockSyncClient::DoSync finishing sync currently " << outcount << " outgoing connections";
-
-		if (!outcount)
-			break;
-
-		ccsleep(10);
-	}
+	BOOST_LOG_TRIVIAL(info) << Name() << " BlockSyncClient::DoSync finished";
 
 	ccsleep(20);						// pause to give the recently sync'ed blocks time to expire
 
@@ -435,7 +766,7 @@ void BlockSyncClient::DoSync()
 
 void BlockSyncClient::ConnectOutgoing()
 {
-	if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(info) << Name() << " BlockSyncClient::ConnectOutgoing calling GetHostName()";
+	BOOST_LOG_TRIVIAL(info) << Name() << " BlockSyncClient::ConnectOutgoing calling GetHostName()";
 
 	auto peer = g_hostdir.GetHostName(HostDir::Blockserve);
 

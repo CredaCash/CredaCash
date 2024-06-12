@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * torservice.cpp
 */
@@ -60,8 +60,6 @@ const char* TorService::TorAuthString(int val)
 
 int TorService::SetConfig()
 {
-	ConfigPreset();
-
 	if (max_outconns < 0)
 		max_outconns = 0;
 
@@ -170,15 +168,16 @@ const string& TorService::TorHostname()
 
 			for (unsigned i = 0; i < tor_hostname.length(); ++i)
 			{
-					if (	(tor_hostname[i] < '0' || tor_hostname[i] > '9')
-						 && (tor_hostname[i] < 'A' || tor_hostname[i] > 'Z')
-						 && (tor_hostname[i] < 'a' || tor_hostname[i] > 'z'))
-						tor_hostname[i] = 0;
+				if (	(tor_hostname[i] < '0' || tor_hostname[i] > '9')
+					 && (tor_hostname[i] < 'A' || tor_hostname[i] > 'Z')
+					 && (tor_hostname[i] < 'a' || tor_hostname[i] > 'z'))
+
+					tor_hostname[i] = 0;
 			}
 
 			tor_hostname.resize(strlen(tor_hostname.c_str()));
 
-			BOOST_LOG_TRIVIAL(debug) << Name() << " TorHostname for " << tor_hostname_subdir << " = " << tor_hostname;
+			BOOST_LOG_TRIVIAL(info) << Name() << " TorHostname for " << tor_hostname_subdir << " = " << tor_hostname;
 		}
 	}
 

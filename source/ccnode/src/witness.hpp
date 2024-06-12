@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * witness.hpp
 */
@@ -10,6 +10,7 @@
 
 #include "block.hpp"
 #include "dbconn.hpp"
+#include "seqnum.hpp"
 
 #include <transaction.hpp>
 #include <SmartBuf.hpp>
@@ -22,10 +23,11 @@ class Witness
 	SmartBuf m_blockbuf;
 	TxPay m_txbuf;
 
+	uint64_t m_first_allowed_tx_level;
+
 	uint32_t m_block_start_time;
 	uint32_t m_newblock_bufpos;
-	int64_t m_newblock_next_tx_seqnum;
-	snarkfront::bigint_t m_total_donations;
+	int64_t m_newblock_next_seqnum[NSEQOBJ];
 
 	bool m_test_ignore_order;
 	bool m_test_try_persistent_double_spend;
@@ -54,38 +56,38 @@ class Witness
 	};
 
 	void StartNewBlock();
-	BuildNewBlockStatus BuildNewBlock(uint32_t& min_time, uint32_t max_time, SmartBuf priorobj, uint64_t priorlevel);
+	BuildNewBlockStatus BuildNewBlock(uint32_t& min_time, uint32_t max_time, SmartBuf priorobj, uint64_t priorlevel, unsigned nconfsigs, uint64_t last_indelible_level);
 	SmartBuf FinishNewBlock(SmartBuf priorobj);
 
 	mutex m_work_mutex;
 	condition_variable m_work_condition_variable;
 
-	atomic_bool m_have_new_block;
-	atomic_bool m_have_new_tx;
+	atomic_bool m_have_new_work[NSEQOBJ];
 	atomic_bool m_waiting_on_block;
 	atomic_bool m_waiting_on_tx;
 
-	void ResetNewBlockWork()
+	atomic<uint64_t> m_exchange_work_time;
+	atomic<uint64_t> m_pending_exchange_work_time;
+	FastSpinLock m_pending_exchange_work_lock;
+
+	void ResetWork(unsigned type, bool value = false)
 	{
-		m_have_new_block = false;
+		CCASSERT(type < NSEQOBJ);
+
+		m_have_new_work[type] = false;
 	}
 
-	bool HaveNewBlockWork() const
+	bool HaveWork(unsigned type) const
 	{
-		return m_have_new_block;
+		CCASSERT(type < NSEQOBJ);
+
+		return m_have_new_work[type];
 	}
 
-	void SetNewTxWork(bool value)
-	{
-		m_have_new_tx = value;
-	}
+	int WaitForWork(bool bwait4block, bool bwait4tx, uint32_t exchange_time, uint32_t max_time);
 
-	bool HaveNewTxWork() const
-	{
-		return m_have_new_tx;
-	}
+	void NotifyNewExchangeWorkTime();
 
-	int WaitForWork(bool bwait4block, bool bwait4tx, uint32_t target_time);
 	void ShutdownWork();
 
 public:
@@ -116,7 +118,10 @@ public:
 	bool IsMalTest() const;
 	static bool SimLoss(uint64_t level);
 
-	void NotifyNewWork(bool is_block);
+	void NotifyNewWork(unsigned type);
+
+	void ResetExchangeWorkTime(bool freeze = false);
+	void UpdateExchangeWorkTime(uint64_t timestamp, bool bnotify = false);
 };
 
 extern Witness g_witness;

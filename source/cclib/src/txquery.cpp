@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * txquery.cpp
 */
@@ -10,8 +10,10 @@
 #include "txquery.h"
 #include "jsonutil.h"
 #include "CCproof.h"
+#include "xtransaction.hpp"
 
 #include <CCobjects.hpp>
+#include <unifloat.hpp>
 
 static const uint8_t zero_pow[TX_POW_SIZE] = {};
 
@@ -337,4 +339,156 @@ CCRESULT tx_query_from_json(const string& fn, Json::Value& root, char *output, c
 		return tx_query_serialnum_json_create(fn, key, root, output, outsize, binbuf, binsize);
 
 	return copy_error_to_output(fn, string("error: unrecognized tx query type \"") + key + "\"", output, outsize);
+}
+
+CCRESULT tx_query_xreqs_create(const string& fn, const unsigned xcx_type, const bigint_t& min_amount, const bigint_t& max_amount, const double& min_rate, const uint64_t base_asset, const uint64_t quote_asset, const string& foreign_asset, const uint16_t maxret, const uint16_t offset, unsigned flags, char *binbuf, const uint32_t binsize)
+{
+	uint32_t bufpos = 0;
+	const bool bhex = false;
+
+	// seller rounds down to offer a better rate; buyer rounds up to offer a better rate
+	int rounding = (Xtx::TypeIsSeller(xcx_type) ? -1 : 1);
+	auto rate_fp = UniFloat::WireEncode(min_rate, rounding);
+
+	//cerr << "tx_query_xreqs_create min_rate " << min_rate << " rounding " << rounding << " WireDecode " << UniFloat::WireDecode(rate_fp) << " diff " <<  min_rate - UniFloat::WireDecode(rate_fp).asFloat() << endl;
+
+	copy_to_buf(bufpos, sizeof(bufpos), bufpos, binbuf, binsize, bhex);  // save space for size word
+
+	uint32_t tag = CC_TAG_TX_QUERY_XREQS;
+	copy_to_buf(tag, sizeof(tag), bufpos, binbuf, binsize, bhex);
+
+	CCASSERT(bufpos == sizeof(CCObject::Header));
+
+	copy_to_buf(zero_pow, sizeof(zero_pow), bufpos, binbuf, binsize, bhex);
+	copy_to_buf(xcx_type, 1, bufpos, binbuf, binsize, bhex);
+	copy_to_buf(min_amount, sizeof(min_amount), bufpos, binbuf, binsize, bhex);
+	copy_to_buf(max_amount, sizeof(max_amount), bufpos, binbuf, binsize, bhex);
+	copy_to_buf(rate_fp, UNIFLOAT_WIRE_BYTES, bufpos, binbuf, binsize, bhex);
+	copy_to_buf(base_asset, sizeof(base_asset), bufpos, binbuf, binsize, bhex);
+	copy_to_buf(quote_asset, sizeof(quote_asset), bufpos, binbuf, binsize, bhex);
+	copy_to_buf(maxret, sizeof(maxret), bufpos, binbuf, binsize, bhex);
+	copy_to_buf(offset, sizeof(offset), bufpos, binbuf, binsize, bhex);
+	copy_to_buf(flags, 1, bufpos, binbuf, binsize, bhex);
+	copy_to_bufp(foreign_asset.data(), foreign_asset.size(), bufpos, binbuf, binsize, bhex);
+
+	if (bufpos > binsize)
+		return 1;
+
+	//cerr << "tx_query_xreqs_create nbytes " << bufpos << endl;
+
+	memcpy(binbuf, &bufpos, sizeof(bufpos));
+
+	return 0;
+}
+
+CCRESULT tx_query_xmatch_objid_create(const string& fn, uint64_t blockchain, const ccoid_t& objid, const uint16_t maxret, char *binbuf, const uint32_t binsize)
+{
+	//cerr << "objid " << buf2hex(&objid, CC_OID_TRACE_SIZE) << endl;
+	//cerr << "maxret " << maxret << endl;
+
+	uint32_t bufpos = 0;
+	const bool bhex = false;
+
+	copy_to_buf(bufpos, sizeof(bufpos), bufpos, binbuf, binsize, bhex);  // save space for size word
+
+	uint32_t tag = CC_TAG_TX_QUERY_XMATCH_OBJID;
+	copy_to_buf(tag, sizeof(tag), bufpos, binbuf, binsize, bhex);
+
+	CCASSERT(bufpos == sizeof(CCObject::Header));
+
+	copy_to_buf(zero_pow, sizeof(zero_pow), bufpos, binbuf, binsize, bhex);
+	copy_to_buf(blockchain, TX_CHAIN_BYTES, bufpos, binbuf, binsize, bhex);
+	copy_to_buf(objid, sizeof(objid), bufpos, binbuf, binsize, bhex);
+	copy_to_buf(maxret, sizeof(maxret), bufpos, binbuf, binsize, bhex);
+
+	if (bufpos > binsize)
+		return 1;
+
+	//cerr << "tx_query_xmatch_objid_create nbytes " << bufpos << endl;
+
+	memcpy(binbuf, &bufpos, sizeof(bufpos));
+
+	return 0;
+}
+
+// TODO: add an array of xmatchnum's to this function
+CCRESULT tx_query_xmatch_xreqnum_create(const string& fn, uint64_t blockchain, uint64_t xreqnum, uint64_t xmatchnum_start, const uint16_t maxret, char *binbuf, const uint32_t binsize)
+{
+	//cerr << "objid " << buf2hex(&objid, CC_OID_TRACE_SIZE) << endl;
+	//cerr << "maxret " << maxret << endl;
+
+	uint32_t bufpos = 0;
+	const bool bhex = false;
+
+	copy_to_buf(bufpos, sizeof(bufpos), bufpos, binbuf, binsize, bhex);  // save space for size word
+
+	uint32_t tag = CC_TAG_TX_QUERY_XMATCH_REQNUM;
+	copy_to_buf(tag, sizeof(tag), bufpos, binbuf, binsize, bhex);
+
+	CCASSERT(bufpos == sizeof(CCObject::Header));
+
+	copy_to_buf(zero_pow, sizeof(zero_pow), bufpos, binbuf, binsize, bhex);
+	copy_to_buf(blockchain, TX_CHAIN_BYTES, bufpos, binbuf, binsize, bhex);
+	copy_to_buf(xreqnum, sizeof(xreqnum), bufpos, binbuf, binsize, bhex);
+	copy_to_buf(maxret, sizeof(maxret), bufpos, binbuf, binsize, bhex);
+	copy_to_buf(xmatchnum_start, sizeof(xmatchnum_start), bufpos, binbuf, binsize, bhex);
+
+	if (bufpos > binsize)
+		return 1;
+
+	//cerr << "tx_query_xmatch_reqnum_create nbytes " << bufpos << endl;
+
+	memcpy(binbuf, &bufpos, sizeof(bufpos));
+
+	return 0;
+}
+
+CCRESULT tx_query_xmatch_xmatchnum_create(const string& fn, uint64_t blockchain, uint64_t xmatchnum, char *binbuf, const uint32_t binsize)
+{
+	uint32_t bufpos = 0;
+	const bool bhex = false;
+
+	copy_to_buf(bufpos, sizeof(bufpos), bufpos, binbuf, binsize, bhex);  // save space for size word
+
+	uint32_t tag = CC_TAG_TX_QUERY_XMATCH_MATCHNUM;
+	copy_to_buf(tag, sizeof(tag), bufpos, binbuf, binsize, bhex);
+
+	CCASSERT(bufpos == sizeof(CCObject::Header));
+
+	copy_to_buf(zero_pow, sizeof(zero_pow), bufpos, binbuf, binsize, bhex);
+	copy_to_buf(blockchain, TX_CHAIN_BYTES, bufpos, binbuf, binsize, bhex);
+	copy_to_buf(xmatchnum, sizeof(xmatchnum), bufpos, binbuf, binsize, bhex);
+
+	if (bufpos > binsize)
+		return 1;
+
+	//cerr << "tx_query_xmatch_xmatchnum_create nbytes " << bufpos << endl;
+
+	memcpy(binbuf, &bufpos, sizeof(bufpos));
+
+	return 0;
+}
+
+CCRESULT tx_query_xmining_info_create(const string& fn, char *binbuf, const uint32_t binsize)
+{
+	uint32_t bufpos = 0;
+	const bool bhex = false;
+
+	copy_to_buf(bufpos, sizeof(bufpos), bufpos, binbuf, binsize, bhex);  // save space for size word
+
+	uint32_t tag = CC_TAG_TX_QUERY_XMINING_INFO;
+	copy_to_buf(tag, sizeof(tag), bufpos, binbuf, binsize, bhex);
+
+	CCASSERT(bufpos == sizeof(CCObject::Header));
+
+	copy_to_buf(zero_pow, sizeof(zero_pow), bufpos, binbuf, binsize, bhex);
+
+	if (bufpos > binsize)
+		return 1;
+
+	//cerr << "tx_query_xmining_info_create nbytes " << bufpos << endl;
+
+	memcpy(binbuf, &bufpos, sizeof(bufpos));
+
+	return 0;
 }

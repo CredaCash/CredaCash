@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * polling.hpp
 */
@@ -23,6 +23,8 @@ public:
 	void Start(unsigned nthreads);
 	void StartShutdown();
 	void WaitForShutdown();
+
+	static uint64_t EstimatedBlocktime(uint64_t checktime, uint64_t *conservative_lastblocktime = NULL);
 };
 
 class PollThread

@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * CCassert.h
 */
@@ -16,6 +16,7 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+extern unsigned cc_thread_id();
 extern void __ccassert(const char *msg, const char *file, int line);
 extern void __ccassertz(const char *msg, uintptr_t x, const char *file, int line);
 #ifdef __cplusplus

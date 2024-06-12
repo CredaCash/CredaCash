@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * relay.hpp
 */
@@ -22,7 +22,9 @@ public:
 	RelayConnection(class CCServer::ConnectionManagerBase& manager, boost::asio::io_service& io_service, const class CCServer::ConnectionFactoryBase& connfac)
 	 :	CCServer::Connection(manager, io_service, connfac),
 		private_peer_index(-1),
+		request_queue_lock(__FILE__, __LINE__),
 		request_param_queue(sizeof(relay_request_params_extended_t), CC_TX_SEND_MAX),
+		send_queue_lock(__FILE__, __LINE__),
 		send_queue(sizeof(ccoid_t), CC_TX_SEND_MAX)
 	{ }
 
@@ -33,6 +35,7 @@ private:
 	unsigned peer_error_count;
 
 	int64_t db_next_new_block_seqnum;
+	int64_t db_next_new_xreq_seqnum;
 	int64_t db_next_new_tx_seqnum;
 	array<uint8_t, CC_HAVE_MAX_MSG_SIZE> announce_msg_buf;
 
@@ -54,7 +57,7 @@ private:
 
 	void HandleReadComplete();
 	void HandleMsgReadComplete(const boost::system::error_code& e, size_t bytes_transferred, SmartBuf smartobj, AutoCount pending_op_counter);
-	void CheckToDownload();
+	void CheckForDownload();
 	void HandleSendMsgWrite(const boost::system::error_code& e, AutoCount pending_op_counter);
 
 	void CheckToSend();
@@ -82,7 +85,6 @@ class RelayService : public TorService
 	void PrivateConnMonitorProc();
 	void PrivateConnectOutgoing(int peer);
 
-	void PrivateConfigPreset();
 	int LoadPrivateHosts();
 	int GetNextPrivateConnectPeer(uint32_t& when);
 	void PrivateConnectReschedule(int peer);
@@ -110,8 +112,6 @@ public:
 	{
 		if (m_bprivate)
 		{
-			PrivateConfigPreset();
-
 			tor_new_hostname = false;
 		}
 		else
@@ -120,6 +120,8 @@ public:
 			tor_new_hostname = true;
 		}
 	}
+
+	void ConfigPrivateRelay();
 
 	void ConfigPostset()
 	{

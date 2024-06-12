@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * dbconn-wal.cpp
 */
@@ -39,9 +39,9 @@ void WalDB::WalStartCheckpoint(bool full)
 
 	if (!full_checkpoint_pending)
 	{
-		uint32_t dt = time(NULL) - last_full_checkpoint_time;
+		int32_t dt = unixtime() - last_full_checkpoint_time;
 
-		if (dt >= (unsigned)g_params.db_checkpoint_sec)
+		if (dt >= g_params.db_checkpoint_sec)
 			full_checkpoint_pending = true;
 		else
 			return;	// might work better when db is saved on an sdcard
@@ -89,7 +89,7 @@ void WalDB::WalCheckpoint(sqlite3 *db)
 	{
 		if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "WalDB::WalCheckpoint " << dbname << " stop_checkpointing is set";
 
-		ccsleep(1);
+		sleep(1);
 
 		checkpoint_needed.store(false);
 
@@ -118,7 +118,7 @@ void WalDB::WalCheckpoint(sqlite3 *db)
 
 		checkpoint_needed.store(false);
 
-		last_full_checkpoint_time = time(NULL);
+		last_full_checkpoint_time = unixtime();
 
 		if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "WalDB::WalCheckpoint " << dbname << " releasing mutex";
 	}

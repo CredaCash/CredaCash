@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * rpc_errors.hpp
 */
@@ -35,6 +35,7 @@ public:
 extern const RPC_Exception txrpc_server_error;
 extern const RPC_Exception txrpc_wallet_error;
 extern const RPC_Exception txrpc_wallet_db_error;
+extern const RPC_Exception txrpc_not_synced_error;
 extern const RPC_Exception txrpc_simulated_error;
 extern const RPC_Exception txrpc_shutdown_error;
 
@@ -45,6 +46,7 @@ extern const RPC_Exception txrpc_txid_not_found;
 extern const RPC_Exception txrpc_block_not_found_err;
 extern const RPC_Exception txrpc_invalid_address;
 extern const RPC_Exception txrpc_address_not_found;
+extern const RPC_Exception txrpc_match_not_found;
 extern const RPC_Exception txrpc_tx_not_in_block;
 extern const RPC_Exception txrpc_block_height_range_err;
 extern const RPC_Exception txrpc_insufficient_funds;
@@ -52,3 +54,4 @@ extern const RPC_Exception txrpc_tx_rejected;
 
 extern const RPC_Exception txrpc_tx_timeout;
 extern const RPC_Exception txrpc_tx_mismatch;
+extern const RPC_Exception txrpc_tx_expired;

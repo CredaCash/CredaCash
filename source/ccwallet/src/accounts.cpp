@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * accounts.cpp
 */
@@ -26,14 +26,15 @@ void Account::Clear()
 
 void Account::Copy(const Account& other)
 {
-	memcpy(this, &other, sizeof(*this));
+	memcpy((void*)this, &other, sizeof(*this));
 }
 
 string Account::DebugString() const
 {
 	ostringstream out;
 
-	out << "id " << id;
+	out << "Account";
+	out << " id " << id;
 	if (name[0])
 		out << " name " << name;
 

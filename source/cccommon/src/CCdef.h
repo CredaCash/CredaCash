@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * CCdef.h
 */
@@ -104,7 +104,7 @@ using namespace std;
 #define TOR_HOSTNAME_CHARS		56
 #define TOR_HOSTNAME_BYTES		35	// v3 .onion addresses are 56 characters in base32 = 35 bytes
 
-#define RELAY_QUERY_MAX_NAMES	20
+#define RELAY_QUERY_MAX_NAMES	10
 #define BLOCK_QUERY_MAX_NAMES	10
 
 #include <boost/version.hpp>

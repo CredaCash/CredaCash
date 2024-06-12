@@ -1,14 +1,12 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * CCproof.cpp
 */
 
 #include "cclib.h"
-
-#include "CCobjdefs.h"
 #include "zkhash.hpp"
 #include "CCproof.h"
 #include "CCproof.hpp"
@@ -17,7 +15,9 @@
 #include "zkkeys.hpp"
 #include "CompressProof.hpp"
 
+#include <CCobjdefs.h>
 #include <blake2/blake2.h>
+#include <SpinLock.hpp>
 
 //@@! before release, check all test defs: regexp ^#define TEST.*[1-9]|^#define RTEST.*[1-9]|^#define TRACE.*[1-9]
 
@@ -30,8 +30,10 @@
 #define TEST_DEBUG_CONSTRAINTS		1	// show constraints in DLL build (ok for production release)
 #endif
 
+//#define TEST_DEBUG_CONSTRAINTS	1	// show constraints that not satisfied when constructing zkproof
+
 #ifndef TEST_PUBLIC_INPUTS_UNBOUNDED
-#define TEST_PUBLIC_INPUTS_UNBOUNDED		0	// don't test
+#define TEST_PUBLIC_INPUTS_UNBOUNDED	0	// don't test
 #endif
 
 #ifndef TEST_RANDOM_ANYVALS
@@ -64,11 +66,12 @@ typedef CCHasher::ASTValue<ZKVAR, bigint_t> ZKValue;
 template <typename PAIRING, typename T>
 void constrain_zero_pairing(const AST_Var<T>& x, unsigned line, unsigned index, unsigned i = 999, unsigned j = 999)
 {
-    TL<R1C<typename PAIRING::Fr>>::singleton()->setFalse(x->r1Terms()[0]);
+	TL<R1C<typename PAIRING::Fr>>::singleton()->setFalse(x->r1Terms()[0]);
 
 	if (TEST_DEBUG_CONSTRAINTS && ZKValue::value(x))
 	{
-		lock_guard<FastSpinLock> lock(g_cout_lock);
+		lock_guard<mutex> lock(g_cerr_lock);
+		check_cerr_newline();
 
 		if (i < 999 && j < 999)
 			cout << "CCProof constraint false at line " << line << " index " << index << " " << i << " " << j << endl;
@@ -87,7 +90,7 @@ static ZKKeyStore keystore;
 
 CCPROOF_API CCProof_Init(const wstring& proof_key_dir)
 {
-	static FastSpinLock init_lock;
+	static FastSpinLock init_lock(__FILE__, __LINE__);
 
 	lock_guard<FastSpinLock> lock(init_lock);
 
@@ -125,7 +128,7 @@ struct TxOutZKPub
 	ZKVAR enforce;					// bool
 
 	ZKVAR dest_chain;				// uint64_t
-	ZKVAR M_pool;					// uint32_t
+	ZKVAR M_domain;					// uint32_t
 
 	ZKVAR enforce_address;			// bool
 	ZKVAR M_address;				// bigint_t
@@ -145,7 +148,7 @@ struct TxOutZKPub
 	ZKVAR M_commitment;				// bigint_t
 
 	vector<ZKVAR> dest_chain_bits;
-	vector<ZKVAR> M_pool_bits;
+	vector<ZKVAR> M_domain_bits;
 	vector<ZKVAR> asset_mask_bits;
 	vector<ZKVAR> amount_mask_bits;
 	vector<ZKVAR> M_asset_enc_bits;
@@ -190,7 +193,7 @@ struct TxInZKPub
 	ZKVAR invalmax;					// uint8_t
 	ZKVAR delaytime;					// uint8_t
 
-	ZKVAR M_pool;					// uint32_t
+	ZKVAR M_domain;					// uint32_t
 
 	ZKVAR enforce_public_commitment; // bool
 	ZKVAR enforce_public_commitnum; // bool
@@ -202,7 +205,7 @@ struct TxInZKPub
 	ZKVAR S_hashkey;				// bigint_t
 	ZKVAR S_spendspec_hashed;		// bigint_t
 
-	vector<ZKVAR> M_pool_bits;
+	vector<ZKVAR> M_domain_bits;
 };
 
 struct TxInZKPriv
@@ -303,7 +306,7 @@ struct TxPayZK
 
 	struct
 	{
-		ZKVAR tx_type;				// for future use
+		ZKVAR tx_type;
 		ZKVAR source_chain;			// for future use
 		ZKVAR param_level;			// uint64_t
 		ZKVAR param_time;			// uint64_t
@@ -341,9 +344,9 @@ struct TxPayZK
 
 // functions to generate same random values when creating proof and when verifying proof
 
-static thread_local bigint_t rand_seed;
-static thread_local int rand_count;
-static thread_local int rand_count_priv;
+thread_local static bigint_t rand_seed;
+thread_local static int rand_count;
+thread_local static int rand_count_priv;
 
 static void init_rand_seed(uint64_t seed)
 {
@@ -478,7 +481,8 @@ static void bless_input(bool pubvar, int& badsel, ZKVAR& var, const bigint_t& va
 					BIGWORD(blessval, bit2/64) ^= (uint64_t)1 << (bit2 & 63);
 			}
 
-			lock_guard<FastSpinLock> lock(g_cout_lock);
+			lock_guard<mutex> lock(g_cerr_lock);
+			check_cerr_newline();
 			cout << "CCProof test makebad changed " << input << " bit " << bit1 << " and bit " << bit2 << " to " << hex << blessval << dec << endl;
 		}
 	}
@@ -491,7 +495,7 @@ static void bless_input(bool pubvar, int& badsel, ZKVAR& var, const bigint_t& va
 			// Make sure val is less than the prime modulus.  The values of public inputs are all known and should all be valid,
 			// so this is just a double-check to make sure none of the public inputs have an unexpected value when verifying a proof
 
-			CCASSERTZ(blessval > TX_FIELD_MAX);
+			CCASSERTZ(blessval > bigint_t(0UL) - bigint_t(1UL));
 			#endif
 		}
 		else
@@ -501,7 +505,7 @@ static void bless_input(bool pubvar, int& badsel, ZKVAR& var, const bigint_t& va
 
 			//cerr << "_bless_input " << input << " nbits " << nbits << " value " << hex << blessval << dec << endl;
 
-			for (unsigned i = 0; i < blessval.numberLimbs(); ++i)
+			for (int i = 0; i < blessval.numberLimbs(); ++i)
 			{
 				//cerr << "_bless_input premask nbits " << nbits << " word " << i << " clear <= " << i * sizeof(mp_limb_t) * CHAR_BIT << " mask < " << (i + 1) * sizeof(mp_limb_t) * CHAR_BIT << endl;
 
@@ -523,11 +527,13 @@ static void bless_input(bool pubvar, int& badsel, ZKVAR& var, const bigint_t& va
 		}
 	}
 
-	#if 0
-	lock_guard<FastSpinLock> lock(g_cout_lock);
-	cerr << "bless_input anyval " << anyval << " " << input << " " << hex << blessval << dec << endl;
-	//cerr << "bless_input badsel " << badsel << " anyval " << anyval << " " << input << " " << hex << blessval << dec << endl;
-	#endif
+	if (0) // for testing -- change to 0 for release
+	{
+		lock_guard<mutex> lock(g_cerr_lock);
+		check_cerr_newline();
+		cerr << "bless_input badsel " << badsel << " anyval " << anyval << " " << input << " " << hex << blessval << dec << endl;
+		cout << "bless_input badsel " << badsel << " anyval " << anyval << " " << input << " " << hex << blessval << dec << endl;
+	}
 
 	bless(var, blessval);
 
@@ -539,7 +545,7 @@ static void bless_tx_public_inputs(TxPayZK& zk, const TxPay& tx, int& badsel)
 	#if 0 // test hash
 	bigint_t tx_type;
 	subBigInt(bigint_t(0UL), bigint_t(1UL), tx_type, false);
-	//tx_type = TX_FIELD_MAX;
+	//tx_type = bigint_t(0UL) - bigint_t(1UL);
 	//addBigInt(tx_type, bigint_t(1UL + 0xfe), tx_type, false);
 	bless_input(1, notbad, zk.publics.tx_type, tx_type, TX_INPUT_BITS, "tx tx_type (never bad)");										// test_hash -- don't count
 	return;
@@ -561,6 +567,7 @@ static void bless_tx_public_inputs(TxPayZK& zk, const TxPay& tx, int& badsel)
 
 	bigint_t donation;
 	tx_amount_decode(tx.donation_fp, donation, true, TX_DONATION_BITS, TX_AMOUNT_EXPONENT_BITS);
+	donation = donation + tx.amount_carry_out - tx.amount_carry_in;
 	bless_input(1, badsel, zk.publics.donation, donation, TX_INPUT_BITS, "tx donation");													// tx
 
 	nobad = true;	// outvalmin can't be made bad if there are no outputs or all output amounts are at max
@@ -643,7 +650,7 @@ static void bless_output_public_inputs(TxOutZKPub& zkoutpub, const TxOut& txout,
 	anyval = !enforce_address;
 	bless_input(1, badsel, zkoutpub.dest_chain, txout.addrparams.dest_chain, TX_CHAIN_BITS, "output dest_chain", 0, anyval);				// output
 
-	bless_input(1, badsel, zkoutpub.M_pool, txout.M_pool, TX_POOL_BITS, "output M_pool");												// output
+	bless_input(1, badsel, zkoutpub.M_domain, txout.M_domain, TX_DOMAIN_BITS, "output M_domain");												// output
 
 	nobad = enforce_address;	// enforce_address can't be made bad if the address is valid
 	bless_input(1, badsel, zkoutpub.enforce_address, enforce_address, 1, "output enforce_address", nobad);								// output
@@ -762,7 +769,7 @@ static void bless_input_public_inputs(TxInZKPub& zkinpub, const TxIn& txin, bool
 		}
 		bless_input(1, badsel, zkinpub.delaytime, txin.delaytime, TX_DELAYTIME_BITS, "input delaytime", nobad, 0, 0, &badval);				// input when input enforced
 
-		bless_input(1, badsel, zkinpub.M_pool, txin.M_pool, TX_POOL_BITS, "input M_pool");												// input when input enforced
+		bless_input(1, badsel, zkinpub.M_domain, txin.M_domain, TX_DOMAIN_BITS, "input M_domain");												// input when input enforced
 
 		nobad = !txin.no_serialnum;
 		bless_input(1, badsel, zkinpub.enforce_serialnum, 1UL - txin.no_serialnum, 1, "input enforce_serialnum", nobad);				// input when input enforced
@@ -777,7 +784,7 @@ static void bless_input_public_inputs(TxInZKPub& zkinpub, const TxIn& txin, bool
 		bless_input(1, badsel, zkinpub.enforce_unfreeze, 0UL, 1, "input enforce_unfreeze when input not enforced");						// input when input not enforced
 		bless_input(1, badsel, zkinpub.invalmax, 0UL, TX_AMOUNT_EXPONENT_BITS, "input invalmax when input not enforced", 0, anyval);			// input when input not enforced
 		bless_input(1, badsel, zkinpub.delaytime, 0UL, TX_DELAYTIME_BITS, "input delaytime when input not enforced", 0, anyval);			// input when input not enforced
-		bless_input(1, badsel, zkinpub.M_pool, 0UL, TX_POOL_BITS, "input M_pool when input not enforced", 0, anyval);					// input when input not enforced
+		bless_input(1, badsel, zkinpub.M_domain, 0UL, TX_DOMAIN_BITS, "input M_domain when input not enforced", 0, anyval);					// input when input not enforced
 		bless_input(1, badsel, zkinpub.enforce_serialnum, 0UL, 1, "input enforce_serialnum when input not enforced");					// input when input not enforced
 	}
 
@@ -1157,7 +1164,7 @@ static void breakout_bits(TxPayZK& zk)
 		TxOutZKPriv& zkoutpriv = zk.output_private[i];
 
 		zkoutpub.dest_chain_bits = ZKHasher::extractBits(zkoutpub.dest_chain, TX_CHAIN_BITS);
-		zkoutpub.M_pool_bits = ZKHasher::extractBits(zkoutpub.M_pool, TX_POOL_BITS);
+		zkoutpub.M_domain_bits = ZKHasher::extractBits(zkoutpub.M_domain, TX_DOMAIN_BITS);
 		zkoutpub.asset_mask_bits = ZKHasher::extractBits(zkoutpub.asset_mask, TX_ASSET_BITS);
 		zkoutpub.M_asset_enc_bits = ZKHasher::extractBits(zkoutpub.M_asset_enc, TX_ASSET_BITS);
 		zkoutpub.amount_mask_bits = ZKHasher::extractBits(zkoutpub.amount_mask, TX_AMOUNT_BITS);
@@ -1192,7 +1199,7 @@ static void breakout_bits(TxPayZK& zk)
 		TxInZKPub& zkinpub = zk.input_public[i];
 		TxInZKPriv& zkinpriv = zk.input_private[i];
 
-		zkinpub.M_pool_bits = ZKHasher::extractBits(zkinpub.M_pool, TX_POOL_BITS);
+		zkinpub.M_domain_bits = ZKHasher::extractBits(zkinpub.M_domain, TX_DOMAIN_BITS);
 
 		for (unsigned j = 0; j < zk.nassets; ++j)
 			ZKConstraints::addBooleanity(zkinpriv.__is_asset[j]);
@@ -1503,7 +1510,7 @@ static void compute_output(const TxPayZK& zk, const TxOutZKPub& zkoutpub, TxOutZ
 	check = check * zkoutpub.enforce_address;
 	constrain_zero(check);
 
-	// RULE tx output: M_commitment = zkhash(M_commitment_iv, #dest, #paynum, M_pool, #asset, #amount)
+	// RULE tx output: M_commitment = zkhash(M_commitment_iv, #dest, #paynum, M_domain, #asset, #amount)
 
 	hashin.clear();
 	hashin.resize(6);
@@ -1511,7 +1518,7 @@ static void compute_output(const TxPayZK& zk, const TxOutZKPub& zkoutpub, TxOutZ
 	//hashin[1].nSetValue(zkoutpub.M_commitment_index_bits, TX_COMMIT_INDEX_BITS);
 	hashin[1].SetValue(zkoutpriv.__dest_bits, TX_FIELD_BITS);
 	hashin[2].SetValue(zkoutpriv.__paynum_bits, TX_PAYNUM_BITS);
-	hashin[3].SetValue(zkoutpub.M_pool_bits, TX_POOL_BITS);
+	hashin[3].SetValue(zkoutpub.M_domain_bits, TX_DOMAIN_BITS);
 	hashin[4].SetValue(zkoutpriv.__asset_bits, TX_ASSET_BITS);
 	hashin[5].SetValue(zkoutpriv.__amount_fp_bits, TX_AMOUNT_BITS);
 	check = ZKHasher::HashBits(hashin, HASH_BASES_COMMITMENT, TX_FIELD_BITS);
@@ -1763,7 +1770,7 @@ static void compute_input(const TxPayZK& zk, const TxInZKPub& zkinpub, TxInZKPri
 		}
 	}
 
-	// RULE tx input: M_commitment = zkhash(M_commitment_iv, #dest, #paynum, M_pool, #asset, #amount)
+	// RULE tx input: M_commitment = zkhash(M_commitment_iv, #dest, #paynum, M_domain, #asset, #amount)
 	// RULE tx input:	where #dest = zkhash(@receive_secret, @monitor_secret[1..R], @use_spend_secret[0..Q], @use_trust_secret[0..Q], @required_spend_secrets, @required_trust_secrets, @destnum)
 	// RULE tx input:	where @receive_secret = zkhash(@monitor_secret[0], @enforce_spendspec_with_spend_secret, @enforce_spendspec_with_trust_secret, @required_spendspec_hash, @allow_master_secret, @allow_freeze, @allow_trust_unfreeze, @require_public_hashkey, @restrict_addresses, @spend_locktime, @trust_locktime, @spend_delaytime, @trust_delaytime)
 
@@ -1830,7 +1837,7 @@ static void compute_input(const TxPayZK& zk, const TxInZKPub& zkinpub, TxInZKPri
 	//hashin[1].nSetValue(zkinpriv.__M_commitment_index_bits, TX_COMMIT_INDEX_BITS);
 	hashin[1].SetValue(dest_bits, TX_FIELD_BITS);
 	hashin[2].SetValue(zkinpriv.__paynum_bits, TX_PAYNUM_BITS);
-	hashin[3].SetValue(zkinpub.M_pool_bits, TX_POOL_BITS);
+	hashin[3].SetValue(zkinpub.M_domain_bits, TX_DOMAIN_BITS);
 	hashin[4].SetValue(zkinpriv.__asset_bits, TX_ASSET_BITS);
 	hashin[5].SetValue(zkinpriv.__amount_fp_bits, TX_AMOUNT_BITS);
 	check = ZKHasher::HashBits(hashin, HASH_BASES_COMMITMENT, TX_FIELD_BITS);
@@ -1954,7 +1961,7 @@ static void compute_tx(TxPayZK& zk)
 	}
 }
 
-static thread_local TxPayZK *pzk;	// memory leak
+thread_local static TxPayZK *pzk;	// memory leak
 
 // returns keyindex
 unsigned CCProof_Compute(TxPay& tx, unsigned keyindex = -1, bool verify = false, ostringstream *benchmark_text = NULL)
@@ -2002,7 +2009,8 @@ unsigned CCProof_Compute(TxPay& tx, unsigned keyindex = -1, bool verify = false,
 
 	if ((int)keyindex == -1)
 	{
-		//@lock_guard<FastSpinLock> lock(g_cout_lock);
+		//@lock_guard<mutex> lock(g_cerr_lock);
+		//@check_cerr_newline(cerr);
 		//@cout << "CCProof_Compute error: no key found" << endl;
 
 		return CCPROOF_ERR_NO_KEY;
@@ -2010,7 +2018,8 @@ unsigned CCProof_Compute(TxPay& tx, unsigned keyindex = -1, bool verify = false,
 
 	if (zk.nout < tx.nout || zk.nin < tx.nin || zk.nin_with_path < tx.nin_with_path)
 	{
-		//@lock_guard<FastSpinLock> lock(g_cout_lock);
+		//@lock_guard<mutex> lock(g_cerr_lock);
+		//@check_cerr_newline(cerr);
 		//@cout << "CCProof_Compute error: insufficient key capacity" << endl;
 
 		return CCPROOF_ERR_INSUFFICIENT_KEY;
@@ -2044,13 +2053,16 @@ unsigned CCProof_Compute(TxPay& tx, unsigned keyindex = -1, bool verify = false,
 		//zk.inpaths.resize(zk.nin_with_path);
 	}
 
-	if (0)
+	if (0) // for testing -- change to 0 for release
 	{
-		lock_guard<FastSpinLock> lock(g_cout_lock);
-		cout << "CCProof_Compute: verify " << verify << " test_make_bad " << tx.test_make_bad << " tx nout " << tx.nout << " nin " << tx.nin << " nin_with_path " << tx.nin_with_path <<" zk nout " << zk.nout << " nin " << zk.nin << " nin_with_path " << zk.nin_with_path << " nassets " << zk.nassets << " nsecrets " << zk.nsecrets << " nraddrs " << zk.nraddrs << " nrouts " << zk.nrouts << " keyindex " << keyindex << endl;
+		lock_guard<mutex> lock(g_cerr_lock);
+		check_cerr_newline();
+		cout << "CCProof_Compute: verify " << verify << " test_make_bad " << tx.test_make_bad << " tx nout " << tx.nout << " nin " << tx.nin << " nin_with_path " << tx.nin_with_path << " zk nout " << zk.nout << " nin " << zk.nin << " nin_with_path " << zk.nin_with_path << " nassets " << zk.nassets << " nsecrets " << zk.nsecrets << " nraddrs " << zk.nraddrs << " nrouts " << zk.nrouts << " keyindex " << keyindex << endl;
 	}
 
 	int badsel = -1;
+
+	//if (!verify && (rand() & 1)) tx.test_make_bad = rand(); // for testing
 
 	if (tx.test_make_bad)
 	{
@@ -2083,7 +2095,8 @@ unsigned CCProof_Compute(TxPay& tx, unsigned keyindex = -1, bool verify = false,
 
 	if (badsel >= 0)
 	{
-		lock_guard<FastSpinLock> lock(g_cout_lock);
+		lock_guard<mutex> lock(g_cerr_lock);
+		check_cerr_newline();
 		cout << "CCProof test makebad omitting proof" << endl;
 
 		return -1;
@@ -2110,7 +2123,7 @@ CCPROOF_API CCProof_GenKeys()
 
 	for (unsigned i = 0; i < keystore.GetNKeys(); ++i)
 	{
-		memset((void*)&tx, 0, sizeof(TxPay));
+		tx.Clear();
 
 		keystore.SetTxCounts(i, tx.nout, tx.nin, tx.nin_with_path);
 
@@ -2196,7 +2209,7 @@ CCPROOF_API CCProof_GenProof(TxPay& tx)
 
 #if TEST_SKIP_ZKPROOFS
 	CCRandom(&tx.zkproof, sizeof(tx.zkproof));
-	memset((void*)&tx.zkproof, 0, 2*64);
+	memset(&tx.zkproof, 0, 2*64);
 	*((char*)&tx.zkproof + 128) |= (1 << (rand() & 7));
 	return 0;
 #endif
@@ -2270,7 +2283,8 @@ CCPROOF_API CCProof_GenProof(TxPay& tx)
 	{
 		auto t1 = ccticks();
 		auto elapsed = ccticks_elapsed(t0, t1);
-		lock_guard<FastSpinLock> lock(g_cout_lock);
+		lock_guard<mutex> lock(g_cerr_lock);
+		check_cerr_newline();
 		cout << "Zero knowledge proof generated: " << benchmark_text.str() << "; keyindex " << keyindex << " elapsed time " << elapsed << " ms" << endl;
 	}
 
@@ -2282,7 +2296,13 @@ CCPROOF_API CCProof_GenProof(TxPay& tx)
 
 CCPROOF_API CCProof_VerifyProof(TxPay& tx)
 {
-	//cerr << "CCProof_VerifyProof" << endl;
+	if (0) // for testing -- change to 0 for release
+	{
+		lock_guard<mutex> lock(g_cerr_lock);
+		check_cerr_newline();
+		cout << "CCProof_VerifyProof" << endl;
+		tx_dump_stream(cout, tx);
+	}
 
 #if TEST_SKIP_ZKPROOFS
 	// the "proof" is valid if the first 64 bytes appears twice and byte 128 is non-zero
@@ -2343,7 +2363,8 @@ CCPROOF_API CCProof_VerifyProof(TxPay& tx)
 	{
 		auto t1 = ccticks();
 		auto elapsed = ccticks_elapsed(t0, t1);
-		lock_guard<FastSpinLock> lock(g_cout_lock);
+		lock_guard<mutex> lock(g_cerr_lock);
+		check_cerr_newline();
 		cout << "Zero knowledge proof " << (valid ? "verified:  " : "INVALID: ") << benchmark_text.str() << "; keyindex " << keyindex << " elapsed time " << elapsed << " ms" << endl;
 	}
 

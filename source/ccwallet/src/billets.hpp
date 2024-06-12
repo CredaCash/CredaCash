@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * billets.hpp
 */
@@ -49,7 +49,7 @@ public:
 	uint64_t create_tx;
 	uint64_t dest_id;
 	uint64_t blockchain;
-	uint32_t pool;
+	uint32_t domain;
 	uint64_t asset;
 	uint64_t amount_fp;
 	unsigned delaytime;
@@ -58,7 +58,7 @@ public:
 	snarkfront::bigint_t amount;
 	snarkfront::bigint_t address;		// part of txid; M_address = zkhash(#dest, dest_chain, #paynum)
 	snarkfront::bigint_t commit_iv;
-	snarkfront::bigint_t commitment;	// part of txid; M_commitment = zkhash(M_commitment_iv, #dest, #paynum, M_pool, #asset, #amount)
+	snarkfront::bigint_t commitment;	// part of txid; M_commitment = zkhash(M_commitment_iv, #dest, #paynum, M_domain, #asset, #amount)
 	snarkfront::bigint_t serialnum;		// holds monitor_secret[0] until billet clears; S-serialnum = zkhash(@monitor_secret[0], M-commitment, M-commitnum)
 	snarkfront::bigint_t spend_hashkey;	// property of the spend tx, not the Billet
 
@@ -67,6 +67,13 @@ public:
 	void Clear();
 	void Copy(const Billet& other);
 	string DebugString() const;
+
+	static string StatusString(unsigned status);
+
+	string StatusString() const
+	{
+		return StatusString(status);
+	}
 
 	static bool StatusIsValid(unsigned status)
 	{
@@ -83,6 +90,11 @@ public:
 	bool BillIsPending() const
 	{
 		return status >= BILL_STATUS_ERROR && status <= BILL_STATUS_PREALLOCATED;
+	}
+
+	bool BillIsUnspent()
+	{
+		return status >= BILL_STATUS_PENDING && status <= BILL_STATUS_ALLOCATED && status != BILL_STATUS_SENT;
 	}
 
 	static unsigned FlagsFromDestinationType(unsigned type);

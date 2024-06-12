@@ -1,14 +1,14 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * CCmint.h
 */
 
 #pragma once
 
-#define Implement_CCMint(blockchain)	((blockchain) == MAINNET_BLOCKCHAIN)
+#define Implement_CCMint(blockchain)	0	// was formerly ((blockchain) == MAINNET_BLOCKCHAIN)
 
 //#define TEST_SMALL_MINT		1	// set params to test a small mint
 
@@ -31,7 +31,7 @@
 
 #define CC_MINT_ZKKEY_ID	15
 
-#define CC_MINT_FOUNDATION_POOL	2
+#define CC_MINT_FOUNDATION_DOMAIN	2
 
 extern uint16_t genesis_nwitnesses;
 extern uint16_t genesis_maxmal;

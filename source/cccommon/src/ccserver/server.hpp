@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * server.hpp
 */
@@ -95,7 +95,7 @@ private:
 
 	/// The next Connection to be accepted.
 	pconnection_t m_new_connection;
-	FastSpinLock m_new_connection_lock;
+	mutex m_new_connection_lock;
 };
 
 } // namespace CCServer

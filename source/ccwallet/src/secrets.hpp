@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * secrets.hpp
 */
@@ -27,8 +27,8 @@
 #define SECRET_TYPE_MONITOR					5
 #define SECRET_TYPE_RECEIVE					6	// + packed_params if known: @enforce_spendspec_with_spend_secret, @enforce_spendspec_with_trust_secret, @required_spendspec_hash, @allow_master_secret, @allow_freeze, @allow_trust_unfreeze, @require_public_hashkey, @restrict_addresses, @spend_locktime, @trust_locktime, @spend_delaytime, @trust_delaytime
 #define SECRET_TYPE_PRE_DESTINATION			7	// + next destnum + packed_params: @receive_secret, @monitor_secret[1..Q], @use_spend_secret[0..Q], @use_trust_secret[0..Q], @required_spend_secrets, @required_trust_secrets
-#define SECRET_TYPE_SPENDABLE_DESTINATION	8	// + destnum if known	(can spend)
-#define SECRET_TYPE_TRACK_DESTINATION		9	// + destnum if known	(have at least pre-destination and monitor_secret[0])
+#define SECRET_TYPE_SPENDABLE_DESTINATION	8	// + destnum if known (can spend)
+#define SECRET_TYPE_TRACK_DESTINATION		9	// + destnum if known (have at least pre-destination and monitor_secret[0])
 #define SECRET_TYPE_WATCH_DESTINATION		10	// + destnum if known
 #define SECRET_TYPE_SEND_DESTINATION		11	// + destnum if known
 #define SECRET_TYPE_PRE_ADDRESS				12	// + next paynum (dest_chain is part of value hash, but is not stored in packed_params)
@@ -37,7 +37,8 @@
 #define SECRET_TYPE_RECV_ADDRESS			15	// + paynum if known
 #define SECRET_TYPE_POLL_ADDRESS			16	// + paynum if known
 #define SECRET_TYPE_STATIC_ADDRESS			17	// + paynum if known
-#define SECRET_TYPE_INVALID					18
+#define SECRET_TYPE_EXCHANGE_ADDRESS		18	// + paynum if known
+#define SECRET_TYPE_INVALID					19
 
 #define MAIN_SECRET_ID				1
 #define MAIN_ROOT_SECRET_ID			2
@@ -69,8 +70,8 @@ public:
 	uint64_t create_time;
 	uint64_t first_receive;
 	uint64_t last_receive;
-	uint64_t last_check;
-	uint64_t next_check;
+	uint64_t last_poll;
+	uint64_t next_poll;
 	uint64_t query_commitnum;
 	uint64_t expected_commitnum;
 
@@ -79,6 +80,13 @@ public:
 	void Clear();
 	void Copy(const Secret& other);
 	string DebugString() const;
+
+	static string TypeString(unsigned type);
+
+	string TypeString() const
+	{
+		return TypeString(type);
+	}
 
 	static bool TypeIsValid(unsigned type)
 	{
@@ -89,7 +97,7 @@ public:
 
 	static bool TypeIsAddress(unsigned type)
 	{
-		return type >= SECRET_TYPE_SEND_ADDRESS && type <= SECRET_TYPE_STATIC_ADDRESS;
+		return type >= SECRET_TYPE_SEND_ADDRESS && type <= SECRET_TYPE_EXCHANGE_ADDRESS;
 	}
 
 	bool TypeIsAddress() const
@@ -131,10 +139,10 @@ public:
 
 	static unsigned TypeHierarchy(unsigned type)
 	{
-		if (TypeIsAddress(type))
-			return SECRET_TYPE_SEND_ADDRESS;
 		if (TypeIsDestination(type))
 			return SECRET_TYPE_SPENDABLE_DESTINATION;
+		if (TypeIsAddress(type))
+			return SECRET_TYPE_SEND_ADDRESS;
 		return type;
 	}
 
@@ -187,7 +195,11 @@ public:
 
 	static void GenerateMasterSecret(string& encrypted_master_secret, string& passphrase);
 
-	static int CreateBaseSecrets(DbConn *dbconn);
+	static int CreateMasterSecret(DbConn *dbconn);
+
+	static void CreateBaseSecrets(DbConn *dbconn);
+
+	void CreateNewDestination(DbConn *dbconn, TxQuery& txquery, unsigned polling_addresses);
 
 	int CreateNewSecret(DbConn *dbconn, unsigned _type, uint64_t _parent_id, uint64_t _dest_chain, SpendSecretParams& params, bool recurse = false);
 	int DeriveSecret(DbConn *dbconn, unsigned _type, uint64_t _parent_id, SpendSecretParams& params);
@@ -198,10 +210,10 @@ public:
 	int ImportSecret(DbConn *dbconn);
 	int CheckForConflict(DbConn *dbconn, TxQuery& txquery, uint64_t _dest_chain) const;
 
-	int CreatePollingAddresses(DbConn *dbconn, uint64_t _dest_chain, SpendSecretParams& params) const;
+	int CreatePollingAddresses(DbConn *dbconn, uint64_t _dest_chain, SpendSecretParams& params, unsigned polling_addresses) const;
 
-	int UpdateSavePollingTimes(DbConn *dbconn, uint64_t now = 0, bool checked_now = false);
-	int UpdatePollingTimes(uint64_t now = 0, bool checked_now = false);
+	int UpdateSavePollTime(DbConn *dbconn, uint64_t now = 0, bool checked_now = false, bool query_error = false);
+	int UpdatePollTime(uint64_t now = 0, bool checked_now = false, bool query_error = false);
 	int PollAddress(DbConn *dbconn, TxQuery& txquery, bool update_times = true);
 
 	static int PollDestination(DbConn *dbconn, TxQuery& txquery, uint64_t dest_id, unsigned polling_addresses, uint64_t last_receive_max);
@@ -210,6 +222,6 @@ private:
 	int CreateIntermediateSecret(DbConn *dbconn, unsigned _type, unsigned target_type, Secret& parent, SpendSecretParams& params);
 	int CreateNextSecretNumber(DbConn *dbconn, unsigned _type, unsigned target_type, uint64_t _parent_id, SpendSecretParams& params);
 
-	int UpdatePollingAddresses(DbConn *dbconn, const Secret &destination);
-	int SetPollingAddresses(DbConn *dbconn, const Secret &destination, unsigned polling_addresses = 0, bool update_current = false, bool is_new = false);
+	int UpdatePollingAddresses(DbConn *dbconn, const Secret& destination);
+	int SetPollingAddresses(DbConn *dbconn, const Secret& destination, unsigned polling_addresses = 0, bool update_current = false, bool is_new = false);
 };

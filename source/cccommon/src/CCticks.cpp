@@ -1,13 +1,46 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * CCticks.cpp
 */
 
 #include "CCdef.h"
 #include "CCticks.hpp"
+
+#define HIGHRES_REPORT_THRESHOLD	1000
+
+int64_t g_clock_offset = 0;
+
+int64_t unixtime()
+{
+	return (int64_t)time(NULL) + g_clock_offset;
+}
+
+void unixtimeb(timeb *t)
+{
+	ftime(t);
+
+	t->time = (int64_t)t->time + g_clock_offset;
+}
+
+uint64_t highres_ticks()
+{
+	uint64_t rv = 0;
+
+#ifdef _WIN32
+	CCASSERT(sizeof(rv) >= sizeof(LARGE_INTEGER));
+	QueryPerformanceCounter((LARGE_INTEGER*)&rv);
+#endif
+
+	return rv;
+}
+
+bool report_highres_ticks(uint64_t dt)
+{
+	return (dt >= HIGHRES_REPORT_THRESHOLD);
+}
 
 uint32_t ccticks(clockid_t clock_id)
 {

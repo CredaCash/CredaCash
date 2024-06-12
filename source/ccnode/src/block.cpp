@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * block.cpp
 */
@@ -14,7 +14,6 @@
 #include <CCmint.h>
 
 #include <blake2/blake2.h>
-#include <ed25519/ed25519.h>
 
 #define TRACE_BLOCK			0
 #define TRACE_CHECKORDER	0
@@ -27,6 +26,8 @@
 #ifndef TEST_SKIP_SIGS
 #define TEST_SKIP_SIGS		0	// don't skip
 #endif
+
+#define MAX_SCORE_BITS		64
 
 BlockAux* Block::AuxPtr()
 {
@@ -41,7 +42,7 @@ BlockAux* Block::SetupAuxBuf(SmartBuf smartobj, bool from_tx_net)
 {
 	auto wire = WireData();
 
-	if (TRACE_SMARTBUF) BOOST_LOG_TRIVIAL(debug) << "Block::SetupAuxBuf from_tx_net " << from_tx_net << " level " << wire->level.GetValue() << " witness " << (unsigned)wire->witness << " prior oid " << buf2hex(&wire->prior_oid, sizeof(ccoid_t));
+	if (TRACE_SMARTBUF) BOOST_LOG_TRIVIAL(debug) << "Block::SetupAuxBuf from_tx_net " << from_tx_net << " level " << wire->level.GetValue() << " witness " << (unsigned)wire->witness << " prior oid " << buf2hex(&wire->prior_oid, CC_OID_TRACE_SIZE);
 
 	auto auxp = (BlockAux*)malloc(sizeof(BlockAux));
 	if (!auxp)
@@ -117,7 +118,7 @@ void Block::ChainToPriorBlock(SmartBuf priorobj)
 
 	auxp->skip = ComputeSkip(prior_wire->witness, wire->witness, auxp->blockchain_params.nwitnesses);
 
-	if (TRACE_BLOCK) BOOST_LOG_TRIVIAL(trace) << "BlockAux::ChainToPriorBlock level " << wire->level.GetValue() << " nwitnesses " << auxp->blockchain_params.nwitnesses << " witness " << (unsigned)wire->witness << " skip " << auxp->skip << " prior witness " << (unsigned)prior_wire->witness << " prior oid " << buf2hex(&prior_auxp->oid, sizeof(ccoid_t));
+	if (TRACE_BLOCK) BOOST_LOG_TRIVIAL(trace) << "Block::ChainToPriorBlock level " << wire->level.GetValue() << " nwitnesses " << auxp->blockchain_params.nwitnesses << " witness " << (unsigned)wire->witness << " skip " << auxp->skip << " prior witness " << (unsigned)prior_wire->witness << " prior oid " << buf2hex(&prior_auxp->oid, CC_OID_TRACE_SIZE);
 
 	CCASSERT(auxp->blockchain_params.nwitnesses);
 	CCASSERT(auxp->skip < auxp->blockchain_params.nwitnesses);
@@ -193,7 +194,7 @@ bool Block::CheckBadSigOrder(int top_witness) const
 		nconfsigs = (nwitnesses - auxp->blockchain_params.next_maxmal) / 2 + auxp->blockchain_params.next_maxmal + 1;
 	}
 
-	if (TRACE_CHECKORDER) BOOST_LOG_TRIVIAL(trace) << "Block::CheckBadSigOrder top_witness " << top_witness << " starting at level " << wire->level.GetValue() << " nwitnesses " << nwitnesses << " maxmal " << auxp->blockchain_params.maxmal << " nconfsigs " << nconfsigs << " witness " << (unsigned)wire->witness << " skip " << auxp->skip << " oid " << buf2hex(&auxp->oid, sizeof(ccoid_t));
+	if (TRACE_CHECKORDER) BOOST_LOG_TRIVIAL(trace) << "Block::CheckBadSigOrder top_witness " << top_witness << " starting at level " << wire->level.GetValue() << " nwitnesses " << nwitnesses << " maxmal " << auxp->blockchain_params.maxmal << " nconfsigs " << nconfsigs << " witness " << (unsigned)wire->witness << " skip " << auxp->skip << " oid " << buf2hex(&auxp->oid, CC_OID_TRACE_SIZE);
 
 	unsigned nsigs = 0;
 	unsigned skipsum = 0;
@@ -242,19 +243,17 @@ bool Block::CheckBadSigOrder(int top_witness) const
 
 		if (wire->level.GetValue() != expected_level)
 		{
-			const char msg[] = "FATAL ERROR Block::CheckBadSigOrder block level sequence error";
+			const char msg[] = "Block::CheckBadSigOrder block level sequence error";
 
 			BOOST_LOG_TRIVIAL(fatal) << msg << " level " << wire->level.GetValue() << " expected level " << expected_level;
 
-			g_blockchain.SetFatalError(msg);
-
-			return true;
+			return g_blockchain.SetFatalError(msg);
 		}
 	}
 
 	if (skipsum + nconfsigs > nwitnesses)
 	{
-		if (TRACE_CALCSKIPSCORE) BOOST_LOG_TRIVIAL(trace) << "Block::CheckBadSigOrder block violates dupe/ordering rule; level " << wire->level.GetValue() << " nwitnesses " << nwitnesses << " nsigs " << nsigs << " skipsum " << skipsum << " oid " << buf2hex(&AuxPtr()->oid, sizeof(ccoid_t));
+		if (TRACE_CALCSKIPSCORE) BOOST_LOG_TRIVIAL(trace) << "Block::CheckBadSigOrder block violates dupe/ordering rule; level " << wire->level.GetValue() << " nwitnesses " << nwitnesses << " nsigs " << nsigs << " skipsum " << skipsum << " oid " << buf2hex(&AuxPtr()->oid, CC_OID_TRACE_SIZE);
 
 		return true;
 	}
@@ -290,7 +289,7 @@ uint64_t Block::CalcSkipScore(int top_witness, SmartBuf last_indelible_block, ui
 		}
 	}
 
-	if (TRACE_CALCSKIPSCORE) BOOST_LOG_TRIVIAL(trace) << "Block::CalcSkipScore top witness " << top_witness << " test mal " << maltest << " starting at level " << wire->level.GetValue() << " nwitnesses " << auxp->blockchain_params.nwitnesses << " maxmal " << auxp->blockchain_params.maxmal << " nconfsigs " << auxp->blockchain_params.nconfsigs << " witness " << (unsigned)wire->witness << " skip " << auxp->skip << " oid " << buf2hex(&auxp->oid, sizeof(ccoid_t)) << " last indelible level " << last_indelible_wire->level.GetValue();
+	if (TRACE_CALCSKIPSCORE) BOOST_LOG_TRIVIAL(trace) << "Block::CalcSkipScore top witness " << top_witness << " genstamp " << genstamp << " test mal " << maltest << " starting at level " << wire->level.GetValue() << " nwitnesses " << auxp->blockchain_params.nwitnesses << " maxmal " << auxp->blockchain_params.maxmal << " nconfsigs " << auxp->blockchain_params.nconfsigs << " witness " << (unsigned)wire->witness << " skip " << auxp->skip << " oid " << buf2hex(&auxp->oid, CC_OID_TRACE_SIZE) << " last indelible level " << last_indelible_wire->level.GetValue();
 
 	uint64_t score = 0;
 	unsigned scorebits = 0;
@@ -324,12 +323,14 @@ uint64_t Block::CalcSkipScore(int top_witness, SmartBuf last_indelible_block, ui
 			scorebits = MAX_SCORE_BITS;
 		else
 			score = 0;
+
+		//start_shutdown();	// for debugging
 	}
 
 	if (scorebits < MAX_SCORE_BITS)
 		score <<= MAX_SCORE_BITS - scorebits;
 
-	if (TRACE_CALCSKIPSCORE) BOOST_LOG_TRIVIAL(trace) << "Block::CalcSkipScore score " << hex << score << dec << " test mal " << maltest << " starting at level " << wire->level.GetValue() << " nwitnesses " << auxp->blockchain_params.nwitnesses << " maxmal " << auxp->blockchain_params.maxmal << " nconfsigs " << auxp->blockchain_params.nconfsigs << " witness " << (unsigned)wire->witness << " skip " << auxp->skip << " oid " << buf2hex(&auxp->oid, sizeof(ccoid_t)) << " last indelible level " << last_indelible_wire->level.GetValue();
+	if (TRACE_CALCSKIPSCORE) BOOST_LOG_TRIVIAL(trace) << "Block::CalcSkipScore score " << hex << score << dec << " test mal " << maltest << " starting at level " << wire->level.GetValue() << " nwitnesses " << auxp->blockchain_params.nwitnesses << " maxmal " << auxp->blockchain_params.maxmal << " nconfsigs " << auxp->blockchain_params.nconfsigs << " witness " << (unsigned)wire->witness << " skip " << auxp->skip << " oid " << buf2hex(&auxp->oid, CC_OID_TRACE_SIZE) << " last indelible level " << last_indelible_wire->level.GetValue();
 
 	return score;
 }
@@ -449,13 +450,13 @@ void Block::SetOrVerifyOid(bool bset)
 	{
 		if (memcmp(&hash, &auxp->block_hash, sizeof(auxp->block_hash)))
 		{
-			BOOST_LOG_TRIVIAL(fatal) << "Block::SetOrVerifyOid block oid " << buf2hex(&auxp->oid, sizeof(auxp->oid)) << " hash " << buf2hex(&auxp->block_hash, sizeof(auxp->block_hash)) << " does not match computed hash " << buf2hex(&hash, sizeof(hash));
+			BOOST_LOG_TRIVIAL(fatal) << "Block::SetOrVerifyOid block oid " << buf2hex(&auxp->oid, CC_OID_TRACE_SIZE) << " hash " << buf2hex(&auxp->block_hash, sizeof(auxp->block_hash)) << " does not match computed hash " << buf2hex(&hash, sizeof(hash));
 			CCASSERT(0); raise(SIGTERM);
 		}
 
-		if (memcmp(&oid, &auxp->oid, sizeof(auxp->oid)))
+		if (memcmp(&oid, &auxp->oid, sizeof(ccoid_t)))
 		{
-			BOOST_LOG_TRIVIAL(fatal) << "Block::SetOrVerifyOid block oid " << buf2hex(&auxp->oid, sizeof(auxp->oid)) << " does not match computed oid " << buf2hex(&oid, sizeof(oid));
+			BOOST_LOG_TRIVIAL(fatal) << "Block::SetOrVerifyOid block oid " << buf2hex(&auxp->oid, CC_OID_TRACE_SIZE) << " does not match computed oid " << buf2hex(&oid, CC_OID_TRACE_SIZE);
 			CCASSERT(0); raise(SIGTERM);
 		}
 	}
@@ -467,16 +468,16 @@ void BlockAux::SetHash(const block_hash_t& hash)
 
 	memcpy(&block_hash, &hash, sizeof(hash));
 
-	if (TRACE_CALCOID) BOOST_LOG_TRIVIAL(trace) << "BlockAux::SetHash TRACE_CALCOID block with announced " << announce_ticks << " set to hash " << buf2hex(&block_hash, sizeof(block_hash));
+	if (TRACE_CALCOID) BOOST_LOG_TRIVIAL(info) << "BlockAux::SetHash TRACE_CALCOID block with announced " << announce_ticks << " set to hash " << buf2hex(&block_hash, sizeof(block_hash));
 }
 
 void BlockAux::SetOid(const ccoid_t& soid)
 {
 	CCASSERT(sizeof(oid) == sizeof(soid));
 
-	memcpy(&oid, &soid, sizeof(oid));
+	memcpy(&oid, &soid, sizeof(ccoid_t));
 
-	if (TRACE_CALCOID) BOOST_LOG_TRIVIAL(trace) << "BlockAux::SetOid TRACE_CALCOID block with announced " << announce_ticks << " set to oid " << buf2hex(&oid, sizeof(oid));
+	if (TRACE_CALCOID) BOOST_LOG_TRIVIAL(info) << "BlockAux::SetOid TRACE_CALCOID block with announced " << announce_ticks << " set to oid " << buf2hex(&oid, CC_OID_TRACE_SIZE);
 }
 
 void Block::CalcHash(block_hash_t& block_hash)
@@ -484,7 +485,7 @@ void Block::CalcHash(block_hash_t& block_hash)
 	auto rc = blake2b(&block_hash, sizeof(block_hash), &header.tag, sizeof(header.tag), BodyPtr() + sizeof(block_signature_t), BodySize() - sizeof(block_signature_t));
 	CCASSERTZ(rc);
 
-	if (TRACE_CALCOID) BOOST_LOG_TRIVIAL(trace) << "Block::CalcHash TRACE_CALCOID for block level " << WireData()->level.GetValue() << " size " << ObjSize() << " prior oid " << buf2hex(&(WireData()->prior_oid), sizeof(WireData()->prior_oid)) << " computed block hash " << buf2hex(&block_hash, sizeof(block_hash));
+	if (TRACE_CALCOID) BOOST_LOG_TRIVIAL(info) << "Block::CalcHash TRACE_CALCOID for block level " << WireData()->level.GetValue() << " size " << ObjSize() << " prior oid " << buf2hex(&(WireData()->prior_oid), CC_OID_TRACE_SIZE) << " computed block hash " << buf2hex(&block_hash, sizeof(block_hash));
 }
 
 void Block::CalcOid(const block_hash_t& block_hash, ccoid_t& oid)
@@ -505,13 +506,31 @@ void Block::CalcOid(const block_hash_t& block_hash, ccoid_t& oid)
 	*(uint32_t*)&oid = seq.fetch_add(1);
 #endif
 
-	if (TRACE_CALCOID) BOOST_LOG_TRIVIAL(trace) << "Block::CalcOid TRACE_CALCOID for block level " << WireData()->level.GetValue() << " size " << ObjSize() << " prior oid " << buf2hex(&(WireData()->prior_oid), sizeof(WireData()->prior_oid)) << " from block hash " << buf2hex(&block_hash, sizeof(block_hash)) << " computed oid " << buf2hex(&oid, sizeof(oid));
+	if (TRACE_CALCOID) BOOST_LOG_TRIVIAL(info) << "Block::CalcOid TRACE_CALCOID for block level " << WireData()->level.GetValue() << " size " << ObjSize() << " prior oid " << buf2hex(&(WireData()->prior_oid), CC_OID_TRACE_SIZE) << " from block hash " << buf2hex(&block_hash, sizeof(block_hash)) << " computed oid " << buf2hex(&oid, CC_OID_TRACE_SIZE);
+}
+
+static void CummulativeHash(uint64_t level, block_hash_t& hash, const void *data, unsigned bytes)
+{
+	if (level && TRACE_SIGNING) BOOST_LOG_TRIVIAL(info) << "Block::CummulativeHash level " << level << "   in " << buf2hex(&hash, sizeof(hash));
+	if (level && TRACE_SIGNING) BOOST_LOG_TRIVIAL(info) << "Block::CummulativeHash level " << level << " data " << buf2hex(data, bytes);
+
+	blake2b_ctx ctx;
+	auto rc =
+	blake2b_init(&ctx, sizeof(hash), NULL, 0);
+	blake2b_update(&ctx, &hash, sizeof(hash));
+	blake2b_update(&ctx, data, bytes);
+	blake2b_final(&ctx, &hash);
+	CCASSERTZ(rc);
+
+	if (level && TRACE_SIGNING) BOOST_LOG_TRIVIAL(info) << "Block::CummulativeHash level " << level << "  out " << buf2hex(&hash, sizeof(hash));
 }
 
 bool Block::SignOrVerify(bool verify)
 {
 	auto wire = WireData();
 	auto auxp = AuxPtr();
+
+	auto level = wire->level.GetValue();
 
 	auto priorblock = (Block*)GetPriorBlock().data();
 	auto prior_auxp = priorblock->AuxPtr();
@@ -524,17 +543,17 @@ bool Block::SignOrVerify(bool verify)
 		return false;
 	}
 
-	BlockSignedData data;
-	//cerr << "sizeof(BlockSignedData) = " << sizeof(data) << endl;
-	//cerr << "prior block_hash " << buf2hex(&prior_auxp->block_hash, sizeof(prior_auxp->block_hash)) << endl;
+	block_hash_t data;
 
-	memcpy(&data.prior_block_hash, &prior_auxp->block_hash, sizeof(data.prior_block_hash));
-	memcpy(&data.block_hash, &auxp->block_hash, sizeof(data.block_hash));
+	CCASSERT(sizeof(data) == sizeof(prior_auxp->block_hash));
+
+	memcpy(&data, &prior_auxp->block_hash, sizeof(prior_auxp->block_hash));
+
+	CummulativeHash(level*verify, data, &auxp->block_hash, sizeof(auxp->block_hash));
+
 #if ROTATE_BLOCK_SIGNING_KEYS
-	memcpy(&data.witness_next_signing_public_key, &wire->witness_next_signing_public_key, sizeof(data.witness_next_signing_public_key));
+	CummulativeHash(level*verify, data, &wire->witness_next_signing_public_key, sizeof(wire->witness_next_signing_public_key));
 #endif
-	data.block_size = BodySize();
-	data.witness = wire->witness;
 
 	if (wire->witness >= prior_auxp->blockchain_params.next_nwitnesses)
 	{
@@ -549,10 +568,10 @@ bool Block::SignOrVerify(bool verify)
 
 		if (TRACE_SIGNING)
 		{
-			BOOST_LOG_TRIVIAL(debug) << "Block::SignOrVerify verify level " << wire->level.GetValue() << " witness " << (unsigned)wire->witness;
-			BOOST_LOG_TRIVIAL(debug) << "Block::SignOrVerify verify     pubkey " << buf2hex(&prior_auxp->blockchain_params.signing_keys[wire->witness], sizeof(prior_auxp->blockchain_params.signing_keys[wire->witness]));
-			BOOST_LOG_TRIVIAL(debug) << "Block::SignOrVerify signing data " << buf2hex(&data, sizeof(data));
-			BOOST_LOG_TRIVIAL(debug) << "Block::SignOrVerify signature " << buf2hex(&wire->signature, sizeof(wire->signature));
+			BOOST_LOG_TRIVIAL(info) << "Block::SignOrVerify verify level " << level << " witness " << (unsigned)wire->witness;
+			BOOST_LOG_TRIVIAL(info) << "Block::SignOrVerify verify     pubkey " << buf2hex(&prior_auxp->blockchain_params.signing_keys[wire->witness], sizeof(prior_auxp->blockchain_params.signing_keys[wire->witness]));
+			BOOST_LOG_TRIVIAL(info) << "Block::SignOrVerify signing data " << buf2hex(&data, sizeof(data));
+			BOOST_LOG_TRIVIAL(info) << "Block::SignOrVerify signature " << buf2hex(&wire->signature, sizeof(wire->signature));
 		}
 
 		auto rc = ed25519_sign_open((const unsigned char*)&data, sizeof(data), &prior_auxp->blockchain_params.signing_keys[wire->witness][0], &wire->signature[0]);
@@ -571,18 +590,18 @@ bool Block::SignOrVerify(bool verify)
 
 		ed25519_sign((const unsigned char*)&data, sizeof(data), &prior_auxp->witness_params.next_signing_private_key[keynum][0], &prior_auxp->blockchain_params.signing_keys[wire->witness][0], &wire->signature[0]);
 
-		if (TRACE_SIGNING)
+		if (0 && TRACE_SIGNING)
 		{
 			block_signing_public_key_t pubkey;
 			ed25519_publickey(&prior_auxp->witness_params.next_signing_private_key[keynum][0], &pubkey[0]);
 
-			BOOST_LOG_TRIVIAL(debug) << "Block::SignOrVerify sign level " << wire->level.GetValue() << " witness " << (unsigned)wire->witness;
+			BOOST_LOG_TRIVIAL(info) << "Block::SignOrVerify sign level " << level << " witness " << (unsigned)wire->witness;
 			// don't log the private key in the final release
-			//BOOST_LOG_TRIVIAL(debug) << "Block::SignOrVerify sign      privkey " << buf2hex(&prior_auxp->witness_params.next_signing_private_key[keynum], sizeof(prior_auxp->witness_params.next_signing_private_key[keynum]));
-			BOOST_LOG_TRIVIAL(debug) << "Block::SignOrVerify sign       pubkey " << buf2hex(&prior_auxp->blockchain_params.signing_keys[wire->witness], sizeof(prior_auxp->blockchain_params.signing_keys[wire->witness]));
-			BOOST_LOG_TRIVIAL(debug) << "Block::SignOrVerify sign pubkey check " << buf2hex(&pubkey, sizeof(pubkey));
-			BOOST_LOG_TRIVIAL(debug) << "Block::SignOrVerify signing data " << buf2hex(&data, sizeof(data));
-			BOOST_LOG_TRIVIAL(debug) << "Block::SignOrVerify signature " << buf2hex(&wire->signature, sizeof(wire->signature));
+			//BOOST_LOG_TRIVIAL(info) << "Block::SignOrVerify sign      privkey " << buf2hex(&prior_auxp->witness_params.next_signing_private_key[keynum], sizeof(prior_auxp->witness_params.next_signing_private_key[keynum]));
+			BOOST_LOG_TRIVIAL(info) << "Block::SignOrVerify sign       pubkey " << buf2hex(&prior_auxp->blockchain_params.signing_keys[wire->witness], sizeof(prior_auxp->blockchain_params.signing_keys[wire->witness]));
+			BOOST_LOG_TRIVIAL(info) << "Block::SignOrVerify sign pubkey check " << buf2hex(&pubkey, sizeof(pubkey));
+			BOOST_LOG_TRIVIAL(info) << "Block::SignOrVerify signing data " << buf2hex(&data, sizeof(data));
+			BOOST_LOG_TRIVIAL(info) << "Block::SignOrVerify signature " << buf2hex(&wire->signature, sizeof(wire->signature));
 		}
 
 		return false;
@@ -598,14 +617,19 @@ void Block::ConsoleAnnounce(const char *verb, const BlockWireHeader *wire, const
 	memset(ts, 0, sizeof(ts));
 
 	time_t timestamp = wire->timestamp.GetValue();
-	int64_t age = time(NULL) - timestamp;
+	int64_t age = unixtime() - timestamp;
 
+	#ifdef _WIN32
+	gmtime_s(&tms, &timestamp);
+	#else
 	gmtime_r(&timestamp, &tms);
+	#endif
 	strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", &tms);
 
 	auto size = ObjSize();
 
-	lock_guard<FastSpinLock> lock(g_cout_lock);
+	lock_guard<mutex> lock(g_cerr_lock);
+	check_cerr_newline();
 
 	cerr << verb;
 	cerr << " block timestamp " << ts;
@@ -613,8 +637,8 @@ void Block::ConsoleAnnounce(const char *verb, const BlockWireHeader *wire, const
 	cerr << " witness " << (unsigned)wire->witness;
 	cerr << " skip " << auxp->skip;
 	cerr << " size " << (size < 10000 ? " " : "") << (size < 1000 ? " " : "") << (size < 100 ? " " : "") << size;
-	cerr << " hash " << buf2hex(&auxp->oid, 3, 0) << "..";
-	cerr << " prior " << buf2hex(&wire->prior_oid, 3, 0) << "..";
+	cerr << " hash " << buf2hex(&auxp->oid, 3) << "..";
+	cerr << " prior " << buf2hex(&wire->prior_oid, 3) << "..";
 	cerr << " age " << age;
 	cerr << note1;
 	cerr << note2;

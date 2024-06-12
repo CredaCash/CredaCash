@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * apputil.cpp
 */
@@ -12,7 +12,7 @@
 
 void set_trace_level(int level)
 {
-    boost::log::core::get()->set_filter(boost::log::trivial::severity > (((int)(fatal)) - level));
+	boost::log::core::get()->set_filter(boost::log::trivial::severity > (((int)(fatal)) - level));
 }
 
 void expand_number(string& s, const uint64_t v)

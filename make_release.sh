@@ -7,10 +7,11 @@ then
     exit 1
 fi
 export CREDACASH_BUILD=`pwd`
-export CPPFLAGS="-pthread -fPIC -fstack-protector-strong -Wno-misleading-indentation $cppx"
+export CPPFLAGS="-g -pthread -fPIC -fstack-protector-strong -Wno-misleading-indentation -Wno-deprecated-copy -Wno-deprecated-declarations -Wno-array-parameter $cppx"
+export LDFLAGS="-fstack-protector"
 export LDLIBS="-lpthread -ldl"
 rm -f ccnode.exe ccwallet.exe cctracker.exe cctx64.dll
-find source -type f \( -name \*.exe -o -name \*.dll \) -delete
+find source -type f \( -name \*.exe -o -name \*.dll -o -name \*.a \) -delete
 cd source/3rdparty/Release
 make all
 cd ../../..
@@ -20,7 +21,6 @@ cd ../../..
 cd source/ccdll/Release
 make all
 cd ../../..
-#export CPPFLAGS="-pthread -Wno-misleading-indentation $cppx"
 cd source/cclib/Release
 make all
 cd ../../..

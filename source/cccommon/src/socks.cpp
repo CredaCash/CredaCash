@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * socks.cpp
 */
@@ -11,9 +11,11 @@
 #include "socks.hpp"
 #include "CCcrypto.hpp"
 
+#define TOR_PROXY_TIMEOUT	140
+
 boost::asio::ip::basic_endpoint<boost::asio::ip::tcp> Socks::ConnectPoint(unsigned port)
 {
-	//static boost::asio::ip::address localhost = boost::asio::ip::address::from_string("127.0.0.1");
+	//static boost::asio::ip::address localhost = boost::asio::ip::address::from_string(LOCALHOST);
 
 	return boost::asio::ip::basic_endpoint<boost::asio::ip::tcp>(boost::asio::ip::address_v4::loopback(), port);
 }
@@ -50,82 +52,92 @@ boost::system::error_code Socks::SendString(boost::asio::ip::tcp::socket& socket
 	{
 		auto dest = ConnectPoint(port);
 
-		BOOST_LOG_TRIVIAL(trace) << "torproxy synchronous connect...";
+		BOOST_LOG_TRIVIAL(trace) << "Socks::SendString torproxy synchronous connect localhost port " << port << "...";
 
 		socket.connect(dest, e);	// !!! need to make this connect async?
 
-		BOOST_LOG_TRIVIAL(trace) << "torproxy synchronous connect done";
-
 		if (e)
 		{
-			BOOST_LOG_TRIVIAL(info) << "torproxy connect failed error " << e << " " << e.message();
+			BOOST_LOG_TRIVIAL(info) << "Socks::SendString torproxy connect error " << e << " " << e.message();
 			goto done;
 		}
+
+		BOOST_LOG_TRIVIAL(trace) << "Socks::SendString torproxy connected";
 
 		//BOOST_LOG_TRIVIAL(trace) << "sending " << s2hex(str);
 
 		boost::asio::write(socket, boost::asio::buffer(str), e);
 		if (e)
 		{
-			BOOST_LOG_TRIVIAL(error) << "torproxy command write failed error " << e << " " << e.message();
+			BOOST_LOG_TRIVIAL(error) << "Socks::SendString torproxy command write failed error " << e << " " << e.message();
 			goto done;
 		}
 
-		array<unsigned char, SOCK_REPLY_SIZE> socksreply;
+		BOOST_LOG_TRIVIAL(trace) << "Socks::SendString torproxy command write done";
 
-		size_t nread = boost::asio::read(socket, boost::asio::buffer(socksreply), boost::asio::transfer_exactly(SOCK_REPLY_SIZE), e);
-
+		socket.non_blocking(true, e);
 		if (e)
 		{
-			BOOST_LOG_TRIVIAL(warning) << "torproxy command read failed error " << e << " " << e.message();
-			goto done;
-		}
-
-		if (nread < SOCK_REPLY_SIZE)
-		{
-			BOOST_LOG_TRIVIAL(error) << "torproxy command returned only " << nread << " bytes";
-			e.assign(boost::system::errc::no_message, boost::system::system_category());
-			goto done;
-		}
-
-		if (socksreply[1] != 90)
-		{
-			if (socksreply[1] == 91)
-				BOOST_LOG_TRIVIAL(info) << "torproxy command returned " << (unsigned)socksreply[1];
-			else
-				BOOST_LOG_TRIVIAL(error) << "torproxy command returned error " << (unsigned)socksreply[1];
-			e.assign(socksreply[1], boost::system::generic_category());
+			BOOST_LOG_TRIVIAL(error) << "Socks::SendString socket non_blocking failed error " << e << " " << e.message();
 			goto done;
 		}
 
 		reply.resize(reply.capacity());
 
-		while (true)
+		for (unsigned count = 0; ; )
 		{
-			size_t nread = boost::asio::read(socket, boost::asio::buffer(&reply[ntotal], reply.size() - ntotal), boost::asio::transfer_at_least(1), e);
-
-			if (e)
+			if (g_shutdown)
 			{
-				BOOST_LOG_TRIVIAL(info) << "torproxy server read failed error " << e << " " << e.message();
+				BOOST_LOG_TRIVIAL(info) << "Socks::SendString shutting down";
+				e.assign(boost::system::errc::no_such_process, boost::system::system_category());
+				goto done;
+			}
+
+			//BOOST_LOG_TRIVIAL(info) << "Socks::SendString recv have " << ntotal;
+
+			auto nread = boost::asio::read(socket, boost::asio::buffer(&reply[ntotal], reply.size() - ntotal), boost::asio::transfer_at_least(1), e);
+
+			if (e && e != boost::asio::error::would_block && e != boost::asio::error::try_again && e != boost::asio::error::interrupted)
+			{
+				BOOST_LOG_TRIVIAL(info) << "Socks::SendString torproxy read failed after " << ntotal << " bytes; error " << e << " " << e.message();
+				goto done;
+			}
+
+			if (nread <= 0)
+			{
+				if (++count < TOR_PROXY_TIMEOUT)
+				{
+					sleep(1);
+
+					continue;
+				}
+
+				BOOST_LOG_TRIVIAL(info) << "Socks::SendString torproxy read timeout after " << ntotal << " bytes";
+				e.assign(boost::system::errc::timed_out, boost::system::system_category());
 				goto done;
 			}
 
 			ntotal += nread;
 
-			if (nread < 1)
+			BOOST_LOG_TRIVIAL(trace) << "Socks::SendString read nbytes " << nread << " total " << ntotal;
+
+			if (ntotal > 1 && reply[1] != 90)
 			{
-				BOOST_LOG_TRIVIAL(error) << "torproxy server read returned " << nread << " bytes";
-				e.assign(boost::system::errc::no_message_available, boost::system::system_category());
+				if (reply[1] == 91)
+					BOOST_LOG_TRIVIAL(info) << "Socks::SendString torproxy returned " << (unsigned)reply[1];
+				else
+					BOOST_LOG_TRIVIAL(error) << "Socks::SendString torproxy returned error " << (unsigned)reply[1];
+				e.assign(reply[1], boost::system::generic_category());
 				goto done;
 			}
 
 			for (unsigned i = ntotal - nread; i < ntotal; ++i)
-				if (reply[i] == 0)
+				if (i >= SOCKS_REPLY_SIZE && reply[i] == 0)
 					goto done;
 
 			if (ntotal >= reply.size())
 			{
-				BOOST_LOG_TRIVIAL(error) << "torproxy server read buffer overflow; read " << nread << " total " << ntotal << " size " << reply.size();
+				BOOST_LOG_TRIVIAL(error) << "Socks::SendString read buffer overflow; read " << nread << " total " << ntotal << " size " << reply.size();
 				e.assign(boost::system::errc::value_too_large, boost::system::system_category());
 				goto done;
 			}
@@ -141,8 +153,19 @@ done:
 	}
 
 	reply.resize(ntotal);
+	reply.replace(0, SOCKS_REPLY_SIZE, "");
 
-	//BOOST_LOG_TRIVIAL(trace) << "torproxy read " << ntotal << " bytes: " << s2hex(reply);
+	if (!e && ntotal < SOCKS_REPLY_SIZE)
+	{
+		BOOST_LOG_TRIVIAL(error) << "Socks::SendString torproxy command returned only " << ntotal << " bytes";
+		e.assign(boost::system::errc::no_message, boost::system::system_category());
+	}
+
+	if (!e)
+	{
+		ntotal -= SOCKS_REPLY_SIZE;
+		BOOST_LOG_TRIVIAL(trace) << "Socks::SendString read " << ntotal << " bytes: " << s2hex(reply);
+	}
 
 	return e;
 }

@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * walletdb-totals.cpp
 */
@@ -13,25 +13,33 @@
 #include <dblog.h>
 #include <CCparams.h>
 
-#define TRACE_DBCONN	(g_params.trace_db)
+#define TRACE_DB_READ	(g_params.trace_db_reads)
+#define TRACE_DB_WRITE	(g_params.trace_db_writes)
 
 using namespace snarkfront;
 
 int DbConn::TotalInsert(const Total& total, bool lock_optional)
 {
-	CCASSERT(TestDebugWriteLocking(lock_optional));
+	CCASSERT(lock_optional || GetTxnState() == SQLITE_TXN_WRITE);
 
 	//lock_guard<boost::shared_mutex> lock(db_mutex);
 	Finally finally(boost::bind(&DbConn::DoDbFinish, this));
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::TotalInsert " << total.DebugString();
+	if (TRACE_DB_WRITE) BOOST_LOG_TRIVIAL(trace) << "DbConn::TotalInsert " << total.DebugString();
+
+	// Total is stored big endian, with any leading (msb) zeros omitted
 
 	CCASSERT(total.IsValid());
 
-	bigint_t packed_total;
-	amount_to_bigint(total.total, packed_total);
+	bigint_t big_total, swapped;
 
-	//packed_total = 0UL; // for testing
+	amount_to_bigint(total.total, big_total);
+	//big_total = 0UL; // for testing
+	bigint_byteswap(big_total, swapped);
+
+	auto total_nbytes = bigint_end_bytes_in_use(swapped);
+	//cerr << hex << big_total << dec << " " << total_nbytes << " " << bigint_bytes_in_use(big_total) << endl;
+	CCASSERT(total_nbytes == bigint_bytes_in_use(big_total));
 
 	// Type, Reference, Asset, DelayTime, Blockchain, Total
 	if (dblog(sqlite3_bind_int(Totals_insert, 1, total.type))) return -1;
@@ -39,7 +47,7 @@ int DbConn::TotalInsert(const Total& total, bool lock_optional)
 	if (dblog(sqlite3_bind_int64(Totals_insert, 3, total.asset))) return -1;
 	if (dblog(sqlite3_bind_int(Totals_insert, 4, total.delaytime))) return -1;
 	if (dblog(sqlite3_bind_int64(Totals_insert, 5, total.blockchain))) return -1;
-	if (dblog(sqlite3_bind_blob(Totals_insert, 6, &packed_total, bigint_bytes_in_use(packed_total), SQLITE_STATIC))) return -1;
+	if (dblog(sqlite3_bind_blob(Totals_insert, 6, (char*)&swapped + sizeof(swapped) - total_nbytes, total_nbytes, SQLITE_STATIC))) return -1;
 
 	if (RandTest(RTEST_DB_ERRORS))
 	{
@@ -68,7 +76,7 @@ int DbConn::TotalInsert(const Total& total, bool lock_optional)
 		return -1;
 	}
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(debug) << "DbConn::TotalInsert inserted " << total.DebugString();
+	if (TRACE_DB_WRITE) BOOST_LOG_TRIVIAL(debug) << "DbConn::TotalInsert inserted " << total.DebugString();
 
 	return 0;
 }
@@ -77,7 +85,7 @@ int DbConn::TotalSelect(sqlite3_stmt *select, Total& total)
 {
 	int rc;
 
-	bigint_t packed_total;
+	bigint_t big_total, swapped = 0UL;
 
 	if (dblog(rc = sqlite3_step(select), DB_STMT_SELECT)) return -1;
 
@@ -90,21 +98,21 @@ int DbConn::TotalSelect(sqlite3_stmt *select, Total& total)
 
 	if (dbresult(rc) == SQLITE_DONE)
 	{
-		//BOOST_LOG_TRIVIAL(trace) << "DbConn::TotalSelect select returned SQLITE_DONE";
+		//BOOST_LOG_TRIVIAL(trace) << "DbConn::TotalSelect returned SQLITE_DONE";
 
 		return 1;
 	}
 
 	if (dbresult(rc) != SQLITE_ROW)
 	{
-		BOOST_LOG_TRIVIAL(error) << "DbConn::TotalSelect select returned " << rc;
+		BOOST_LOG_TRIVIAL(error) << "DbConn::TotalSelect returned " << rc;
 
 		return -1;
 	}
 
 	if (sqlite3_data_count(select) != 6)
 	{
-		BOOST_LOG_TRIVIAL(error) << "DbConn::TotalSelect select returned " << sqlite3_data_count(select) << " columns";
+		BOOST_LOG_TRIVIAL(error) << "DbConn::TotalSelect returned " << sqlite3_data_count(select) << " columns";
 
 		return -1;
 	}
@@ -120,14 +128,14 @@ int DbConn::TotalSelect(sqlite3_stmt *select, Total& total)
 
 	if (!Total::TypeIsValid(type))
 	{
-		BOOST_LOG_TRIVIAL(error) << "DbConn::TotalSelect select returned invalid type " << type;
+		BOOST_LOG_TRIVIAL(error) << "DbConn::TotalSelect returned invalid type " << type;
 
 		return -1;
 	}
 
-	if (total_size > sizeof(packed_total))
+	if (total_size > sizeof(swapped))
 	{
-		BOOST_LOG_TRIVIAL(error) << "DbConn::TotalSelect select returned total size " << total_size << " > " << sizeof(packed_total);
+		BOOST_LOG_TRIVIAL(error) << "DbConn::TotalSelect returned total size " << total_size << " > " << sizeof(swapped);
 
 		return -1;
 	}
@@ -146,12 +154,14 @@ int DbConn::TotalSelect(sqlite3_stmt *select, Total& total)
 	total.asset = asset;
 	total.delaytime = delaytime;
 	total.blockchain = blockchain;
-	packed_total = 0UL;
-	if (total_blob)
-		memcpy((void*)&packed_total, total_blob, total_size);
-	amount_from_bigint(packed_total, total.total);
 
-	if (total.total && TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::TotalSelect returning " << total.DebugString();
+	if (total_blob)
+		memcpy((char*)&swapped + sizeof(swapped) - total_size, total_blob, total_size);
+
+	bigint_byteswap(swapped, big_total);
+	amount_from_bigint(big_total, total.total);
+
+	if (total.total && TRACE_DB_READ) BOOST_LOG_TRIVIAL(trace) << "DbConn::TotalSelect returning " << total.DebugString();
 
 	return 0;
 }
@@ -163,11 +173,11 @@ int DbConn::TotalSelectMatch(bool exact, Total& total)
 
 	total.total = 0UL;
 
-	if (0 && TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::TotalSelectMatch exact " << exact << " " << total.DebugString();
+	if (0 && TRACE_DB_READ) BOOST_LOG_TRIVIAL(trace) << "DbConn::TotalSelectMatch exact " << exact << " ; " << total.DebugString();
 
 	auto match_total = total;
 
-	// Type, Reference, Asset, DelayTime, >= Blockchain
+	// Type, Reference, Asset, DelayTime, Blockchain >=
 	if (dblog(sqlite3_bind_int(Totals_select, 1, total.type))) return -1;
 	if (dblog(sqlite3_bind_int64(Totals_select, 2, total.reference))) return -1;
 	if (dblog(sqlite3_bind_int64(Totals_select, 3, total.asset))) return -1;
@@ -188,8 +198,8 @@ int DbConn::TotalSelectMatch(bool exact, Total& total)
 			rc = 1;
 	}
 
-	if (rc < 0) BOOST_LOG_TRIVIAL(error) << "DbConn::TotalSelectMatch exact " << exact << " returning " << rc << " " << total.DebugString();
-	else if (!rc && TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::TotalSelectMatch exact " << exact << " returning " << rc << " " << total.DebugString();
+	if (rc < 0) BOOST_LOG_TRIVIAL(error) << "DbConn::TotalSelectMatch exact " << exact << " returning " << rc << " ; " << total.DebugString();
+	else if (!rc && TRACE_DB_READ) BOOST_LOG_TRIVIAL(trace) << "DbConn::TotalSelectMatch exact " << exact << " returning " << rc << " ; " << total.DebugString();
 
 	return rc;
 }

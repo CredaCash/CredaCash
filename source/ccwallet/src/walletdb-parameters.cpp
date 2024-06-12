@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * walletdb-parameters.cpp
 */
@@ -11,16 +11,17 @@
 
 #include <dblog.h>
 
-#define TRACE_DBCONN	(g_params.trace_db)
+#define TRACE_DB_READ	(g_params.trace_db_reads)
+#define TRACE_DB_WRITE	(g_params.trace_db_writes)
 
 int DbConn::ParameterInsert(int key, int subkey, void *value, unsigned valsize, bool lock_optional)
 {
-	CCASSERT(TestDebugWriteLocking(lock_optional));
+	CCASSERT(lock_optional || GetTxnState() == SQLITE_TXN_WRITE);
 
 	//lock_guard<boost::shared_mutex> lock(db_mutex);
 	Finally finally(boost::bind(&DbConn::DoDbFinish, this));
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::ParameterInsert key " << key << " subkey " << subkey << " valsize " << valsize << " value " << buf2hex(value, (valsize < 16 ? valsize : 16));
+	if (TRACE_DB_WRITE) BOOST_LOG_TRIVIAL(trace) << "DbConn::ParameterInsert key " << key << " subkey " << subkey << " valsize " << valsize << " value " << buf2hex(value, (valsize < 16 ? valsize : 16));
 
 	// Key, Subkey, Value
 	if (dblog(sqlite3_bind_int(Parameters_insert, 1, key))) return -1;
@@ -47,7 +48,7 @@ int DbConn::ParameterInsert(int key, int subkey, void *value, unsigned valsize, 
 		return -1;
 	}
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(debug) << "DbConn::ParameterInsert inserted key " << key << " subkey " << subkey << " valsize " << valsize << " value " << buf2hex(value, (valsize < 16 ? valsize : 16));
+	if (TRACE_DB_WRITE) BOOST_LOG_TRIVIAL(debug) << "DbConn::ParameterInsert inserted key " << key << " subkey " << subkey << " valsize " << valsize << " value " << buf2hex(value, (valsize < 16 ? valsize : 16));
 
 	return 0;
 }
@@ -57,7 +58,7 @@ int DbConn::ParameterSelect(int key, int subkey, void *value, unsigned bufsize, 
 	//boost::shared_lock<boost::shared_mutex> lock(db_mutex);
 	Finally finally(boost::bind(&DbConn::DoDbFinish, this));
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::ParameterSelect key " << key << " subkey " << subkey << " bufsize " << bufsize << " add_terminator " << add_terminator;
+	if (TRACE_DB_READ) BOOST_LOG_TRIVIAL(trace) << "DbConn::ParameterSelect key " << key << " subkey " << subkey << " bufsize " << bufsize << " add_terminator " << add_terminator;
 
 	memset(value, 0, bufsize);
 	if (retsize)
@@ -80,21 +81,21 @@ int DbConn::ParameterSelect(int key, int subkey, void *value, unsigned bufsize, 
 
 	if (dbresult(rc) == SQLITE_DONE)
 	{
-		if (expect_row) BOOST_LOG_TRIVIAL(warning) << "DbConn::ParameterSelect select " << key << " subkey " << subkey << " returned SQLITE_DONE";
+		if (expect_row) BOOST_LOG_TRIVIAL(warning) << "DbConn::ParameterSelect " << key << " subkey " << subkey << " returned SQLITE_DONE";
 
 		return 1;
 	}
 
 	if (dbresult(rc) != SQLITE_ROW)
 	{
-		BOOST_LOG_TRIVIAL(error) << "DbConn::ParameterSelect select " << key << " subkey " << subkey << " returned " << rc;
+		BOOST_LOG_TRIVIAL(error) << "DbConn::ParameterSelect " << key << " subkey " << subkey << " returned " << rc;
 
 		return -1;
 	}
 
 	if (sqlite3_data_count(Parameters_select) != 1)
 	{
-		BOOST_LOG_TRIVIAL(error) << "DbConn::ParameterSelect select returned " << sqlite3_data_count(Parameters_select) << " columns";
+		BOOST_LOG_TRIVIAL(error) << "DbConn::ParameterSelect returned " << sqlite3_data_count(Parameters_select) << " columns";
 
 		return -1;
 	}
@@ -135,7 +136,7 @@ int DbConn::ParameterSelect(int key, int subkey, void *value, unsigned bufsize, 
 
 	memcpy(value, data_blob, datasize);		// terminator added by initial memset
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::ParameterSelect key " << key << " subkey " << subkey << " returning obj size " << datasize << " value " << buf2hex(value, (datasize < 16 ? datasize : 16));
+	if (TRACE_DB_READ) BOOST_LOG_TRIVIAL(trace) << "DbConn::ParameterSelect key " << key << " subkey " << subkey << " returning obj size " << datasize << " value " << buf2hex(value, (datasize < 16 ? datasize : 16));
 
 	if (retsize)
 		*retsize = datasize;

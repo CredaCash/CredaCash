@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * dbconn-tempserials.cpp
 */
@@ -26,11 +26,11 @@ DbConnTempSerials::DbConnTempSerials()
 	OpenDb();
 
 	CCASSERTZ(dblog(sqlite3_prepare_v2(Temp_Serials_db, "insert into Temp_Serials (Serialnum, Blockp) values (?1, ?2);", -1, &Temp_Serials_insert, NULL)));
-	CCASSERTZ(dblog(sqlite3_prepare_v2(Temp_Serials_db, "select Blockp from Temp_Serials where Serialnum = ?1 and Blockp > ?2 order by Blockp;", -1, &Temp_Serials_select, NULL)));
+	CCASSERTZ(dblog(sqlite3_prepare_v2(Temp_Serials_db, "select Blockp from Temp_Serials where Serialnum = ?1 and (?2 is null or Blockp > ?2) order by Blockp;", -1, &Temp_Serials_select, NULL)));
 	CCASSERTZ(dblog(sqlite3_prepare_v2(Temp_Serials_db, "update Temp_Serials set Blockp = ?1, Level = ?2 where Blockp = ?3 and Level = 0;", -1, &Temp_Serials_update, NULL)));
 	//CCASSERTZ(dblog(sqlite3_prepare_v2(Temp_Serials_db, "delete from Temp_Serials where Serialnum = ?1 and Blockp = ?2;", -1, &Temp_Serials_delete, NULL)));
 	CCASSERTZ(dblog(sqlite3_prepare_v2(Temp_Serials_db, "delete from Temp_Serials where Blockp = ?1 and Level = 0;", -1, &Temp_Serials_clear, NULL)));
-	CCASSERTZ(dblog(sqlite3_prepare_v2(Temp_Serials_db, "delete from Temp_Serials where Level > 0 and Level < ?1;", -1, &Temp_Serials_prune, NULL)));
+	CCASSERTZ(dblog(sqlite3_prepare_v2(Temp_Serials_db, "delete from Temp_Serials where Level > 0 and Level < ?1;", -1, &Temp_Serials_prune, NULL))); // "SCAN Temp_Serials"
 
 	//if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnTempSerials::DbConnTempSerials dbconn done " << (uintptr_t)this;
 }
@@ -159,13 +159,20 @@ int DbConnTempSerials::TempSerialnumSelect(const void *serialnum, unsigned seria
 
 	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnTempSerials::TempSerialnumSelect serialnum " << buf2hex(serialnum, serialnum_size) << " last blockp " << (uintptr_t)last_blockp;
 
-	// Serialnum, last Blockp
+	// Serialnum, Blockp >
 	if (dblog(sqlite3_bind_blob(Temp_Serials_select, 1, serialnum, serialnum_size, SQLITE_STATIC))) return -1;
-	if (dblog(sqlite3_bind_blob(Temp_Serials_select, 2, &last_blockp, sizeof(last_blockp), SQLITE_STATIC))) return -1;
+	if (last_blockp)
+	{
+		if (dblog(sqlite3_bind_blob(Temp_Serials_select, 2, &last_blockp, sizeof(last_blockp), SQLITE_STATIC))) return -1;
+	}
+	else
+	{
+		if (dblog(sqlite3_bind_null(Temp_Serials_select, 2))) return -1;
+	}
 
 	unsigned bufpos = 0;
 
-	while (true)
+	while (!g_shutdown)
 	{
 		int rc;
 
@@ -189,14 +196,14 @@ int DbConnTempSerials::TempSerialnumSelect(const void *serialnum, unsigned seria
 
 		if (dbresult(rc) != SQLITE_ROW)
 		{
-			BOOST_LOG_TRIVIAL(error) << "DbConnTempSerials::TempSerialnumSelect select returned " << rc;
+			BOOST_LOG_TRIVIAL(error) << "DbConnTempSerials::TempSerialnumSelect returned " << rc;
 
 			return -1;
 		}
 
 		if (sqlite3_data_count(Temp_Serials_select) != 1)
 		{
-			BOOST_LOG_TRIVIAL(error) << "DbConnTempSerials::TempSerialnumSelect select returned " << sqlite3_data_count(Temp_Serials_select) << " columns";
+			BOOST_LOG_TRIVIAL(error) << "DbConnTempSerials::TempSerialnumSelect returned " << sqlite3_data_count(Temp_Serials_select) << " columns";
 
 			break;
 		}
@@ -298,7 +305,7 @@ int DbConnTempSerials::TempSerialnumClear(const void* blockp)
 
 	if (dblog(rc, DB_STMT_STEP)) return -1;
 
-	auto changes = sqlite3_changes(Temp_Serials_db);
+	auto changes = sqlite3_changes64(Temp_Serials_db);
 
 	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(debug) << "DbConnTempSerials::TempSerialnumClear changes " << changes << " after delete blockp " << (uintptr_t)blockp;
 
@@ -314,7 +321,7 @@ int DbConnTempSerials::TempSerialnumPruneLevel(uint64_t level)
 
 	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnTempSerials::TempSerialnumPrune level " << level;
 
-	// Level
+	// Level <
 	if (dblog(sqlite3_bind_int64(Temp_Serials_prune, 1, level))) return -1;
 
 	if (RandTest(RTEST_DB_ERRORS))
@@ -328,7 +335,7 @@ int DbConnTempSerials::TempSerialnumPruneLevel(uint64_t level)
 
 	if (dblog(rc, DB_STMT_STEP)) return -1;
 
-	auto changes = sqlite3_changes(Temp_Serials_db);
+	auto changes = sqlite3_changes64(Temp_Serials_db);
 
 	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(debug) << "DbConnTempSerials::TempSerialnumPrune changes " << changes << " after prune level " << level;
 

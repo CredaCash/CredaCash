@@ -11,14 +11,6 @@ CPP_SRCS += \
 ../src/ccserver/service.cpp \
 ../src/ccserver/torservice.cpp 
 
-OBJS += \
-./src/ccserver/connection.o \
-./src/ccserver/connection_manager.o \
-./src/ccserver/connection_registry.o \
-./src/ccserver/server.o \
-./src/ccserver/service.o \
-./src/ccserver/torservice.o 
-
 CPP_DEPS += \
 ./src/ccserver/connection.d \
 ./src/ccserver/connection_manager.d \
@@ -27,13 +19,28 @@ CPP_DEPS += \
 ./src/ccserver/service.d \
 ./src/ccserver/torservice.d 
 
+OBJS += \
+./src/ccserver/connection.o \
+./src/ccserver/connection_manager.o \
+./src/ccserver/connection_registry.o \
+./src/ccserver/server.o \
+./src/ccserver/service.o \
+./src/ccserver/torservice.o 
+
 
 # Each subdirectory must supply rules for building sources it contributes
-src/ccserver/%.o: ../src/ccserver/%.cpp
+src/ccserver/%.o: ../src/ccserver/%.cpp src/ccserver/subdir.mk
 	@echo 'Building file: $<'
 	@echo 'Invoking: Cross G++ Compiler'
-	g++ -std=c++11 -I$(CREDACASH_BUILD)/source/cccommon/src -I$(CREDACASH_BUILD)/source/3rdparty/src -I$(CREDACASH_BUILD)/depends -I$(CREDACASH_BUILD)/depends/boost -O3 -Wall -Wextra $(CPPFLAGS) -c -fmessage-length=0 -Wno-unused-parameter -Werror=sign-compare -isystem $(CREDACASH_BUILD)/depends/boost -MMD -MP -MF"$(@:%.o=%.d)" -MT"$(@)" -o "$@" "$<"
+	g++ -std=c++11 -DBOOST_BIND_GLOBAL_PLACEHOLDERS=1 -I$(CREDACASH_BUILD)/source/cccommon/src -I$(CREDACASH_BUILD)/source/3rdparty/src -I$(CREDACASH_BUILD)/depends -I$(CREDACASH_BUILD)/depends/boost -O3 -Wall -Wextra $(CPPFLAGS) -c -fmessage-length=0 -Wno-unused-parameter -isystem $(CREDACASH_BUILD)/depends/boost -MMD -MP -MF"$(@:%.o=%.d)" -MT"$@" -o "$@" "$<"
 	@echo 'Finished building: $<'
 	@echo ' '
 
+
+clean: clean-src-2f-ccserver
+
+clean-src-2f-ccserver:
+	-$(RM) ./src/ccserver/connection.d ./src/ccserver/connection.o ./src/ccserver/connection_manager.d ./src/ccserver/connection_manager.o ./src/ccserver/connection_registry.d ./src/ccserver/connection_registry.o ./src/ccserver/server.d ./src/ccserver/server.o ./src/ccserver/service.d ./src/ccserver/service.o ./src/ccserver/torservice.d ./src/ccserver/torservice.o
+
+.PHONY: clean-src-2f-ccserver
 

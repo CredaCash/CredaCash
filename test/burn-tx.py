@@ -1,9 +1,11 @@
+#!/usr/bin/env python2
+
 '''
 CredaCash(TM) Transaction Library Test Script
 
 Part of the CredaCash (TM) cryptocurrency and blockchain
 
-Copyright (C) 2015-2020 Creda Software, Inc.
+Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
 
 This script runs several tests against the CredaCash transaction library:
 
@@ -63,7 +65,7 @@ else:
 	static_rand = 0
 
 if not sys.version.startswith('2.7.') or not ('GCC' in sys.version or '64 bit' in sys.version or 'AMD64' in sys.version):
-	print 'This script requires Python 2.7.x for x86-64.'
+	print 'ERROR: This script requires Python 2.7.x (64 bit version).'
 	exit()
 
 txmaxout = 10
@@ -100,7 +102,7 @@ TX_DELAYTIME_BITS			= 8
 TX_PAYNUM_BITS				= 20
 TX_ADDRESS_BITS				= 128
 TX_REPEAT_BITS				= 16
-TX_POOL_BITS				= 20
+TX_DOMAIN_BITS				= 20
 TX_ASSET_BITS				= 64
 TX_ASSET_WIRE_BITS			= 32
 TX_AMOUNT_BITS				= 40
@@ -211,11 +213,11 @@ def fail():
 
 def flipbit(wire):
 	nwire = len(wire)
-	byte = random.randrange(nwire - 56)		# 56 = proof of work size 48 + param_level bytes 8
+	byte = random.randrange(nwire - 48)		# 48 = proof of work size
 	#byte = 8								# for testing
-	#byte = nwire - 56						# for testing
+	#byte = nwire - 48						# for testing
 	if byte >= 8:							# 8 = header size (size and tag words)
-		byte += 56							# don't flip bit in proof of work or proof_params byte (bytes at offset 8-63 inclusive)
+		byte += 48							# don't flip bit in proof of work (bytes at offset 8-55 inclusive)
 	bit = random.randrange(8)
 	wire2 = bytearray(wire)
 	oldval = wire2[byte]
@@ -732,7 +734,7 @@ tx_inout_vars = {
  'asset'					: {'group':'IO', 'nbits':TX_ASSET_BITS,		'dep':1, 'defval':0, 'xwire':1},
  'amount'					: {'group':'IO', 'nbits':TX_AMOUNT_BITS,	'dep':1},
 
- 'pool'						: {'group':'IP', 'nbits':TX_POOL_BITS,		'defval':0},			# this var handled differently on a bill input vs a bill output
+ 'domain'					: {'group':'IP', 'nbits':TX_DOMAIN_BITS,	'defval':0},			# this var handled differently on a bill input vs a bill output
 
  'commitment-iv'			: {'group':'IV', 'nbits':TX_COMMIT_IV_BITS},
 
@@ -776,7 +778,7 @@ tx_vars = {
 
  'merkle-root'				: {'group':'TW', 'nbits':TX_FIELD_BITS,		'dep':1},				# REQ
  'destination-chain'		: {'group':'TW', 'nbits':TX_CHAIN_BITS},
- 'default-output-pool'		: {'group':'TW', 'nbits':TX_POOL_BITS,		'defval':0},
+ 'default-domain'			: {'group':'TW', 'nbits':TX_DOMAIN_BITS,	'defval':0},
  'acceptance-required'		: {'group':'TW', 'nbits':1,					'defval':0},
  'maximum-input-exponent'	: {'group':'TW', 'nbits':TX_AMOUNT_EXPONENT_BITS, 'dep':1},			# REQ if from_wire
  'delaytime'				: {'group':'TW', 'nbits':TX_DELAYTIME_BITS,	'defval':0},
@@ -1508,7 +1510,7 @@ def make_tx(tx, ismint, nout, nin, ninw):
 		if i == 0 or extra_on_wire or getbadsel():
 			generate_values(output, tx_inout_vars, 'IP', ismint)
 		else:
-			output['pool'] = tx['outputs'][0]['pool']
+			output['domain'] = tx['outputs'][0]['domain']
 		if not isbad() and (toint(output['destination']) & TX_STATIC_ADDRESS_MASK) == 0 and toint(output['payment-number']) and random.getrandbits(1):
 			output['payment-number'] = str(0)
 		output['asset'] = hex(outasset[i])
@@ -1554,10 +1556,10 @@ def make_tx(tx, ismint, nout, nin, ninw):
 		generate_values(inputs[i], tx_inout_vars, 'IV', ismint)
 		if extra_on_wire or not random.getrandbits(8):
 			generate_values(inputs[i], tx_inout_vars, 'IP', ismint)
-			if not extra_on_wire and toint(inputs[i]['pool']):
-				setwireverifybad('input pool != 0')
+			if not extra_on_wire and toint(inputs[i]['domain']):
+				setwireverifybad('input domain != 0')
 		else:
-			inputs[i]['pool'] = 0
+			inputs[i]['domain'] = 0
 		#print 'input:', inputs[i]
 		inputs[i]['destination'] = insecrets[i][0]['destination']
 		inputs[i]['asset'] = hex(inasset[i])
@@ -1636,12 +1638,12 @@ def make_tx(tx, ismint, nout, nin, ninw):
 			tx['acceptance-required'] = tx['outputs'][0]['acceptance-required']	# note: tx-to-wire doesn't use tx value
 			if toint(output['acceptance-required']) != toint(tx['acceptance-required']):
 				setwirebad('acceptance-required mismatch')
-			tx['default-output-pool'] = tx['outputs'][0]['pool']				# note: tx-to-wire doesn't use tx value
-			if toint(output['pool']) != toint(tx['default-output-pool']):
-				setwirebad('output pool mismatch')
+			tx['default-domain'] = tx['outputs'][0]['domain']						# note: tx-to-wire doesn't use tx value
+			if toint(output['domain']) != toint(tx['default-domain']):
+				setwirebad('output domain mismatch')
 		for input in tx['inputs']:
-			if toint(input['pool']) != toint(tx['inputs'][0]['pool']):
-				setwirebad('input pool mismatch')
+			if toint(input['domain']) != toint(tx['inputs'][0]['domain']):
+				setwirebad('input domain mismatch')
 			tx['delaytime'] = tx['inputs'][0]['delaytime']						# note: tx-to-wire doesn't use tx value
 			if toint(input['delaytime']) != toint(tx['delaytime']):
 				setwirebad('delaytime mismatch')
@@ -1969,7 +1971,7 @@ def test_simple_tx():
 	inputs = [{}]
 	inputs[0] = payspec['payspec']
 	inputs[0]['payment-number'] = 0
-	inputs[0]['pool'] = 0
+	inputs[0]['domain'] = 0
 	inputs[0]['amount'] = hex(amount_encode_dll(3 * 10**amount_scale))
 	inputs[0]['commitment-iv'] = 0
 
@@ -2002,7 +2004,7 @@ def test_simple_tx():
 	tx['outputs'] = [{}]
 	tx['outputs'][0]['destination'] = 0
 	tx['outputs'][0]['payment-number'] = 0
-	tx['outputs'][0]['pool'] = 0
+	tx['outputs'][0]['domain'] = 0
 	tx['outputs'][0]['asset-mask'] = hex((1 << TX_ASSET_BITS) - 1)
 	tx['outputs'][0]['amount-mask'] = hex((1 << TX_AMOUNT_BITS) - 1)
 	tx['outputs'][0]['amount'] = hex(amount_encode_dll(2 * 10**amount_scale))
@@ -2047,7 +2049,7 @@ def generate_mint_params():
 	jstr += ', "outputs" : ['
 	jstr += '{ "destination" : "' + payspec['destination'] + '"'
 	jstr += ', "payment-number" : 0'
-	jstr += ', "pool" : 0'
+	jstr += ', "domain" : 0'
 	jstr += ', "asset-mask" : 0'
 	jstr += ', "amount-mask" : 0'
 	jstr += ', "amount" : "' + hex(amount_encode_dll(TX_CC_MINT_AMOUNT, False, TX_CC_MINT_EXPONENT, TX_CC_MINT_EXPONENT)) + '"'

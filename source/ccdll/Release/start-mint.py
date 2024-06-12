@@ -1,9 +1,11 @@
+#!/usr/bin/env python2
+
 '''
 CredaCash(TM) Mint Initialization Script
 
 Part of the CredaCash (TM) cryptocurrency and blockchain
 
-Copyright (C) 2019 Creda Software, Inc.
+Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
 
 The purpose of this script is to initialize the commitment Merkle tree root hash 
 to a provably random value.  All subsequent mint transactions must be based on 
@@ -54,7 +56,7 @@ def main(argv):
 		print 'ERROR: blockchain already initialized (parameter-level != 0)'
 		exit()
 
-	pool = inputs['default-output-pool']
+	domain = inputs['default-domain']
 
 	inputs = json.dumps(inputs)
 	inputs = inputs[1:-1]	# strip off outer brackets
@@ -71,7 +73,7 @@ def main(argv):
 
 	jstr += '{"destination" : "' + dest + '"'
 	jstr += ',"payment-number" : 0'
-	jstr += ',"pool" : "' + pool + '"'
+	jstr += ',"domain" : "' + domain + '"'
 	jstr += ',"amount" : "' + hex(Amounts.Encode(0, 0, False)) + '"'
 	jstr += ',"asset-mask" : 0'
 	jstr += ',"amount-mask" : 0'

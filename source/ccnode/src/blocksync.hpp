@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * blocksync.hpp
 */
@@ -25,6 +25,18 @@ public:
 	 :	level(l),
 		nlevels(n)
 	{ }
+
+	BlockSyncEntry(const BlockSyncEntry& other)
+	 :	level(other.level),
+		nlevels(other.nlevels)
+	{ }
+
+	BlockSyncEntry& operator= (const BlockSyncEntry& other)
+	{
+		level = other.level;
+		nlevels = other.nlevels;
+		return *this;
+	}
 };
 
 class BlockSyncMsg
@@ -33,7 +45,7 @@ public:
 
 	uint32_t size;
 	uint32_t tag;
-	class BlockSyncEntry entry;
+	BlockSyncEntry entry;
 
 	BlockSyncMsg()
 	:	size(sizeof(BlockSyncMsg)),
@@ -51,10 +63,16 @@ class BlockSyncList
 	FastSpinLock m_block_sync_list_lock;
 
 public:
-	uint64_t Init();
+	BlockSyncList()
+	 :	m_block_sync_list_lock(__FILE__, __LINE__)
+	{ }
 
-	class BlockSyncEntry GetNextEntry();
-	void RequeueEntry(class BlockSyncEntry& entry);
+	void Init(int64_t level);
+
+	bool HasRequeues();
+
+	BlockSyncEntry GetNextEntry(const string& name, int conn_index);
+	void RequeueEntry(const string& name, int conn_index, const BlockSyncEntry& entry);
 };
 
 
@@ -63,20 +81,37 @@ class BlockSyncConnection : public CCServer::Connection
 public:
 	BlockSyncConnection(class CCServer::ConnectionManagerBase& manager, boost::asio::io_service& io_service, const class CCServer::ConnectionFactoryBase& connfac)
 	 :	CCServer::Connection(manager, io_service, connfac)
-	{ }
+	{
+		m_read_after_write = true;
+	}
+
+	void HandleValidateDone(uint64_t level, uint32_t callback_id, int64_t result);
 
 private:
 
-	class BlockSyncMsg req_msg;
+	mutex req_lock;
+
+	BlockSyncMsg m_cur_req_msg;
+	BlockSyncMsg m_next_req_msg;
+
+	atomic_flag m_read_in_progress;
+
+	atomic<int> m_validations_pending;
+
+	bool m_has_requeues;
+	bool m_finished;
 
 	void StartConnection();
 
-	void SendReq();
-	void HandleSendMsgWrite(const boost::system::error_code& e, AutoCount pending_op_counter);
+	void CheckSendReq(unique_lock<mutex> &lock);
+
+	void StartNextRead();
 
 	void HandleReadComplete();
 
 	void HandleObjReadComplete(const boost::system::error_code& e, size_t bytes_transferred, SmartBuf smartobj, AutoCount pending_op_counter);
+
+	bool SetValidationTimer();
 
 	void FinishConnection();
 };
@@ -88,7 +123,7 @@ class BlockSyncClient : public TorService
 
 	thread m_conn_monitor_thread;
 
-	atomic<unsigned> m_conns_finished;
+	atomic<int> m_nfinished;
 
 	void ConnMonitorProc();
 
@@ -99,7 +134,7 @@ public:
 	BlockSyncClient(const string& n, const wstring& d, const string& s)
 	 :	TorService(n, d, s, true),
 		m_service(n),
-		m_conns_finished(0)
+		m_nfinished(0)
 	{ }
 
 	void ConfigPreset()
@@ -110,15 +145,16 @@ public:
 
 	void Start();
 
-	void IncFinishedConns()
-	{
-		m_conns_finished++;
-	}
+	unsigned ConnectedCount();
+	unsigned UnconnectedCount(int outcount = -1);
+
+	void SignalFinished();
+	bool IsFinishing();
 
 	void StartShutdown();
 	void WaitForShutdown();
 
-	class BlockSyncList m_sync_list;
+	BlockSyncList m_sync_list;
 };
 
 class BlockSyncThread : public CCThread

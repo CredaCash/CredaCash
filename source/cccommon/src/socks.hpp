@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * socks.hpp
 */
@@ -11,7 +11,7 @@
 #include <string>
 #include <boost/asio.hpp>
 
-#define SOCK_REPLY_SIZE		8
+#define SOCKS_REPLY_SIZE	8
 
 class Socks
 {

@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * totals.cpp
 */
@@ -12,6 +12,7 @@
 #include "rpc_errors.hpp"
 
 #include <transaction.hpp>
+#include <SpinLock.hpp>
 
 #define TRACE_TOTALS	(g_params.trace_totals)
 
@@ -41,7 +42,8 @@ string Total::DebugString() const
 {
 	ostringstream out;
 
-	out << "type " << type;
+	out << "Total";
+	out << " type " << type;
 	out << " reference " << reference;
 	out << " asset " << asset;
 	out << " delaytime " << delaytime;
@@ -275,18 +277,37 @@ int Total::GetTotalBalance(DbConn *dbconn, bool rpc_throw, amtint_t& balance, un
 
 static bigint_t nowait_amount_pending = 0UL;
 static bigint_t nowait_amount_required = 0UL;
-static FastSpinLock nowait_amount_mutex;
+static FastSpinLock nowait_amount_mutex(__FILE__, __LINE__);
+
+static bigint_t GetNoWaitNetPendingWithLock()
+{
+	bigint_t rv = 0UL;
+
+	if (nowait_amount_pending > nowait_amount_required)
+		rv = nowait_amount_pending - nowait_amount_required;
+
+	if (TRACE_TOTALS) BOOST_LOG_TRIVIAL(debug) << "Total::NoWait net pending " << rv;
+
+	return rv;
+}
+
+bigint_t Total::GetNoWaitNetPending()
+{
+	lock_guard<FastSpinLock> lock(nowait_amount_mutex);
+
+	return GetNoWaitNetPendingWithLock();
+}
 
 static bigint_t GetNoWaitNetRequiredWithLock()
 {
-	bigint_t required = 0UL;
+	bigint_t rv = 0UL;
 
 	if (nowait_amount_required > nowait_amount_pending)
-		required = nowait_amount_required - nowait_amount_pending;
+		rv = nowait_amount_required - nowait_amount_pending;
 
-	if (TRACE_TOTALS) BOOST_LOG_TRIVIAL(debug) << "Total::NoWait net required " << required;
+	if (TRACE_TOTALS) BOOST_LOG_TRIVIAL(debug) << "Total::NoWait net required " << rv;
 
-	return required;
+	return rv;
 }
 
 bigint_t Total::GetNoWaitNetRequired()
@@ -298,7 +319,7 @@ bigint_t Total::GetNoWaitNetRequired()
 
 int Total::AddNoWaitAmounts(const bigint_t& pending, bool add_pending, const bigint_t& required, bool add_required)
 {
-	// adds and/or subtracts from the amount pending and required
+	// either adds or subtracts from the amounts pending and required
 	// will only add an amount to required if pending would be >= required after the amounts are added or subtracted
 	// returns:
 	//		true if amount could not be added to required

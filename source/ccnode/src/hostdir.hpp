@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * hostdir.hpp
 */
@@ -31,11 +31,12 @@ public:
 	string GetHostName(HostType type);
 
 private:
-	void QueryServer();
-	void ParseNameArray(Json::Value &root, const char* label, const HostType type);
+	string PrepareQuery();
+	bool QueryServer(const string& query);
+	void ParseNameArray(Json::Value& root, const char* label, const HostType type);
 
 	mutex classlock;
-	vector<string> m_directory_servers;
+	vector<string> m_rendezvous_servers;
 	array<deque<string>, N_HostTypes> hostnames;
 
 	boost::asio::io_service m_io_service;

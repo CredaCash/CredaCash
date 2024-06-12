@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * transaction.hpp
 */
@@ -9,6 +9,9 @@
 #pragma once
 
 #include "CCproof.h"
+
+#include <CCobjdefs.h>
+#include <ed25519/ed25519.h>
 
 //#define TEST_EXTRA_ON_WIRE	1	// put all public tx values on wire to prove they are non-mutable and properly enforced
 
@@ -21,9 +24,23 @@ using namespace snarkfront;
 #define MAX_KEYS		32
 #define MAX_SCRIPTLEN	260
 
-// bool's and char's aren't used in these structs because operator<< outputs them as binary instead of text
+#define TX_MAX_APPEND	512
 
-typedef array<char, 64> ecsig_t;
+/*
+
+Variable prefix meanings:
+	M_		public value published in transaction
+	_M_		may be public if published in transaction
+	__		private value known by tx sender and recipient
+	____	private value known only by token recipient/holder
+
+Variables that end in __ are private values that control how the transaction library fills in other values in the transaction.
+
+Note: bool's and char's aren't used in these structs because operator<< outputs them as binary instead of text
+
+*/
+
+typedef ed25519_signature ecsig_t;
 
 struct AddressParams
 {
@@ -70,6 +87,16 @@ struct SpendSecretParams
 	uint16_t __static_address;					// only used by wallet
 
 	AddressParams addrparams;	// only __paynum used for TxIn, but entire struct used by wallet
+
+	SpendSecretParams()
+	{
+		Clear();
+	}
+
+	void Clear()
+	{
+		memset((void*)this, 0, sizeof(*this));
+	}
 };
 
 struct SpendSecret
@@ -91,6 +118,16 @@ struct SpendSecret
 	bigint_t ____trust_secret;					// 256-bits
 	bigint_t ____monitor_secret;				// 256-bits
 	bigint_t ____receive_secret;				// field
+
+	SpendSecret()
+	{
+		Clear();
+	}
+
+	void Clear()
+	{
+		memset((void*)this, 0, sizeof(*this));
+	}
 };
 
 typedef array<SpendSecret, TX_MAX_SECRET_SLOTS> SpendSecrets;
@@ -119,7 +156,7 @@ struct TxOut
 	uint16_t acceptance_required;
 	uint32_t repeat_count;
 
-	uint32_t M_pool;
+	uint32_t M_domain;
 
 	uint64_t __asset;
 	uint16_t no_asset;		// bool
@@ -159,9 +196,9 @@ struct TxIn
 	uint16_t invalmax;
 	uint16_t delaytime;
 
-	// RULE tx input: M_commitment = zkhash(M_commitment_iv, #dest, #paynum, M_pool, #asset, #amount)
+	// RULE tx input: M_commitment = zkhash(M_commitment_iv, #dest, #paynum, M_domain, #asset, #amount)
 
-	uint32_t M_pool;
+	uint32_t M_domain;
 	uint64_t __asset;
 	uint64_t __amount_fp;
 	bigint_t __M_commitment_iv;
@@ -186,7 +223,9 @@ struct TxInPath
 struct TxPay
 {
 	// not on wire:
-	uint32_t zero;	// always zero in case app tries to print buffer as string
+	uint32_t zero;				// always zero in case app tries to print buffer as string
+	uint32_t struct_tag;		// for struct integrity checking
+
 	uint16_t no_precheck;
 	uint16_t no_proof;
 	uint16_t no_verify;
@@ -196,21 +235,31 @@ struct TxPay
 
 	// copied to default values of individual inputs and outputs
 	uint16_t have_dest_chain__;
-	uint16_t have_output_pool__;
+	uint16_t have_default_domain__;
 	uint16_t have_acceptance_required__;
 	uint16_t have_invalmax__;
 	uint16_t have_delaytime__;
 	uint64_t dest_chain__;
-	uint32_t output_pool__;
+	uint32_t default_domain__;
 	uint16_t acceptance_required__;
 	uint16_t invalmax__;		// from param_level
 	uint16_t delaytime__;
 
 	// on wire (explicitly or implicitly)
-	uint32_t tag;
-	uint16_t tag_type;			// !!! not the right name for this
+	uint32_t wire_tag;
+	uint16_t tag_type;
 	uint16_t zkkeyid;
 	array<bigint_t, ZKPROOF_VALS> zkproof;
+
+	bigint_t amount_carry_in;
+	bigint_t amount_carry_out;
+
+	uint32_t append_wire_offset;
+	uint32_t append_data_length;
+	array<uint8_t, TX_MAX_APPEND> append_data;
+
+	ccoid_t objid;
+	uint16_t have_objid;
 
 	uint16_t amount_bits;		// property of blockchain / from param_level -- currently used only by wallet (most of code uses compile time value TX_AMOUNT_BITS)
 	uint16_t donation_bits;		// property of blockchain / from param_level -- currently used only by wallet (most of code uses compile time value TX_DONATION_BITS)
@@ -246,6 +295,11 @@ struct TxPay
 	array<TxOut, TX_MAXOUT> outputs;
 	array<TxIn, TX_MAXIN> inputs;
 	array<TxInPath, TX_MAXINPATH> inpaths;
+
+	void Clear()
+	{
+		memset((void*)this, 0, sizeof(*this));
+	}
 };
 
 #define SECRET_TYPE_MAIN		0
@@ -261,5 +315,5 @@ void get_restricted_address(const SpendSecrets& secrets, unsigned slot, bigint_t
 void compute_destination(const SpendSecretParams& params, const SpendSecrets& secrets, bigint_t& destination);
 void compute_address(const bigint_t& destination, uint64_t destination_chain, uint64_t paynum, bigint_t& address);
 void compute_amount_pad(const bigint_t& commit_iv, const bigint_t& dest, const uint32_t paynum, uint64_t& asset_xor, uint64_t& amount_xor);
-void compute_commitment(const bigint_t& commit_iv, const bigint_t& dest, const uint32_t paynum, const uint32_t pool, const uint64_t asset, const uint64_t amount_fp, bigint_t& commitment);
+void compute_commitment(const bigint_t& commit_iv, const bigint_t& dest, const uint32_t paynum, const uint32_t domain, const uint64_t asset, const uint64_t amount_fp, bigint_t& commitment);
 void compute_serialnum(const bigint_t& monitor_secret, const bigint_t& commitment, uint64_t commitnum, bigint_t& serialnum);

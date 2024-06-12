@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * expire.hpp
 */
@@ -23,7 +23,7 @@ protected:
 	volatile int32_t m_expire_age;
 	bool m_expire_age_can_change;
 
-	virtual int GetExpires(int64_t& seqnum, SmartBuf *retobj, uint32_t& next_expires_t0) = 0;
+	virtual int GetExpires(int64_t& seqnum, SmartBuf *retobj, ccoid_t& oid, uint32_t& next_expires_t0) = 0;
 	virtual int DeleteExpires(int64_t& seqnum, SmartBuf smartobj) = 0;
 
 	thread *m_thread;
@@ -58,6 +58,7 @@ public:
 	void Init();
 	void DeInit();
 
+	int32_t GetExpireAge(unsigned i);
 	void ChangeExpireAge(unsigned i, int32_t age);
 };
 

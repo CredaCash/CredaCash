@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * osutil.cpp
 */
@@ -9,7 +9,13 @@
 #include "CCdef.h"
 #include "osutil.h"
 
-volatile bool g_shutdown;
+#include <boost/core/demangle.hpp>
+
+#ifndef _WIN32
+#include <execinfo.h>
+#endif
+
+volatile bool g_shutdown = false;
 void (*g_shutdown_callback)() = NULL;
 
 static mutex shutdown_mutex;
@@ -64,21 +70,52 @@ static void handle_signal(int)
 
 static void handle_terminate()
 {
-	cerr << "handle_terminate" << endl;
+	static bool recurse = false;
 
-#if 0
-	void *array[20];
+	auto e = current_exception();
 
-	auto size = backtrace(array, sizeof(array)/sizeof(void*));
-	auto strings = backtrace_symbols(array, size);
+	if (!e)
+	{
+		cerr << "\nTerminate handler called";
+		if (recurse) cerr << " (recursing)";
+		cerr << endl;
+	}
 
-	for (unsigned i = 0; i < size; ++i)
-		cerr << strings[i] << endl;
+	try
+	{
+		if (e) rethrow_exception(e);
+	}
+	catch(const exception& e)
+	{
+		cerr << "\nERROR unexpected exception " << boost::core::demangle(typeid(e).name()) << endl;
+		cerr << e.what() << "\n" << endl;
+	}
+
+#ifndef _WIN32
+	if (!recurse)
+	{
+		void *array[20];
+		auto size = backtrace(array, sizeof(array)/sizeof(void*));
+		backtrace_symbols_fd(array, size, STDERR_FILENO);
+		cerr << endl;
+	}
 #endif
+
+	recurse = true;
 
 	start_shutdown();
 
-	//abort();
+	sleep(10);
+
+	if (!recurse)
+	{
+		terminate();
+
+		sleep(15);
+	}
+
+	abort();
+	exit(-1);
 }
 
 void set_handlers()
@@ -93,8 +130,7 @@ void set_handlers()
 	signal(SIGQUIT, handle_signal);
 	#endif
 
-	//set_terminate(handle_terminate);	// for debugging
-	(void)handle_terminate;
+	set_terminate(handle_terminate);
 }
 
 void finish_handlers()
@@ -104,11 +140,19 @@ void finish_handlers()
 
 void start_shutdown()
 {
+	if (g_shutdown)
+		return;
+
 	lock_guard<mutex> lock(shutdown_mutex);
 
-	//Beep(2000, 500);
+	if (g_shutdown)
+		return;
+
+	//cerr << "shutdown" << endl;
 
 	g_shutdown = true;
+
+	//Beep(2000, 500);
 
 	shutdown_condition_variable.notify_all();
 

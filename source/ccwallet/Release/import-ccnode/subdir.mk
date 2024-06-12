@@ -6,19 +6,26 @@
 CPP_SRCS += \
 $(CREDACASH_BUILD)/source/ccnode/src/dbconn-explain.cpp 
 
-OBJS += \
-./import-ccnode/dbconn-explain.o 
-
 CPP_DEPS += \
 ./import-ccnode/dbconn-explain.d 
 
+OBJS += \
+./import-ccnode/dbconn-explain.o 
+
 
 # Each subdirectory must supply rules for building sources it contributes
-import-ccnode/dbconn-explain.o: $(CREDACASH_BUILD)/source/ccnode/src/dbconn-explain.cpp
+import-ccnode/dbconn-explain.o: $(CREDACASH_BUILD)/source/ccnode/src/dbconn-explain.cpp import-ccnode/subdir.mk
 	@echo 'Building file: $<'
 	@echo 'Invoking: Cross G++ Compiler'
-	g++ -std=c++11 -I$(CREDACASH_BUILD)/source -I$(CREDACASH_BUILD)/source/ccnode/src -I$(CREDACASH_BUILD)/source/cclib/src -I$(CREDACASH_BUILD)/source/cccommon/src -I$(CREDACASH_BUILD)/source/3rdparty/src -I$(CREDACASH_BUILD)/depends -I$(CREDACASH_BUILD)/depends/gmp -I$(CREDACASH_BUILD)/depends/boost -O3 -Wall -Wextra $(CPPFLAGS) -c -fmessage-length=0 -Wno-unused-parameter -Werror=sign-compare -isystem $(CREDACASH_BUILD)/depends/boost -MMD -MP -MF"$(@:%.o=%.d)" -MT"$(@)" -o "$@" "$<"
+	g++ -std=c++11 -DBOOST_BIND_GLOBAL_PLACEHOLDERS=1 -I$(CREDACASH_BUILD)/source -I$(CREDACASH_BUILD)/source/ccnode/src -I$(CREDACASH_BUILD)/source/cclib/src -I$(CREDACASH_BUILD)/source/cccommon/src -I$(CREDACASH_BUILD)/source/3rdparty/src -I$(CREDACASH_BUILD)/depends -I$(CREDACASH_BUILD)/depends/gmp -I$(CREDACASH_BUILD)/depends/boost -O3 -Wall -Wextra $(CPPFLAGS) -c -fmessage-length=0 -Wno-unused-parameter -isystem $(CREDACASH_BUILD)/depends/boost -MMD -MP -MF"$(@:%.o=%.d)" -MT"$@" -o "$@" "$<"
 	@echo 'Finished building: $<'
 	@echo ' '
 
+
+clean: clean-import-2d-ccnode
+
+clean-import-2d-ccnode:
+	-$(RM) ./import-ccnode/dbconn-explain.d ./import-ccnode/dbconn-explain.o
+
+.PHONY: clean-import-2d-ccnode
 

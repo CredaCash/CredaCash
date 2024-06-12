@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * amounts.h
 */
@@ -15,10 +15,12 @@
 namespace mp = boost::multiprecision;
 
 typedef mp::checked_int256_t amtint_t;
-typedef mp::cpp_dec_float_50 amtfloat_t;
+typedef mp::cpp_dec_float_50 amtfloat_t;	// 166 bit
 
 const extern amtint_t amount_int_max;
 const extern amtfloat_t amount_float_max;
+
+#define ASSET_NO_SCALE	(-27)
 
 #pragma pack(push, 1)
 
@@ -43,15 +45,17 @@ struct packed_signed_amount_t
 void amount_from_bigint(const snarkfront::bigint_t& amount, amtint_t& val);
 void amount_to_bigint(const amtint_t& amount, snarkfront::bigint_t& val);
 
+amtfloat_t asset_scale_factor(uint64_t asset);
+
 int amount_from_float(uint64_t asset, const amtfloat_t& val, amtint_t& amount);
 int amount_from_float(uint64_t asset, const amtfloat_t& val, snarkfront::bigint_t& amount);
 
 void amount_to_float(uint64_t asset, const amtint_t& amount,				amtfloat_t& val);
 void amount_to_float(uint64_t asset, const snarkfront::bigint_t& amount,	amtfloat_t& val);
 
-void amount_to_string(uint64_t asset, const amtint_t& amount,				string& s);
-void amount_to_string(uint64_t asset, const snarkfront::bigint_t& amount,	string& s);
-void amount_to_string(amtfloat_t& amount, string& s);
+void amount_to_string(uint64_t asset, const amtint_t& amount,				string& s, bool add_decimal = false);
+void amount_to_string(uint64_t asset, const snarkfront::bigint_t& amount,	string& s, bool add_decimal = false);
+void amount_to_string(				  const amtfloat_t& amount,				string& s, bool add_decimal = false);
 
 void unpack_unsigned_amount(const packed_unsigned_amount_t& packed, amtint_t& amount);
 void unpack_unsigned_amount(const packed_unsigned_amount_t& packed, snarkfront::bigint_t& amount);

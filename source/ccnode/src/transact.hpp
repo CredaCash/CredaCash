@@ -1,12 +1,14 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * transact.hpp
 */
 
 #pragma once
+
+#include "process_queue.h"
 
 #include <ccserver/service.hpp>
 #include <ccserver/connection.hpp>
@@ -21,13 +23,13 @@ public:
 	:	CCServer::Connection(manager, io_service, connfac)
 	{ }
 
-	void HandleValidateDone(uint32_t callback_id, int64_t result);
+	void HandleValidateDone(uint64_t level, uint32_t callback_id, int64_t result);
 
 private:
 	void StartConnection();
 	void HandleReadComplete();
 	void HandleMsgReadComplete(const boost::system::error_code& e, size_t bytes_transferred, SmartBuf smartobj, AutoCount pending_op_counter);
-	void HandleTx(SmartBuf smartobj);
+	void HandleTx(Process_Q_Priority priority, SmartBuf smartobj);
 	void SendValidateResult(int64_t result);
 	bool SetValidationTimer(uint32_t callback_id, unsigned sec);
 	void HandleValidationTimeout(uint32_t callback_id, const boost::system::error_code& e, AutoCount pending_op_counter);
@@ -35,12 +37,17 @@ private:
 	void HandleTxQueryAddress(const char *msg, unsigned size);
 	void HandleTxQueryInputs(const char *msg, unsigned size);
 	void HandleTxQuerySerials(const char *msg, unsigned size);
+	void HandleTxQueryXreqs(const char *msg, unsigned size);
+	void HandleTxQueryXmatchreq(uint32_t tag, const char *msg, unsigned size);
+	void HandleTxQueryXmatch(const char *msg, unsigned size);
+	void HandleTxQueryXminingInfo(const char *msg, unsigned size);
 	void SendReply(ostringstream& os);
 	void SendObjectNotValid();
 	void SendBlockchainNumberError();
 	void SendTooManyObjectsError();
 	void SendNotConnectedError();
 	void SendServerError(unsigned line);
+	void SendServerUnknown(unsigned line);
 	void SendReplyWriteError();
 	void SendTimeout();
 };

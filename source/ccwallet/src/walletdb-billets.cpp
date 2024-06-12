@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * walletdb-billets.cpp
 */
@@ -9,13 +9,14 @@
 #include "ccwallet.h"
 #include "walletdb.hpp"
 #include "billets.hpp"
-#include "amounts.h"
 #include "totals.hpp"
 
 #include <dblog.h>
 #include <CCparams.h>
+#include <amounts.h>
 
-#define TRACE_DBCONN	(g_params.trace_db)
+#define TRACE_DB_READ	(g_params.trace_db_reads)
+#define TRACE_DB_WRITE	(g_params.trace_db_writes)
 
 using namespace snarkfront;
 
@@ -48,61 +49,62 @@ int DbConn::BilletsResetAllocated(bool zero_balance)
 
 int DbConn::BilletInsert(Billet& bill, bool lock_optional)
 {
-	CCASSERT(TestDebugWriteLocking(lock_optional));
+	CCASSERT(lock_optional || GetTxnState() == SQLITE_TXN_WRITE);
 
 	//lock_guard<boost::shared_mutex> lock(db_mutex);
 	Finally finally(boost::bind(&DbConn::DoDbFinish, this));
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::BilletInsert " << bill.DebugString();
+	if (TRACE_DB_WRITE) BOOST_LOG_TRIVIAL(trace) << "DbConn::BilletInsert " << bill.DebugString();
 
 	CCASSERT(bill.IsValid());
+
+	// Amount is stored big endian, in a fixed 128 bit field (ToDo: omit the trailing (lsb) zeros?)
 
 	packed_unsigned_amount_t packed_amount;
 	CCASSERTZ(pack_unsigned_amount(bill.amount, packed_amount));
 
-	sqlite3_stmt *insert_update = NULL;
-
-	// Id, Status, Flags, CreateTx, DestinationId, Blockchain, Address, Pool, Asset, AmountFp, Amount, DelayTime, CommitIv, Commitment, Commitnum, Serialnum
+	// Id, Status, Flags, CreateTx, DestinationId, Blockchain, Address, Domain, Asset, AmountFp, Amount, DelayTime, CommitIv, Commitment, Commitnum, Serialnum
 	if (bill.id)
 	{
-		insert_update = Billets_update;
-
-		if (dblog(sqlite3_bind_int64(insert_update, 1, bill.id))) return -1;
+		if (dblog(sqlite3_bind_int64(Billets_insert, 1, bill.id))) return -1;
 	}
 	else
 	{
-		insert_update = Billets_insert;
-
-		if (dblog(sqlite3_bind_null(insert_update, 1))) return -1;
+		if (dblog(sqlite3_bind_null(Billets_insert, 1))) return -1;
 	}
-	if (dblog(sqlite3_bind_int(insert_update, 2, bill.status))) return -1;
-	if (dblog(sqlite3_bind_int(insert_update, 3, bill.flags))) return -1;
-	if (dblog(sqlite3_bind_int64(insert_update, 4, bill.create_tx))) return -1;
-	if (dblog(sqlite3_bind_int64(insert_update, 5, bill.dest_id))) return -1;
-	if (dblog(sqlite3_bind_int64(insert_update, 6, bill.blockchain))) return -1;
-	if (dblog(sqlite3_bind_blob(insert_update, 7, &bill.address, TX_ADDRESS_BYTES, SQLITE_STATIC))) return -1;
-	if (dblog(sqlite3_bind_int(insert_update, 8, bill.pool))) return -1;
-	if (dblog(sqlite3_bind_int64(insert_update, 9, bill.asset))) return -1;
-	if (dblog(sqlite3_bind_int64(insert_update, 10, bill.amount_fp))) return -1;
-	if (dblog(sqlite3_bind_blob(insert_update, 11, &packed_amount, AMOUNT_UNSIGNED_PACKED_BYTES, SQLITE_STATIC))) return -1;
-	if (dblog(sqlite3_bind_int(insert_update, 12, bill.delaytime))) return -1;
-	if (dblog(sqlite3_bind_blob(insert_update, 13, &bill.commit_iv, TX_COMMIT_IV_BYTES, SQLITE_STATIC))) return -1;
-	if (dblog(sqlite3_bind_blob(insert_update, 14, &bill.commitment, TX_COMMITMENT_BYTES, SQLITE_STATIC))) return -1;
+	if (dblog(sqlite3_bind_int(Billets_insert, 2, bill.status))) return -1;
+	if (dblog(sqlite3_bind_int(Billets_insert, 3, bill.flags))) return -1;
+	if (dblog(sqlite3_bind_int64(Billets_insert, 4, bill.create_tx))) return -1;
+	if (dblog(sqlite3_bind_int64(Billets_insert, 5, bill.dest_id))) return -1;
+	if (dblog(sqlite3_bind_int64(Billets_insert, 6, bill.blockchain))) return -1;
+	if (dblog(sqlite3_bind_blob(Billets_insert, 7, &bill.address, TX_ADDRESS_BYTES, SQLITE_STATIC))) return -1;
+	if (dblog(sqlite3_bind_int(Billets_insert, 8, bill.domain))) return -1;
+	if (dblog(sqlite3_bind_int64(Billets_insert, 9, bill.asset))) return -1;
+	if (dblog(sqlite3_bind_int64(Billets_insert, 10, bill.amount_fp))) return -1;
+	if (dblog(sqlite3_bind_blob(Billets_insert, 11, &packed_amount, AMOUNT_UNSIGNED_PACKED_BYTES, SQLITE_STATIC))) return -1;
+	if (dblog(sqlite3_bind_int(Billets_insert, 12, bill.delaytime))) return -1;
+	if (dblog(sqlite3_bind_blob(Billets_insert, 13, &bill.commit_iv, TX_COMMIT_IV_BYTES, SQLITE_STATIC))) return -1;
+	if (dblog(sqlite3_bind_blob(Billets_insert, 14, &bill.commitment, TX_COMMITMENT_BYTES, SQLITE_STATIC))) return -1;
 	if (bill.commitnum)
 	{
-		if (dblog(sqlite3_bind_int64(insert_update, 15, bill.commitnum))) return -1;
+		if (dblog(sqlite3_bind_int64(Billets_insert, 15, bill.commitnum))) return -1;
 	}
 	else
 	{
-		if (dblog(sqlite3_bind_null(insert_update, 15))) return -1;
+		// the following will set Commitnum to null for the billet that actually has Commitnum = 0
+		// that billet will then not be picked up by BilletSelectCommitnum
+		// this is not a problem though because BilletSelectCommitnum is only called by PollAddress
+		//		and PollAddress only polls for billets with Commitnum > an address's highest Commitnum
+
+		if (dblog(sqlite3_bind_null(Billets_insert, 15))) return -1;
 	}
 	if (bill.HasSerialnum())
 	{
-		if (dblog(sqlite3_bind_blob(insert_update, 16, &bill.serialnum, TX_SERIALNUM_BYTES, SQLITE_STATIC))) return -1;
+		if (dblog(sqlite3_bind_blob(Billets_insert, 16, &bill.serialnum, TX_SERIALNUM_BYTES, SQLITE_STATIC))) return -1;
 	}
 	else
 	{
-		if (dblog(sqlite3_bind_null(insert_update, 16))) return -1;
+		if (dblog(sqlite3_bind_null(Billets_insert, 16))) return -1;
 	}
 
 	if (RandTest(RTEST_DB_ERRORS))
@@ -112,7 +114,7 @@ int DbConn::BilletInsert(Billet& bill, bool lock_optional)
 		return -1;
 	}
 
-	auto rc = sqlite3_step(insert_update);
+	auto rc = sqlite3_step(Billets_insert);
 
 	if (dbresult(rc) == SQLITE_CONSTRAINT)
 	{
@@ -135,7 +137,7 @@ int DbConn::BilletInsert(Billet& bill, bool lock_optional)
 	if (!bill.id)
 		bill.id = sqlite3_last_insert_rowid(Wallet_db);
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(debug) << "DbConn::BilletInsert inserted " << bill.DebugString();
+	if (TRACE_DB_WRITE) BOOST_LOG_TRIVIAL(debug) << "DbConn::BilletInsert inserted " << bill.DebugString();
 
 	return 0;
 }
@@ -155,54 +157,54 @@ int DbConn::BilletSelect(sqlite3_stmt *select, bool has_spend, Billet& bill, boo
 
 	if (dbresult(rc) == SQLITE_DONE)
 	{
-		if (expect_row) BOOST_LOG_TRIVIAL(warning) << "DbConn::BilletSelect select returned SQLITE_DONE";
-		else if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::BilletSelect select returned SQLITE_DONE";
+		if (expect_row) BOOST_LOG_TRIVIAL(warning) << "DbConn::BilletSelect returned SQLITE_DONE";
+		else if (TRACE_DB_READ) BOOST_LOG_TRIVIAL(trace) << "DbConn::BilletSelect returned SQLITE_DONE";
 
 		return 1;
 	}
 
 	if (dbresult(rc) != SQLITE_ROW)
 	{
-		BOOST_LOG_TRIVIAL(error) << "DbConn::BilletSelect select returned " << rc;
+		BOOST_LOG_TRIVIAL(error) << "DbConn::BilletSelect returned " << rc;
 
 		return -1;
 	}
 
 	if (sqlite3_data_count(select) != 16 + 2*has_spend)
 	{
-		BOOST_LOG_TRIVIAL(error) << "DbConn::BilletSelect select returned " << sqlite3_data_count(select) << " columns";
+		BOOST_LOG_TRIVIAL(error) << "DbConn::BilletSelect returned " << sqlite3_data_count(select) << " columns";
 
 		return -1;
 	}
 
-	// Id, Status, Flags, CreateTx, DestinationId, Blockchain, Address, Pool, Asset, AmountFp, Amount, DelayTime, CommitIv, Commitment, Commitnum, Serialnum, and possibly Hashkey
 	uint64_t id = sqlite3_column_int64(select, 0);
 
 	if (required_id && required_id != id)
 	{
 		if (expect_row) BOOST_LOG_TRIVIAL(warning) << "DbConn::BilletSelect result id " << id << " != required_id " << required_id << " returning SQLITE_DONE";
-		else if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::BilletSelect result id " << id << " != required_id " << required_id << " returning SQLITE_DONE";
+		else if (TRACE_DB_READ) BOOST_LOG_TRIVIAL(trace) << "DbConn::BilletSelect result id " << id << " != required_id " << required_id << " returning SQLITE_DONE";
 
 		return 1;
 	}
 
+	// Id, Status, Flags, CreateTx, DestinationId, Blockchain, Address, Domain, Asset, AmountFp, Amount, DelayTime, CommitIv, Commitment, Commitnum, Serialnum, and possibly Hashkey
 	unsigned status = sqlite3_column_int(select, 1);
 	unsigned flags = sqlite3_column_int(select, 2);
 	uint64_t create_tx = sqlite3_column_int64(select, 3);
 	uint64_t dest_id = sqlite3_column_int64(select, 4);
 	uint64_t blockchain = sqlite3_column_int64(select, 5);
 	auto address_blob = sqlite3_column_blob(select, 6);
-	unsigned address_size = sqlite3_column_bytes(select, 6);
-	uint32_t pool = sqlite3_column_int(select, 7);
+	auto address_size = sqlite3_column_bytes(select, 6);
+	uint32_t domain = sqlite3_column_int(select, 7);
 	uint64_t asset = sqlite3_column_int64(select, 8);
 	uint64_t amount_fp = sqlite3_column_int64(select, 9);
 	auto amount_blob = sqlite3_column_blob(select, 10);
-	unsigned amount_size = sqlite3_column_bytes(select, 10);
+	auto amount_size = sqlite3_column_bytes(select, 10);
 	unsigned delaytime = sqlite3_column_int(select, 11);
 	auto commit_iv_blob = sqlite3_column_blob(select, 12);
-	unsigned commit_iv_size = sqlite3_column_bytes(select, 12);
+	auto commit_iv_size = sqlite3_column_bytes(select, 12);
 	auto commitment_blob = sqlite3_column_blob(select, 13);
-	unsigned commitment_size = sqlite3_column_bytes(select, 13);
+	auto commitment_size = sqlite3_column_bytes(select, 13);
 	uint64_t commitnum = sqlite3_column_int64(select, 14);
 	auto serialnum_blob = sqlite3_column_blob(select, 15);
 	bool has_serialnum = Billet::HasSerialnum(status, flags);
@@ -213,7 +215,7 @@ int DbConn::BilletSelect(sqlite3_stmt *select, bool has_spend, Billet& bill, boo
 
 	if (!Billet::StatusIsValid(status))
 	{
-		BOOST_LOG_TRIVIAL(error) << "DbConn::BilletSelect select returned invalid status " << status;
+		BOOST_LOG_TRIVIAL(error) << "DbConn::BilletSelect returned invalid status " << status;
 
 		return -1;
 	}
@@ -227,7 +229,7 @@ int DbConn::BilletSelect(sqlite3_stmt *select, bool has_spend, Billet& bill, boo
 
 	if (address_size != TX_ADDRESS_BYTES)
 	{
-		BOOST_LOG_TRIVIAL(error) << "DbConn::BilletSelect select returned address size " << address_size << " != " << TX_ADDRESS_BYTES;
+		BOOST_LOG_TRIVIAL(error) << "DbConn::BilletSelect returned address size " << address_size << " != " << TX_ADDRESS_BYTES;
 
 		return -1;
 	}
@@ -241,7 +243,7 @@ int DbConn::BilletSelect(sqlite3_stmt *select, bool has_spend, Billet& bill, boo
 
 	if (amount_size != AMOUNT_UNSIGNED_PACKED_BYTES)
 	{
-		BOOST_LOG_TRIVIAL(error) << "DbConn::BilletSelect select returned amount size " << amount_size << " != " << AMOUNT_UNSIGNED_PACKED_BYTES;
+		BOOST_LOG_TRIVIAL(error) << "DbConn::BilletSelect returned amount size " << amount_size << " != " << AMOUNT_UNSIGNED_PACKED_BYTES;
 
 		return -1;
 	}
@@ -255,7 +257,7 @@ int DbConn::BilletSelect(sqlite3_stmt *select, bool has_spend, Billet& bill, boo
 
 	if (commit_iv_size != TX_COMMIT_IV_BYTES)
 	{
-		BOOST_LOG_TRIVIAL(error) << "DbConn::BilletSelect select returned commitment iv size " << commit_iv_size << " != " << TX_COMMIT_IV_BYTES;
+		BOOST_LOG_TRIVIAL(error) << "DbConn::BilletSelect returned commitment iv size " << commit_iv_size << " != " << TX_COMMIT_IV_BYTES;
 
 		return -1;
 	}
@@ -269,7 +271,7 @@ int DbConn::BilletSelect(sqlite3_stmt *select, bool has_spend, Billet& bill, boo
 
 	if (commitment_size != TX_COMMITMENT_BYTES)
 	{
-		BOOST_LOG_TRIVIAL(warning) << "DbConn::BilletSelect select returned commitment size " << commitment_size << " != " << TX_COMMITMENT_BYTES;
+		BOOST_LOG_TRIVIAL(warning) << "DbConn::BilletSelect returned commitment size " << commitment_size << " != " << TX_COMMITMENT_BYTES;
 
 		return -1;
 	}
@@ -283,7 +285,7 @@ int DbConn::BilletSelect(sqlite3_stmt *select, bool has_spend, Billet& bill, boo
 
 	if (has_serialnum && serialnum_size != TX_SERIALNUM_BYTES)
 	{
-		BOOST_LOG_TRIVIAL(warning) << "DbConn::BilletSelect select returned serialnum size " << serialnum_size << " != " << TX_SERIALNUM_BYTES;
+		BOOST_LOG_TRIVIAL(warning) << "DbConn::BilletSelect returned serialnum size " << serialnum_size << " != " << TX_SERIALNUM_BYTES;
 
 		return -1;
 	}
@@ -297,7 +299,7 @@ int DbConn::BilletSelect(sqlite3_stmt *select, bool has_spend, Billet& bill, boo
 
 	if (has_spend && hashkey_size != TX_HASHKEY_BYTES)
 	{
-		BOOST_LOG_TRIVIAL(warning) << "DbConn::BilletSelect select returned hashkey size " << hashkey_size << " != " << TX_HASHKEY_BYTES;
+		BOOST_LOG_TRIVIAL(warning) << "DbConn::BilletSelect returned hashkey size " << hashkey_size << " != " << TX_HASHKEY_BYTES;
 
 		return -1;
 	}
@@ -318,7 +320,7 @@ int DbConn::BilletSelect(sqlite3_stmt *select, bool has_spend, Billet& bill, boo
 	bill.dest_id = dest_id;
 	bill.blockchain = blockchain;
 	memcpy((void*)&bill.address, address_blob, TX_ADDRESS_BYTES);
-	bill.pool = pool;
+	bill.domain = domain;
 	bill.asset = asset;
 	bill.amount_fp = amount_fp;
 	unpack_unsigned_amount(amount_blob, bill.amount);
@@ -332,14 +334,14 @@ int DbConn::BilletSelect(sqlite3_stmt *select, bool has_spend, Billet& bill, boo
 		memcpy((void*)&bill.spend_hashkey, hashkey_blob, TX_HASHKEY_BYTES);
 	bill.spend_tx_commitnum = tx_commitnum;
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(debug) << "DbConn::BilletSelect returning " << bill.DebugString();
+	if (TRACE_DB_READ) BOOST_LOG_TRIVIAL(debug) << "DbConn::BilletSelect returning " << bill.DebugString();
 
 	return 0;
 }
 
 int DbConn::BilletSelectMulti(sqlite3_stmt *select, bool has_spend, unsigned &nbills, Billet *bills, const unsigned maxbills, bool expect_row)
 {
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::BilletSelectMulti has_spend " << has_spend << " maxbills " << maxbills;
+	if (TRACE_DB_READ) BOOST_LOG_TRIVIAL(trace) << "DbConn::BilletSelectMulti has_spend " << has_spend << " maxbills " << maxbills;
 
 	nbills = 0;
 
@@ -363,7 +365,7 @@ int DbConn::BilletSelectMulti(sqlite3_stmt *select, bool has_spend, unsigned &nb
 		++nbills;
 	}
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::BilletSelectMulti maxbills " << maxbills << " returning nbills " << nbills;
+	if (TRACE_DB_READ) BOOST_LOG_TRIVIAL(trace) << "DbConn::BilletSelectMulti maxbills " << maxbills << " returning nbills " << nbills;
 
 	return 0;
 }
@@ -373,13 +375,13 @@ int DbConn::BilletSelectId(uint64_t id, Billet& bill, bool or_greater)
 	//boost::shared_lock<boost::shared_mutex> lock(db_mutex);
 	Finally finally(boost::bind(&DbConn::DoDbFinish, this));
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::BilletSelectId id " << id << " or_greater = " << or_greater;
+	if (TRACE_DB_READ) BOOST_LOG_TRIVIAL(trace) << "DbConn::BilletSelectId id " << id << " or_greater " << or_greater;
 
 	CCASSERT(id);
 
 	bill.Clear();
 
-	// >= Id
+	// Id >=
 	if (dblog(sqlite3_bind_int64(Billets_select, 1, id))) return -1;
 
 	return BilletSelect(Billets_select, false, bill, !or_greater, !or_greater * id);
@@ -390,7 +392,7 @@ int DbConn::BilletSelectTxid(const void *address, const void *commitment, Billet
 	//boost::shared_lock<boost::shared_mutex> lock(db_mutex);
 	Finally finally(boost::bind(&DbConn::DoDbFinish, this));
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::BilletSelectTxid address " << buf2hex(address, TX_ADDRESS_BYTES) << " commitment " << buf2hex(commitment, TXID_COMMITMENT_BYTES);
+	if (TRACE_DB_READ) BOOST_LOG_TRIVIAL(trace) << "DbConn::BilletSelectTxid address " << buf2hex(address, TX_ADDRESS_BYTES) << " commitment " << buf2hex(commitment, TXID_COMMITMENT_BYTES);
 
 	bill.Clear();
 
@@ -406,7 +408,7 @@ int DbConn::BilletSelectCommitnum(uint64_t commitnum, Billet& bill)
 	//boost::shared_lock<boost::shared_mutex> lock(db_mutex);
 	Finally finally(boost::bind(&DbConn::DoDbFinish, this));
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::BilletSelectCommitnum commitnum " << commitnum;
+	if (TRACE_DB_READ) BOOST_LOG_TRIVIAL(trace) << "DbConn::BilletSelectCommitnum commitnum " << commitnum;
 
 	bill.Clear();
 
@@ -416,7 +418,7 @@ int DbConn::BilletSelectCommitnum(uint64_t commitnum, Billet& bill)
 	return BilletSelect(Billets_select_commitnum, false, bill);
 }
 
-int DbConn::BilletSelectUnspent(const bigint_t& amount, uint64_t id, Billet& bill)
+int DbConn::BilletSelectUnspent(const bigint_t& amount, uint64_t last_id, Billet& bill)
 {
 	//boost::shared_lock<boost::shared_mutex> lock(db_mutex);
 	Finally finally(boost::bind(&DbConn::DoDbFinish, this));
@@ -428,13 +430,13 @@ int DbConn::BilletSelectUnspent(const bigint_t& amount, uint64_t id, Billet& bil
 	if (amount)
 		CCASSERTZ(pack_unsigned_amount(amount, packed_amount));
 	else
-		memset((void*)&packed_amount, -1, AMOUNT_UNSIGNED_PACKED_BYTES);
+		memset(&packed_amount, -1, AMOUNT_UNSIGNED_PACKED_BYTES);
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::BilletSelectUnspent amount " << amount << " id " << id << " packed_amount " << buf2hex(&packed_amount, AMOUNT_UNSIGNED_PACKED_BYTES, 0);
+	if (TRACE_DB_READ) BOOST_LOG_TRIVIAL(trace) << "DbConn::BilletSelectUnspent amount " << amount << " last_id " << last_id << " packed_amount " << buf2hex(&packed_amount, AMOUNT_UNSIGNED_PACKED_BYTES);
 
-	// <= Amount, >= Id
+	// (Amount, Id) < (?1, ?2)
 	if (dblog(sqlite3_bind_blob(Billets_select_unspent, 1, &packed_amount, AMOUNT_UNSIGNED_PACKED_BYTES, SQLITE_STATIC))) return -1;
-	if (dblog(sqlite3_bind_int64(Billets_select_unspent, 2, id))) return -1;
+	if (dblog(sqlite3_bind_int64(Billets_select_unspent, 2, last_id))) return -1;
 
 	return BilletSelect(Billets_select_unspent, false, bill);
 }
@@ -444,14 +446,14 @@ int DbConn::BilletSelectAmount(uint64_t blockchain, uint64_t asset, const bigint
 	//boost::shared_lock<boost::shared_mutex> lock(db_mutex);
 	Finally finally(boost::bind(&DbConn::DoDbFinish, this));
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::BilletSelectAmount blockchain " << blockchain << " asset " << asset << " amount " << amount << " delaytime " << delaytime;
+	if (TRACE_DB_READ) BOOST_LOG_TRIVIAL(trace) << "DbConn::BilletSelectAmount blockchain " << blockchain << " asset " << asset << " amount " << amount << " delaytime " << delaytime;
 
 	bill.Clear();
 
 	packed_unsigned_amount_t packed_amount;
 	CCASSERTZ(pack_unsigned_amount(amount, packed_amount));
 
-	// Asset, Blockchain, >= Amount, <= DelayTime
+	// Asset, Blockchain, Amount >=, DelayTime <=
 	if (dblog(sqlite3_bind_int64(Billets_select_amount, 1, asset))) return -1;
 	if (dblog(sqlite3_bind_int64(Billets_select_amount, 2, blockchain))) return -1;
 	if (dblog(sqlite3_bind_blob(Billets_select_amount, 3, &packed_amount, AMOUNT_UNSIGNED_PACKED_BYTES, SQLITE_STATIC))) return -1;
@@ -460,23 +462,23 @@ int DbConn::BilletSelectAmount(uint64_t blockchain, uint64_t asset, const bigint
 	return BilletSelect(Billets_select_amount, false, bill);
 }
 
-int DbConn::BilletSelectAmountScan(uint64_t blockchain, uint64_t asset, const bigint_t& amount, uint64_t id, Billet& bill)
+int DbConn::BilletSelectAmountScan(uint64_t blockchain, uint64_t asset, const bigint_t& amount, uint64_t last_id, Billet& bill)
 {
 	//boost::shared_lock<boost::shared_mutex> lock(db_mutex);
 	Finally finally(boost::bind(&DbConn::DoDbFinish, this));
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::BilletSelectAmountScan blockchain " << blockchain << " asset " << asset << " amount " << amount << " id " << id;
+	if (TRACE_DB_READ) BOOST_LOG_TRIVIAL(trace) << "DbConn::BilletSelectAmountScan blockchain " << blockchain << " asset " << asset << " amount " << amount << " last_id " << last_id;
 
 	bill.Clear();
 
 	packed_unsigned_amount_t packed_amount;
 	CCASSERTZ(pack_unsigned_amount(amount, packed_amount));
 
-	// Asset, Blockchain, >= Amount, >= Id
+	// Asset, Blockchain, (Amount, Id) > (?3, ?4)
 	if (dblog(sqlite3_bind_int64(Billets_select_amount_scan, 1, asset))) return -1;
 	if (dblog(sqlite3_bind_int64(Billets_select_amount_scan, 2, blockchain))) return -1;
 	if (dblog(sqlite3_bind_blob(Billets_select_amount_scan, 3, &packed_amount, AMOUNT_UNSIGNED_PACKED_BYTES, SQLITE_STATIC))) return -1;
-	if (dblog(sqlite3_bind_int(Billets_select_amount_scan, 4, id))) return -1;
+	if (dblog(sqlite3_bind_int(Billets_select_amount_scan, 4, last_id))) return -1;
 
 	return BilletSelect(Billets_select_amount_scan, false, bill);
 }
@@ -486,11 +488,11 @@ int DbConn::BilletSelectAmountMax(uint64_t blockchain, uint64_t asset, unsigned 
 	//boost::shared_lock<boost::shared_mutex> lock(db_mutex);
 	Finally finally(boost::bind(&DbConn::DoDbFinish, this));
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::BilletSelectAmount blockchain " << blockchain << " asset " << asset << " delaytime " << delaytime;
+	if (TRACE_DB_READ) BOOST_LOG_TRIVIAL(trace) << "DbConn::BilletSelectAmount blockchain " << blockchain << " asset " << asset << " delaytime " << delaytime;
 
 	bill.Clear();
 
-	// Asset, Blockchain, <= DelayTime
+	// Asset, Blockchain, DelayTime <=
 	if (dblog(sqlite3_bind_int64(Billets_select_amount_max, 1, asset))) return -1;
 	if (dblog(sqlite3_bind_int64(Billets_select_amount_max, 2, blockchain))) return -1;
 	if (dblog(sqlite3_bind_int(Billets_select_amount_max, 3, delaytime))) return -1;
@@ -503,7 +505,7 @@ int DbConn::BilletSelectCreateTx(uint64_t id, unsigned &nbills, Billet *bills, c
 	//boost::shared_lock<boost::shared_mutex> lock(db_mutex);
 	Finally finally(boost::bind(&DbConn::DoDbFinish, this));
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::BilletSelectCreateTx id " << id << " maxbills " << maxbills;
+	if (TRACE_DB_READ) BOOST_LOG_TRIVIAL(trace) << "DbConn::BilletSelectCreateTx id " << id << " maxbills " << maxbills;
 
 	nbills = 0;
 
@@ -519,7 +521,7 @@ int DbConn::BilletSelectSpendTx(uint64_t id, unsigned &nbills, Billet *bills, co
 	//boost::shared_lock<boost::shared_mutex> lock(db_mutex);
 	Finally finally(boost::bind(&DbConn::DoDbFinish, this));
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::BilletSelectSpendTx id " << id << " maxbills " << maxbills;
+	if (TRACE_DB_READ) BOOST_LOG_TRIVIAL(trace) << "DbConn::BilletSelectSpendTx id " << id << " maxbills " << maxbills;
 
 	nbills = 0;
 

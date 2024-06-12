@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * config.h for sqlite
 */
@@ -19,22 +19,33 @@
 #endif
 
 #define SQLITE_DQS						0
-
-#define SQLITE_OMIT_DECLTYPE			1
-#define SQLITE_OMIT_DEPRECATED			1
-#define SQLITE_OMIT_PROGRESS_CALLBACK	1
-#define SQLITE_OMIT_INTROSPECTION_PRAGMAS 1
-#define SQLITE_USE_ALLOCA				1
+#define SQLITE_ENABLE_NULL_TRIM			1
+#define SQLITE_LIKE_DOESNT_MATCH_BLOBS	1
+#define SQLITE_MAX_EXPR_DEPTH			0
 
 #define SQLITE_OMIT_AUTOINIT			1
 #define SQLITE_OMIT_AUTORESET			1
+#define SQLITE_OMIT_COMPLETE			1
+#define SQLITE_OMIT_DECLTYPE			1
+#define SQLITE_OMIT_DEPRECATED			1
+#define SQLITE_OMIT_DESERIALIZE			1
+#define SQLITE_OMIT_INTROSPECTION_PRAGMAS 1
+#define SQLITE_OMIT_JSON				1
+#define SQLITE_OMIT_LIKE_OPTIMIZATION	1
+#define SQLITE_OMIT_LOAD_EXTENSION		1
+#define SQLITE_OMIT_PROGRESS_CALLBACK	1
+#define SQLITE_OMIT_TCL_VARIABLE		1
+#define SQLITE_OMIT_TRACE				1
 #define SQLITE_OMIT_UTF16				1
+
+#define SQLITE_USE_ALLOCA				1
 
 #define HAVE_MALLOC_USABLE_SIZE			1
 #define HAVE_USLEEP						1
 
 #ifdef _WIN32
 //#warning SQLITE _WIN32
+#define SQLITE_USE_SEH					1
 //#define SQLITE_4_BYTE_ALIGNED_MALLOC	1	// not needed
 #if TEST_SQLITE_DEBUG_BUILD
 //#define SQLITE_WIN32_MALLOC				1

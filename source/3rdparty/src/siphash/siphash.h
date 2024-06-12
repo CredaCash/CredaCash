@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * siphash.h
 */
@@ -18,17 +18,19 @@ extern "C" {
 
 #include <siphash/src/siphash.h>
 
-inline uint64_t siphash(const uint8_t *data, size_t len)
+inline uint64_t siphash(const void *data, size_t nbytes, const void *key = NULL, size_t keylen = 0)
 {
-	uint8_t key[16];
-	memset(key, 0, sizeof(key));
+	CCASSERT(keylen <= 16);
 
-	return sip_hash24(key, const_cast<uint8_t*>(data), len);
-}
+	uint8_t k[16];
 
-inline uint64_t siphash_keyed(const uint8_t key[16], const uint8_t *data, size_t len)
-{
-	return sip_hash24(const_cast<uint8_t*>(key), const_cast<uint8_t*>(data), len);
+	if (keylen < 16)
+		memset(k, 0, sizeof(k));
+
+	if (keylen > 0)
+		memcpy(k, key, keylen);
+
+	return sip_hash24(k, (uint8_t*)data, nbytes);
 }
 
 #if defined(__cplusplus)

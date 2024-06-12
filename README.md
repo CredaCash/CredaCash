@@ -14,14 +14,18 @@ CredaCash&trade; is a next generation cryptocurrency and blockchain that is fast
 
 -	Scalability: A single blockchain can scale to hundreds of transactions per second.  In the future, multiple blockchains may be interconnected and payments routed seamlessly between them, similar to routing data on the internet.
 
+-	Integrated Peer-to-Peer Crosschain Exchange: CredaCash is the first fully private cryptocurrency and blockchain to include an integrated, peer-to-peer crosschain exchange. This exchange allows users to trade CredaCash for Bitcoin and Bitcoin Cash across blockchains, instantly providing liquidity and reducing barriers to entry.
+
+-	Mining: Users of the Crosschain Exchange can mine CredaCash, ensuring cryptocurrency goes to users who help grow the ecosystem.
+
 ## Software Overview
 
 This repository contains the source code for the CredaCash network node and wallet.  The network node can:
 
 -	Join the network to relay blocks and transactions.
 -	Track the blockchain to record cleared transactions and spent bills.
--	Serve as a network gateway for wallets and other payment applications.
--	Optionally, serve as a blockchain witness by assembling transactions into blocks and sending them across the network.
+-	Optionally serve as a network gateway for wallets and other payment applications.
+-	Potentially serve as a blockchain witness by assembling transactions into blocks and sending them across the network.
 
 The wallet:
 
@@ -35,14 +39,14 @@ The software and network are fully operational and have no known issues.
 
 ## Quick Start
 
-Windows executables with instructions are available at [CredaCash.com](https://CredaCash.com/software/)
+Windows evaluation executables with instructions are available at [CredaCash.com](https://CredaCash.com/software/)
 
 ## Building
 
-The CredaCash network node software is cross-platform, and has been built and tested under Windows and Linux.  For build instructions, see the [BUILDING](https://github.com/CredaCash/network-node/blob/master/BUILDING.md) file.
+The CredaCash network node software is cross-platform, and has been built and tested under Windows and Linux.  For build instructions, see the [BUILDING](https://github.com/CredaCash/CredaCash/blob/master/BUILDING.md) file.
 
 ## License
 
-This software is licensed under the [Creda Software License Agreement](https://CredaCash.com/legal/software-license-agreement/).  This license is designed to allow anyone to freely run, modify, and redistribute the CredaCash software as long as they support the CredaCash currency on a non-discriminatory basis.
+This software is licensed under the [CredaCash License Agreement](https://CredaCash.com/legal/software-license-agreement/).  This license is designed to allow anyone to freely run, modify, and redistribute the CredaCash software as long as they support the CredaCash currency on a non-discriminatory basis.
 
-CredaCash is a trademark of Creda Software, Inc.  US and worldwide patents pending.
+CredaCash is a trademark of Creda Foundation, Inc.

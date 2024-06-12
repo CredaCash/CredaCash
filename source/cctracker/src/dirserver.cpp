@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * dirserver.cpp
 */
@@ -9,6 +9,8 @@
 #include "cctracker.h"
 #include "dirserver.h"
 #include "dir.hpp"
+
+#include <CCcrypto.hpp>
 
 #include <ccserver/service.hpp>
 #include <ccserver/connection.hpp>
@@ -45,95 +47,167 @@ private:
 
 	void HandleReadComplete()
 	{
-#if 0
-		static const std::string outbuf = "HTTP/1.0 200 OK\r\n\r\nOK";
-		//static const std::string outbuf = "OK";
-
-		WriteAsync("DirConnection::HandleReadComplete", boost::asio::buffer(outbuf.c_str(), outbuf.size() + 1),
-				boost::bind(&Connection::HandleWrite, this, boost::asio::placeholders::error, AutoCount(this)));
-
-		return;
-#endif
-
 		// request is:
+		//		str += "T:" + time + "\n";
 		//		str += "R:" + g_relay_service.TorHostname() + "\n"
 		//		str += "B:" + g_blockserve_service.TorHostname() + "\n"
+		//		str += "W:" + POW_nonce + "\n";
 		//		str += "QRB\0";
-
-		const unsigned max_msg_len = (TOR_HOSTNAME_CHARS+3)*2 + 4;
-
-		if (m_nred > max_msg_len)
-		{
-			BOOST_LOG_TRIVIAL(debug) << "DirConnection request size " << m_nred << " expected max of " << max_msg_len;
-
-			return Stop();
-		}
 
 		m_pread[m_nred] = 0;
 
-		BOOST_LOG_TRIVIAL(debug) << "DirConnection received " << m_pread;
+		BOOST_LOG_TRIVIAL(debug) << "DirConnection received:\n" << m_pread;
+		//cout << buf2hex(m_pread, m_nred) << endl;
 
-		for (unsigned i = 0; i < m_nred; ++i)
-			if (m_pread[i] == '\n')
-				m_pread[i] = 0;
+		for (unsigned scan = 0; ; ++scan)
+		{
+			if (scan >= m_nred - 3)
+			{
+				BOOST_LOG_TRIVIAL(info) << "DirConnection POW not found " << m_pread;
+
+				return Stop();
+			}
+
+			if (!(m_pread[scan] == '\n' && m_pread[scan+1] == 'W' && m_pread[scan+2] == ':'))
+				continue;
+
+			auto nonce = buf2uint64(&m_pread[scan+3]);
+
+			auto test = string(m_pread, scan+1);
+			test += g_tor_hostname;
+
+			auto rc = CheckPOW(test.data(), test.length(), g_difficulty * 100000, nonce);
+
+			if (rc && !(nonce && nonce == (uint64_t)g_magic_nonce))
+			{
+				BOOST_LOG_TRIVIAL(info) << "DirConnection POW check failed " << m_pread;
+
+				return Stop();
+			}
+
+			break;
+		}
+
+		for (unsigned scan = 0; scan < m_nred; ++scan)
+		{
+			if (m_pread[scan] == '\n')
+				m_pread[scan] = 0;
+		}
 
 		string relayname, blockname;
+		bool past_pow = false;
+		bool got_time = false;
 
-		unsigned scan = 0;
-
-		for (unsigned i = 0; i < 2; ++i)
+		for (unsigned scan = 0; scan < m_nred - 3; ++scan)
 		{
-			if (m_pread[scan] == 'R' && m_pread[scan+1] == ':')
+			bool in_pow = true;
+
+			if (!m_pread[scan])
+				continue;
+			else if (m_pread[scan] == 'T' && m_pread[scan+1] == ':')
+			{
+				got_time = true;
+
+				uint64_t timestamp = buf2uint64(&m_pread[scan+2]);
+				uint64_t now = (unixtime() - TX_TIME_OFFSET) / 600; // 10 minute granularity
+
+				if (timestamp < now - (g_time_allowance + 9)/10 || timestamp > now + (g_time_allowance + 9)/10)
+				{
+					BOOST_LOG_TRIVIAL(info) << "DirConnection invalid timestamp " << timestamp << " now " << now;
+
+					return Stop();
+				}
+			}
+			else if (m_pread[scan] == 'R' && m_pread[scan+1] == ':')
 			{
 				relayname = &m_pread[scan+2];
-				scan += 3 + relayname.length();
-				BOOST_LOG_TRIVIAL(trace) << "DirConnection relayname " << relayname;
 			}
 			else if (m_pread[scan] == 'B' && m_pread[scan+1] == ':')
 			{
 				blockname = &m_pread[scan+2];
-				scan += 3 + blockname.length();
-				BOOST_LOG_TRIVIAL(trace) << "DirConnection blockname " << blockname;
 			}
+			else if (m_pread[scan] == 'W' && m_pread[scan+1] == ':')
+			{
+				in_pow = false;
+				past_pow = true;
+			}
+			else if (m_pread[scan] == 'Q')
+			{
+				in_pow = false;
+
+				if (strcmp(&m_pread[scan+1], "RB"))
+				{
+					BOOST_LOG_TRIVIAL(debug) << "DirConnection unrecognized query " << &m_pread[scan];
+
+					return Stop();
+				}
+			}
+			else
+			{
+				in_pow = past_pow = true; // force error
+			}
+
+			if (in_pow && past_pow)
+			{
+				BOOST_LOG_TRIVIAL(info) << "DirConnection invalid request " << m_pread;
+
+				return Stop();
+			}
+
+			scan += strlen(&m_pread[scan]);
 		}
 
-		if (strcmp(&m_pread[scan], "QRB"))
+		if (!got_time)
 		{
-			BOOST_LOG_TRIVIAL(debug) << "DirConnection unrecognized query " << &m_pread[scan];
+			BOOST_LOG_TRIVIAL(info) << "DirConnection missing timestamp " << m_pread;
 
 			return Stop();
 		}
 
 		if (relayname.length())
+		{
+			BOOST_LOG_TRIVIAL(trace) << "DirConnection relayname " << relayname;
+
 			g_relaydir.Add(relayname);
+		}
 
 		if (blockname.length())
-			g_blockdir.Add(blockname);
+		{
+			BOOST_LOG_TRIVIAL(trace) << "DirConnection blockname " << blockname;
 
-		const unsigned nrelay = RELAY_QUERY_MAX_NAMES;
-		const unsigned nblock = BLOCK_QUERY_MAX_NAMES;
+			g_blockdir.Add(blockname);
+		}
+
 		unsigned seed = m_random();
-		unsigned bufpos = 0;
+		auto output = m_readbuf.data();
+		uint32_t bufsize = m_readbuf.size();
+		uint32_t bufpos = 0;
 
 		char json1[] = "{\"Relay\":[";
-		strcpy(&m_pread[bufpos], json1);
-		bufpos += sizeof(json1) - 1;
+		copy_to_buf(json1, sizeof(json1)-1, bufpos, output, bufsize);
 
-		g_relaydir.PickN(seed, nrelay, m_namestr, &m_pread[0], bufpos);
+		g_relaydir.PickN(seed, RELAY_QUERY_MAX_NAMES, m_namestr, output, bufpos);
 
 		char json2[] = "],\"Block\":[";
-		strcpy(&m_pread[bufpos], json2);
-		bufpos += sizeof(json2) - 1;
+		copy_to_buf(json2, sizeof(json2)-1, bufpos, output, bufsize);
 
-		g_blockdir.PickN(seed, nblock, m_namestr, &m_pread[0], bufpos);
+		g_blockdir.PickN(seed, BLOCK_QUERY_MAX_NAMES, m_namestr, output, bufpos);
 
 		char json3[] = "]}";
-		strcpy(&m_pread[bufpos], json3);
-		bufpos += sizeof(json3) - 1;
+		copy_to_buf(json3, sizeof(json3)-1, bufpos, output, bufsize);
 
-		m_pread[bufpos++] = 0;
+		output[bufpos++] = 0;
 
-		WriteAsync("DirConnection::HandleReadComplete", boost::asio::buffer(m_pread, bufpos),
+		if (bufpos > bufsize)
+		{
+			output[bufsize-1] = 0;
+
+			BOOST_LOG_TRIVIAL(fatal) << "DirConnection buffer overflow bufpos " << bufpos << " bufsize " << bufsize << " buffer " << output;
+		}
+
+		BOOST_LOG_TRIVIAL(trace) << "DirConnection reply: " << output;
+
+		WriteAsync("DirConnection::HandleReadComplete", boost::asio::buffer(output, bufpos),
 				boost::bind(&Connection::HandleWrite, this, boost::asio::placeholders::error, AutoCount(this)));
 	}
 };
@@ -160,7 +234,7 @@ void RunServer()
 	//add_test_names(g_blockdir, 'z');	// for testing
 
 	// unsigned conn_nreadbuf, unsigned conn_nwritebuf, unsigned sock_nreadbuf, unsigned sock_nwritebuf, unsigned headersize, bool noclose, bool bregister
-	CCServer::ConnectionFactoryInstantiation<DirConnection> connfac((TOR_HOSTNAME_CHARS+3)*(RELAY_QUERY_MAX_NAMES+BLOCK_QUERY_MAX_NAMES+1) + 80, 0, 0, 0, 0, 0, 0);
+	CCServer::ConnectionFactoryInstantiation<DirConnection> connfac((TOR_HOSTNAME_CHARS + 3)*(RELAY_QUERY_MAX_NAMES + BLOCK_QUERY_MAX_NAMES) + 80, 0, 0, 0, 0, 0, 0);
 
 	CCServer::Service s("Directory Service");
 
@@ -176,7 +250,3 @@ void RunServer()
 	g_relaydir.DeInit();
 	g_blockdir.DeInit();
 }
-
-
-
-

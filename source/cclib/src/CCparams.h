@@ -1,12 +1,15 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * CCparams.h
 */
 
 #pragma once
+
+#define CC_BLOCKLEVEL_WIRE_BYTES	(32/8)
+#define CC_BLOCKTIME_WIRE_BYTES		(32/8)
 
 #define MAINNET_BLOCKCHAIN		1
 #define TESTNET_BLOCKCHAIN_LO	1000
@@ -39,16 +42,15 @@
 #define TX_MAX_SECRET_SLOTS			(TX_MAX_SECRETS + 1)	// 8 slots, 1 for restricted addresses only, 5 for secrets only, 2 can be used for either
 #define TX_MAX_RESTRICTED_ADDRESSES	6		// must be <= 2*(TX_MAX_SECRET_SLOTS-1)
 
-#define TX_CC_MINT_AMOUNT	"50000000000000000000000000000000"
-#define TX_CC_MINT_DONATION	"49000000000000000000000000000000"
+//#define TX_CC_MINT_AMOUNT	"50000000000000000000000000000000"
+#define TX_CC_MINT_AMOUNT	"1000000000000000000000000000000"
+//#define TX_CC_MINT_DONATION	"49000000000000000000000000000000"
+#define TX_CC_MINT_DONATION	0UL
 #define TX_CC_MINT_EXPONENT	22
 #define TX_MINT_NOUT		1					// number of outputs in a TX_MINT
 #define TX_MINT_ZKKEY_ID	0
 
 #define TX_MERKLE_DEPTH				40
-
-#define TX_TIME_DIVISOR					30
-#define TX_TIME_OFFSET					1546300800	// must be divisible by TX_TIME_DIVISOR
 
 #define TX_INPUT_BITS					256
 #define TX_FIELD_BITS					254
@@ -60,7 +62,7 @@
 #define TX_DELAYTIME_BITS				8
 #define TX_PAYNUM_BITS					20
 #define TX_ADDRESS_BITS					128
-#define TX_POOL_BITS					20
+#define TX_DOMAIN_BITS					20
 #define TX_ASSET_BITS					64
 #define TX_ASSET_WIRE_BITS				32
 #define TX_AMOUNT_BITS					40
@@ -83,7 +85,7 @@
 #define TX_MAX_SECRETS_BYTES		((int)((TX_MAX_SECRETS_BITS + 7) / 8))
 #define TX_DELAYTIME_BYTES			((int)((TX_DELAYTIME_BITS + 7) / 8))
 #define TX_ADDRESS_BYTES			((int)((TX_ADDRESS_BITS + 7) / 8))
-#define TX_POOL_BYTES				((int)((TX_POOL_BITS + 7) / 8))
+#define TX_DOMAIN_BYTES				((int)((TX_DOMAIN_BITS + 7) / 8))
 #define TX_ASSET_BYTES				((int)((TX_ASSET_BITS + 7) / 8))
 #define TX_ASSET_WIRE_BYTES			((int)((TX_ASSET_WIRE_BITS + 7) / 8))
 #define TX_AMOUNT_BYTES				((int)((TX_AMOUNT_BITS + 7) / 8))
@@ -128,7 +130,7 @@
 
 #define MAX_INPUTS_FOR_TESTING		32		// must be power of 2 >= TX_MAXIN, i.e., 32
 
-#define TX_FIELD_MAX				(bigint_t(0UL)-bigint_t(1UL))		// limit inputs to prime field
+#define TX_FIELD_MAX				(bigint_t(0UL) - bigint_t(1UL))		// limit inputs to prime field
 //#define TX_FIELD_MAX				(bigint_t(0UL))						// for testing: use this definition to allow 256 bit inputs
 
 #define TX_NONFIELD_HI_WORD			((uint64_t)7 << (TX_FIELD_BITS - 3 - 3*64))

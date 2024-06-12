@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * jsonutil.cpp
 */
@@ -49,6 +49,26 @@
 
 #define TRACE	0
 
+string json_escape(const string& str)
+{
+	auto s = str;
+
+	for (unsigned i = 0; i < s.length(); ++i)
+	{
+		auto c = s[i];
+
+		if (c == '"')	s.replace(i++, 1, "\\\"");
+		if (c == '\\')	s.replace(i++, 1, "\\\\");
+		if (c == '\b')	s.replace(i++, 1, "\\b");
+		if (c == '\f')	s.replace(i++, 1, "\\f");
+		if (c == '\n')	s.replace(i++, 1, "\\n");
+		if (c == '\r')	s.replace(i++, 1, "\\r");
+		if (c == '\t')	s.replace(i++, 1, "\\t");
+	}
+
+	return s;
+}
+
 CCRESULT copy_error_to_output(const string& fn, const string& error, char *output, const uint32_t outsize, CCRESULT rc)
 {
 	if (output && outsize)
@@ -79,9 +99,9 @@ CCRESULT copy_result_to_output(const string& fn, const string& result, char *out
 CCRESULT error_buffer_overflow(const string& fn, char *output, const uint32_t outsize, const unsigned need)
 {
 	if (need)
-		return copy_error_to_output(fn, string("error: output buffer overflow (need ") + to_string(need) + " bytes)", output, outsize);
+		return copy_error_to_output(fn, string("error: output buffer overflow (need ") + to_string(need) + " bytes)", output, outsize, 1);
 	else
-		return copy_error_to_output(fn, "error: output buffer overflow", output, outsize);
+		return copy_error_to_output(fn, "error: output buffer overflow", output, outsize, 1);
 }
 
 CCRESULT error_requires_binary_buffer(const string& fn, char *output, const uint32_t outsize)
@@ -194,6 +214,27 @@ const Json::Value * json_find(const Json::Value& root, const char *key)
 	return root.find(key, key + strlen(key));
 }
 
+CCRESULT parse_objid(const string& fn, const string& key, const string& sval, ccoid_t& objid, char *output, const uint32_t outsize)
+{
+	memset(&objid, 0, sizeof(objid));
+
+	if (sval.length() != 2*sizeof(objid))
+		return error_invalid_value(fn, key, output, outsize);
+
+	for (unsigned i = 0; i < sval.length(); i += 2)
+	{
+		auto c1 = cc_destringify_char(base16combobin, sval[i]);
+		auto c2 = cc_destringify_char(base16combobin, sval[i+1]);
+
+		if (c1 > 15 || c2 > 15)
+			return error_not_hex(fn, key, output, outsize);
+
+		((char*)&objid)[i/2] = (c1 << 4) | c2;
+	}
+
+	return 0;
+}
+
 static CCRESULT parse_hex_value(const string& fn, const string& key, const string& sval, int start, int end, unsigned nbits, const bigint_t& maxval, bigint_t& val, char *output, const uint32_t outsize)
 {
 	if (end < start)
@@ -203,17 +244,10 @@ static CCRESULT parse_hex_value(const string& fn, const string& key, const strin
 
 	for (int i = start; i <= end; ++i)
 	{
-		auto c = sval[i];
+		auto c = cc_destringify_char(base16combobin, sval[i]);
 
-		if ((c < '0' || c > '9') && (c < 'A' || c > 'F') && (c < 'a' || c > 'f'))
+		if (c > 15)
 			return error_not_hex(fn, key, output, outsize);
-
-		if (c >= 'a')
-			c -= 'a' - 10;
-		else if (c >= 'A')
-			c -= 'A' - 10;
-		else
-			c -= '0';
 
 		if (TRACE) cerr << "parse_hex_value val " << hex << val << " premax " << premax << " maxval " << maxval << dec << endl;
 
@@ -375,8 +409,8 @@ static CCRESULT parse_signed_value(const string& fn, const string& key, const st
 
 		for (unsigned i = 0; i < nbits; ++i)
 		{
-			mulBigInt(maxval, bigint_t(2UL), maxval, false);	// don't want modulo prime so input can be full 256 bits
-			addBigInt(maxval, bigint_t(1UL), maxval, false);
+			bigint_shift_up(maxval, 1);
+			addBigInt(maxval, bigint_t(1UL), maxval, false);	// don't want modulo prime so input can be full 256 bits
 			if (TRACE) cerr << "parse_signed_value i " << i << " maxval " << maxval << " " << BIGWORD(maxval, 3) << " " << BIGWORD(maxval, 2) << " " << BIGWORD(maxval, 1) << " " << BIGWORD(maxval, 0) << endl;
 		}
 	}
@@ -449,145 +483,6 @@ CCRESULT parse_int_value(const string& fn, const string& key, const string& sval
 	}
 
 	if (TRACE) cerr << "parse_int_value val " << val << " maxval " << maxval << " 0x" << hex << maxval << dec << endl;
-
-	return 0;
-}
-
-// shifts out all least significant lower bits
-// returns shift amount
-static unsigned compute_shift(const unsigned mod, bigint_t& maxval, bigint_t& val)
-{
-	unsigned shift = 0;
-
-	while (true)
-	{
-		if (val.asUnsignedLong() & 1)
-			break;
-
-		val = val / 2;
-		maxval = maxval / 2;
-
-		if (++shift == mod - 1)
-			break;
-	}
-
-	//cerr << "compute_shift " << shift << endl;
-
-	return shift;
-}
-
-#if 0 // unused
-// destroys val
-static bigint_t bitreverse(bigint_t& val, const unsigned nbits)
-{
-	bigint_t v = 0UL;
-
-	for (unsigned i = 0; i < nbits; ++i)
-	{
-		v = v * bigint_t(2UL);
-
-		if (val.asUnsignedLong() & 1)
-			v = v + bigint_t(1UL);
-
-		val = val / 2;
-	}
-
-	return v;
-}
-#endif
-
-void cc_encode(const unsigned char* table, const unsigned mod, const bigint_t& maxval, bool normalize, int nchars, const bigint_t& val, string& outs)
-{
-	// if normalize is true, the encoding is prefixed by a single char that represents the bit shift left needed to decode the value
-	// if nchars > 0, the encoding has as fixed width of nchars
-	// if nchars == 0, the encoding has the fixed width that would be required to encode maxval
-	// if nchars < 0, the encoding is variable length and ends when the remainder is zero
-
-	bigint_t v = val;
-
-	//if (nbits)
-	//	v = bitreverse(v, nbits);
-
-	bigint_t mval = maxval;
-	if (mval == 0UL)
-		subBigInt(bigint_t(0UL), bigint_t(1UL), mval, false);
-
-	//cerr << "encode mval " << hex << mval << dec << endl;
-
-	if (normalize)
-	{
-		auto shift = compute_shift(mod, mval, v);
-		outs.push_back(table[shift]);
-	}
-
-	int nc = 0;
-	while (mval)
-	{
-		outs.push_back(table[v % mod]);
-		v = v / mod;
-		mval = mval / mod;
-		nc++;
-
-		//cerr << "encode " << hex << val << " " << v << " " << mval << dec << " " << nc << " " << nchars << " " << outs << endl;
-
-		if (nc == nchars || (nchars < 0 && v == 0UL))
-			break;
-	}
-}
-
-CCRESULT cc_decode(const string& fn, const unsigned char* table, const unsigned mod, bool normalize, unsigned nchars, string& instring, bigint_t& val, char *output, const uint32_t outsize)
-{
-	val = 0UL;
-	unsigned shift = 0;
-
-	if (normalize)
-	{
-		if (instring.length() < 1)
-			return error_input_end(fn, output, outsize);
-
-		shift = decode_char(table, mod, instring[0]);
-		if (shift == (unsigned)(-1))
-			return error_invalid_char(fn, output, outsize);
-
-		//cerr << "decode shift " << shift << endl;
-	}
-
-	if (!nchars)
-	{
-		nchars = instring.find(CC_ENCODE_SEPARATOR);
-		auto nchars2 = instring.find(CC_ENCODE_SEPARATOR_ALT);
-		if (nchars2 < nchars)
-			nchars = nchars2;
-		if (nchars >= instring.length())
-			return error_input_end(fn, output, outsize);
-
-		nchars -= normalize;
-	}
-
-	//cerr << "decode " << nchars << " " << instring << endl;
-
-	if (instring.length() < nchars + normalize)
-		return error_input_end(fn, output, outsize);
-
-	string sval = instring.substr(normalize, nchars);
-	instring = instring.substr(nchars + normalize);
-
-	//cerr << "decode " << sval << endl;
-
-	while (sval.size())
-	{
-		auto c = decode_char(table, mod, sval.back());
-		sval.pop_back();
-
-		if (c == (unsigned)(-1))
-			return error_invalid_char(fn, output, outsize);
-
-		mulBigInt(val, bigint_t((unsigned long)(mod)), val, false);
-		addBigInt(val, bigint_t((unsigned long)(c)), val, false);
-	}
-
-	for (unsigned i = 0; i < shift; ++i)
-		mulBigInt(val, bigint_t(2UL), val, false);
 
 	return 0;
 }

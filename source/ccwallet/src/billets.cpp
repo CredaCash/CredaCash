@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * billets.cpp
 */
@@ -37,32 +37,49 @@ void Billet::Clear()
 
 void Billet::Copy(const Billet& other)
 {
-	memcpy(this, &other, sizeof(*this));
+	memcpy((void*)this, &other, sizeof(*this));
+}
+
+string Billet::StatusString(unsigned status)
+{
+	static const char *statusstr[BILL_STATUS_INVALID + 1] =
+	{
+		"VOID",
+		"Error", "Abandoned",
+		"Pending", "Preallocated", "Sent", "Cleared",
+		"Allocated", "Spent",
+		"INVALID"
+	};
+
+	if (status > BILL_STATUS_INVALID)
+		status = BILL_STATUS_INVALID;
+
+	return statusstr[status];
 }
 
 string Billet::DebugString() const
 {
 	ostringstream out;
 
-	out << "id " << id;
-	out << " status " << status;
+	out << "Billet";
+	out << " id " << id;
+	out << " status " << status << " = " << StatusString();
 	out << " flags " << hex << flags << dec;
 	out << " create_tx " << create_tx;
 	out << " dest_id " << dest_id;
 	out << " blockchain " << blockchain;
-	out << " pool " << pool;
-	out << hex;
-	out << " address " << address;
+	out << " domain " << domain;
+	out << " address " << buf2hex(&address, TX_ADDRESS_BYTES);
 	out << " asset " << asset;
+	out << " amount " << amount;
 	out << " amount_fp " << amount_fp;
-	out << " amount " << dec << amount << hex;
-	out << " delaytime " << dec << delaytime << hex;
-	out << " commit_iv " << commit_iv;
-	out << " commitment " << commitment;
-	out << " commitnum " << dec << commitnum << hex;
-	out << " serialnum " << serialnum;
-	out << " spend_hashkey " << spend_hashkey;
-	out << " spend_tx_commitnum " << dec << spend_tx_commitnum;
+	out << " delaytime " << delaytime;
+	out << " commit_iv " << buf2hex(&commit_iv, TX_COMMIT_IV_BYTES);
+	out << " commitment " << buf2hex(&commitment, TX_COMMITMENT_BYTES);
+	out << " commitnum " << commitnum;
+	out << " serialnum " << buf2hex(&serialnum, TX_SERIALNUM_BYTES);
+	out << " spend_hashkey " << buf2hex(&spend_hashkey, TX_HASHKEY_BYTES);
+	out << " spend_tx_commitnum " << spend_tx_commitnum;
 
 	return out.str();
 }
@@ -103,7 +120,7 @@ void Billet::SetFromTxOut(const TxPay& ts, const TxOut& txout)
 	dest_id = txout.addrparams.__dest_id;
 	blockchain = txout.addrparams.dest_chain;
 	address = txout.M_address;
-	pool = txout.M_pool;
+	domain = txout.M_domain;
 	asset = txout.__asset;
 	amount_fp = txout.__amount_fp;
 	delaytime = 0;	// eventually, compute this from destination and whether spend and/or trust secrets are known
@@ -115,25 +132,28 @@ void Billet::SetFromTxOut(const TxPay& ts, const TxOut& txout)
 
 int Billet::PollUnspent(DbConn *dbconn, TxQuery& txquery)
 {
-	BOOST_LOG_TRIVIAL(trace) << "Billet::PollUnspent";
+	BOOST_LOG_TRIVIAL(trace) << "Billet::PollUnspent"; //@retest
 
-	bigint_t amount = 0UL;
-	uint64_t next_id = 0;
+	bigint_t last_amount = 0UL;
+	uint64_t last_id = INT64_MAX;
 	Billet bill;
 	bigint_t total = 0UL;
 
 	while (true)
 	{
-		auto rc = dbconn->BilletSelectUnspent(amount, next_id, bill);
+		auto rc = dbconn->BilletSelectUnspent(last_amount, last_id, bill);
 		if (rc > 0)
 			break;
 		if (rc || g_shutdown)
 			return -1;
 
-		amount = bill.amount;
-		next_id = bill.id + 1;
+		last_amount = bill.amount;
+		last_id = bill.id;
 
-		CCASSERT(bill.status == BILL_STATUS_CLEARED || bill.status == BILL_STATUS_ALLOCATED);
+		CCASSERT(bill.BillIsUnspent());
+
+		if (bill.status != BILL_STATUS_CLEARED && bill.status != BILL_STATUS_ALLOCATED)
+			continue;
 
 		rc = Billet::CheckIfBilletsSpent(dbconn, txquery, &bill, 1);
 		if (rc < 0)
@@ -145,11 +165,12 @@ int Billet::PollUnspent(DbConn *dbconn, TxQuery& txquery)
 
 	BOOST_LOG_TRIVIAL(info) << "Billet::PollUnspent unspent total = " << total;
 
-	if (g_interactive)
+	if (IsInteractive())
 	{
 		string amount;
 		amount_to_string(0, total, amount);
-		lock_guard<FastSpinLock> lock(g_cout_lock);
+		lock_guard<mutex> lock(g_cerr_lock);
+		check_cerr_newline();
 		cerr << "Total amount of the unspent billets: " << amount << "\n" << endl;
 	}
 
@@ -158,7 +179,7 @@ int Billet::PollUnspent(DbConn *dbconn, TxQuery& txquery)
 
 int Billet::ResetAllocated(DbConn *dbconn, bool reset_balance)
 {
-	BOOST_LOG_TRIVIAL(trace) << "Billet::ResetAllocated reset_balance " << reset_balance;
+	BOOST_LOG_TRIVIAL(trace) << "Billet::ResetAllocated reset_balance " << reset_balance; //@retest
 
 	auto rc = dbconn->BeginWrite();
 	if (rc)
@@ -170,9 +191,10 @@ int Billet::ResetAllocated(DbConn *dbconn, bool reset_balance)
 
 	Finally finally(boost::bind(&DbConn::DoDbFinishTx, dbconn, 1));		// 1 = rollback
 
-	if (g_interactive)
+	if (IsInteractive())
 	{
-		lock_guard<FastSpinLock> lock(g_cout_lock);
+		lock_guard<mutex> lock(g_cerr_lock);
+		check_cerr_newline();
 		cerr <<
 
 R"(Releasing all billets allocated to pending transactions. This should only be used as a last resort and may result in
@@ -184,24 +206,27 @@ conflicting (double-spend) transactions.)"
 	rc = dbconn->BilletsResetAllocated(reset_balance);
 	if (rc) return rc;
 
-	bigint_t amount = 0UL;
-	uint64_t next_id = 0;
+	bigint_t last_amount = 0UL;
+	uint64_t last_id = INT64_MAX;
 	Billet bill;
 	unsigned delaytime = 0;
 	bigint_t total = 0UL;
 
 	while (reset_balance)
 	{
-		auto rc = dbconn->BilletSelectUnspent(amount, next_id, bill);
+		auto rc = dbconn->BilletSelectUnspent(last_amount, last_id, bill);
 		if (rc > 0)
 			break;
 		if (rc || g_shutdown)
 			return -1;
 
-		amount = bill.amount;
-		next_id = bill.id + 1;
+		last_amount = bill.amount;
+		last_id = bill.id;
 
-		CCASSERT(bill.status == BILL_STATUS_CLEARED || bill.status == BILL_STATUS_ALLOCATED);
+		CCASSERT(bill.BillIsUnspent());
+
+		if (bill.status != BILL_STATUS_CLEARED)
+			continue;
 
 		if (!bill.asset)
 			total = total + bill.amount;
@@ -220,11 +245,12 @@ conflicting (double-spend) transactions.)"
 	{
 		BOOST_LOG_TRIVIAL(info) << "Billet::ResetAllocated unspent total = " << total;
 
-		if (g_interactive)
+		if (IsInteractive())
 		{
 			string amount;
 			amount_to_string(0, total, amount);
-			lock_guard<FastSpinLock> lock(g_cout_lock);
+			lock_guard<mutex> lock(g_cerr_lock);
+			check_cerr_newline();
 			cerr << "Total amount of the unspent billets: " << amount << "\n" << endl;
 		}
 	}
@@ -311,7 +337,6 @@ int Billet::SetStatusCleared(DbConn *dbconn, uint64_t _commitnum)
 	{
 		SpendSecrets txsecrets;
 		SpendSecretParams params;
-		memset((void*)&params, 0, sizeof(params));
 
 		auto rc = Secret::GetParentValue(dbconn, SECRET_TYPE_MONITOR, dest_id, params, &txsecrets[0], sizeof(txsecrets));
 		if (rc) return rc;
@@ -350,9 +375,9 @@ int Billet::SetStatusSpent(DbConn *dbconn, const bigint_t& hashkey, uint64_t tx_
 {
 	// must be called from inside a BeginWrite
 
-	if (status == BILL_STATUS_ERROR) BOOST_LOG_TRIVIAL(error) << "Billet::SetStatusSpent with BILL_STATUS_ERROR;" << DebugString() << " hashkey " << hex << hashkey << dec << " tx_commitnum " << tx_commitnum; // !!! this should maybe log at warning level
-	else if (!hashkey) BOOST_LOG_TRIVIAL(info) << "Billet::SetStatusSpent hashkey is zero;" << DebugString() << " hashkey " << hex << hashkey << dec << " tx_commitnum " << tx_commitnum; // !!! this should maybe log at warning level
-	else if (TRACE_BILLETS) BOOST_LOG_TRIVIAL(trace) << "Billet::SetStatusSpent " << DebugString() << " hashkey " << hex << hashkey << dec << " tx_commitnum " << tx_commitnum;
+	if (status == BILL_STATUS_ERROR) BOOST_LOG_TRIVIAL(error) << "Billet::SetStatusSpent with BILL_STATUS_ERROR;" << DebugString() << " hashkey " << buf2hex(&hashkey, TX_HASHKEY_BYTES) << " tx_commitnum " << tx_commitnum; // !!! this should maybe log at warning level
+	else if (!hashkey) BOOST_LOG_TRIVIAL(info) << "Billet::SetStatusSpent hashkey is zero;" << DebugString() << " hashkey " << hashkey << " tx_commitnum " << tx_commitnum; // !!! this should maybe log at warning level
+	else if (TRACE_BILLETS) BOOST_LOG_TRIVIAL(trace) << "Billet::SetStatusSpent " << DebugString() << " hashkey " << buf2hex(&hashkey, TX_HASHKEY_BYTES) << " tx_commitnum " << tx_commitnum;
 
 	if (status == BILL_STATUS_ALLOCATED)
 	{
@@ -379,7 +404,7 @@ int Billet::SetStatusSpent(DbConn *dbconn, const bigint_t& hashkey, uint64_t tx_
 
 	uint64_t tx_id = 0;
 
-	while (true)
+	while (tx_id <= INT64_MAX)
 	{
 		bigint_t check_hashkey;
 		uint64_t check_tx_commitnum;
@@ -390,7 +415,7 @@ int Billet::SetStatusSpent(DbConn *dbconn, const bigint_t& hashkey, uint64_t tx_
 		if (rc)
 			break;
 
-		if (TRACE_BILLETS) BOOST_LOG_TRIVIAL(trace) << "Billet::CheckConflicts bill id " << id << " returned tx_id " << tx_id << " hashkey " << hex << check_hashkey << dec << " tx_commitnum " << check_tx_commitnum;
+		if (TRACE_BILLETS) BOOST_LOG_TRIVIAL(trace) << "Billet::SetStatusSpent bill id " << id << " returned tx_id " << tx_id << " hashkey " << buf2hex(&check_hashkey, TX_HASHKEY_BYTES) << " tx_commitnum " << check_tx_commitnum;
 
 		if (check_hashkey != hashkey || (check_tx_commitnum && tx_commitnum && check_tx_commitnum != tx_commitnum))
 		{
@@ -518,22 +543,23 @@ int Billet::WaitNewBillet(uint64_t last_count, uint32_t seconds)
 
 	if (TRACE_BILLETS) BOOST_LOG_TRIVIAL(debug) << "Billet::WaitNewBillet last_count " << last_count << " seconds " << seconds;
 
-	unique_lock<mutex> lock(billet_available_mutex);
+	auto start = ccticks();
 
-	if (g_shutdown) return -1;
+	while (ccticks_elapsed(start, ccticks()) < (int)seconds * CCTICKS_PER_SEC)
+	{
+		unique_lock<mutex> lock(billet_available_mutex);
 
-	if (last_count != billet_available_count)
-		return 0;
+		if (g_shutdown) return -1;
 
-	//cerr << "WaitNewBillet" << endl;
+		if (last_count != billet_available_count)
+			return 0;
 
-	auto until = chrono::steady_clock::now() + chrono::seconds(seconds);
+		//cerr << "WaitNewBillet" << endl;
 
-	auto rc = billet_available_condition_variable.wait_until(lock, until);
+		billet_available_condition_variable.wait_for(lock, chrono::seconds(1));
+	}
 
-	if (g_shutdown) return -1;
-
-	return (rc != cv_status::no_timeout);
+	return 1;
 }
 
 void Billet::Shutdown()

@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * walletdb-billet-spends.cpp
 */
@@ -13,7 +13,8 @@
 #include <dblog.h>
 #include <CCparams.h>
 
-#define TRACE_DBCONN	(g_params.trace_db)
+#define TRACE_DB_READ	(g_params.trace_db_reads)
+#define TRACE_DB_WRITE	(g_params.trace_db_writes)
 
 using namespace snarkfront;
 
@@ -22,7 +23,7 @@ int DbConn::BilletSpendInsert(uint64_t id, uint64_t bill_id, const void *hashkey
 	//lock_guard<boost::shared_mutex> lock(db_mutex);
 	Finally finally(boost::bind(&DbConn::DoDbFinish, this));
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::BilletSpendInsert tx " << id << " bill " << bill_id << " hashkey " << hex << hashkey << dec << " tx_commitnum " << tx_commitnum;
+	if (TRACE_DB_WRITE) BOOST_LOG_TRIVIAL(trace) << "DbConn::BilletSpendInsert tx " << id << " bill " << bill_id << " hashkey " << buf2hex(hashkey, TX_HASHKEY_BYTES) << " tx_commitnum " << tx_commitnum;
 
 	CCASSERT(id);
 	CCASSERT(bill_id);
@@ -52,7 +53,7 @@ int DbConn::BilletSpendInsert(uint64_t id, uint64_t bill_id, const void *hashkey
 
 	if (dbresult(rc) == SQLITE_CONSTRAINT)
 	{
-		BOOST_LOG_TRIVIAL(warning) << "DbConn::BilletSpendInsert constraint violation tx " << id << " bill " << bill_id << " hashkey " << hex << hashkey << dec << " tx_commitnum " << tx_commitnum;
+		BOOST_LOG_TRIVIAL(warning) << "DbConn::BilletSpendInsert constraint violation tx " << id << " bill " << bill_id << " hashkey " << buf2hex(hashkey, TX_HASHKEY_BYTES) << " tx_commitnum " << tx_commitnum;
 
 		return 1;
 	}
@@ -63,12 +64,12 @@ int DbConn::BilletSpendInsert(uint64_t id, uint64_t bill_id, const void *hashkey
 
 	if (changes != 1)
 	{
-		BOOST_LOG_TRIVIAL(error) << "DbConn::BilletSpendInsert sqlite3_changes " << changes << " after insert tx " << id << " bill " << bill_id << " hashkey " << hex << hashkey << dec << " tx_commitnum " << tx_commitnum;
+		BOOST_LOG_TRIVIAL(error) << "DbConn::BilletSpendInsert sqlite3_changes " << changes << " after insert tx " << id << " bill " << bill_id << " hashkey " << buf2hex(hashkey, TX_HASHKEY_BYTES) << " tx_commitnum " << tx_commitnum;
 
 		return -1;
 	}
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(debug) << "DbConn::BilletSpendInsert inserted tx " << id << " bill " << bill_id << " hashkey " << hex << hashkey << dec << " tx_commitnum " << tx_commitnum;
+	if (TRACE_DB_WRITE) BOOST_LOG_TRIVIAL(debug) << "DbConn::BilletSpendInsert inserted tx " << id << " bill " << bill_id << " hashkey " << buf2hex(hashkey, TX_HASHKEY_BYTES) << " tx_commitnum " << tx_commitnum;
 
 	return 0;
 }
@@ -78,7 +79,7 @@ int DbConn::BilletSpendSelect(sqlite3_stmt *select, uint64_t &tx_id, uint64_t &b
 	int rc;
 
 	if (hashkey)
-		memset((void*)hashkey, 0, sizeof(*hashkey));
+		hashkey->clear();
 	if (tx_commitnum)
 		*tx_commitnum = 0;
 
@@ -93,22 +94,22 @@ int DbConn::BilletSpendSelect(sqlite3_stmt *select, uint64_t &tx_id, uint64_t &b
 
 	if (dbresult(rc) == SQLITE_DONE)
 	{
-		if (expect_row) BOOST_LOG_TRIVIAL(warning) << "DbConn::BilletSpendSelect select returned SQLITE_DONE";
-		else if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::BilletSpendSelect select returned SQLITE_DONE";
+		if (expect_row) BOOST_LOG_TRIVIAL(warning) << "DbConn::BilletSpendSelect returned SQLITE_DONE";
+		else if (TRACE_DB_READ) BOOST_LOG_TRIVIAL(trace) << "DbConn::BilletSpendSelect returned SQLITE_DONE";
 
 		return 1;
 	}
 
 	if (dbresult(rc) != SQLITE_ROW)
 	{
-		BOOST_LOG_TRIVIAL(error) << "DbConn::BilletSpendSelect select returned " << rc;
+		BOOST_LOG_TRIVIAL(error) << "DbConn::BilletSpendSelect returned " << rc;
 
 		return -1;
 	}
 
 	if (sqlite3_data_count(select) != 4)
 	{
-		BOOST_LOG_TRIVIAL(error) << "DbConn::BilletSpendSelect select returned " << sqlite3_data_count(select) << " columns";
+		BOOST_LOG_TRIVIAL(error) << "DbConn::BilletSpendSelect returned " << sqlite3_data_count(select) << " columns";
 
 		return -1;
 	}
@@ -120,13 +121,13 @@ int DbConn::BilletSpendSelect(sqlite3_stmt *select, uint64_t &tx_id, uint64_t &b
 	if (required_id && required_id != _bill_id)
 	{
 		if (expect_row) BOOST_LOG_TRIVIAL(warning) << "DbConn::BilletSpendSelect result bill_id " << _bill_id << " != required_id " << required_id << " returning SQLITE_DONE";
-		else if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::BilletSpendSelect result bill_id " << _bill_id << " != required_id " << required_id << " returning SQLITE_DONE";
+		else if (TRACE_DB_READ) BOOST_LOG_TRIVIAL(trace) << "DbConn::BilletSpendSelect result bill_id " << _bill_id << " != required_id " << required_id << " returning SQLITE_DONE";
 
 		return 1;
 	}
 
 	auto hashkey_blob = sqlite3_column_blob(select, 2);
-	unsigned hashkey_size = sqlite3_column_bytes(select, 2);
+	auto hashkey_size = sqlite3_column_bytes(select, 2);
 	uint64_t _tx_commitnum = sqlite3_column_int64(select, 3);
 
 	if (!hashkey_blob)
@@ -138,7 +139,7 @@ int DbConn::BilletSpendSelect(sqlite3_stmt *select, uint64_t &tx_id, uint64_t &b
 
 	if (hashkey_size != TX_HASHKEY_BYTES)
 	{
-		BOOST_LOG_TRIVIAL(warning) << "DbConn::BilletSpendSelect select returned hashkey size " << hashkey_size << " != " << TX_HASHKEY_BYTES;
+		BOOST_LOG_TRIVIAL(warning) << "DbConn::BilletSpendSelect returned hashkey size " << hashkey_size << " != " << TX_HASHKEY_BYTES;
 
 		return -1;
 	}
@@ -159,7 +160,7 @@ int DbConn::BilletSpendSelect(sqlite3_stmt *select, uint64_t &tx_id, uint64_t &b
 	if (tx_commitnum)
 		*tx_commitnum = _tx_commitnum;
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(debug) << "DbConn::BilletSpendSelect returning tx_id " << tx_id << " bill_id " << bill_id << " hashkey " << hex << *(bigint_t*)hashkey_blob << dec << " tx_commitnum " << _tx_commitnum;
+	if (TRACE_DB_READ) BOOST_LOG_TRIVIAL(debug) << "DbConn::BilletSpendSelect returning tx_id " << tx_id << " bill_id " << bill_id << " hashkey " << buf2hex(hashkey_blob, TX_HASHKEY_BYTES) << " tx_commitnum " << _tx_commitnum;
 
 	return 0;
 }
@@ -169,9 +170,9 @@ int DbConn::BilletSpendSelectBillet(uint64_t bill_id, uint64_t &tx_id, bigint_t 
 	//boost::shared_lock<boost::shared_mutex> lock(db_mutex);
 	Finally finally(boost::bind(&DbConn::DoDbFinish, this));
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConn::BilletSpendSelectBillet bill_id " << bill_id << " tx_id " << tx_id;
+	if (TRACE_DB_READ) BOOST_LOG_TRIVIAL(trace) << "DbConn::BilletSpendSelectBillet bill_id " << bill_id << " tx_id " << tx_id;
 
-	// Billet, >= SpendTx
+	// Billet, SpendTx >=
 	if (dblog(sqlite3_bind_int64(Billet_Spends_select_billet, 1, bill_id))) return -1;
 	if (dblog(sqlite3_bind_int64(Billet_Spends_select_billet, 2, tx_id))) return -1;
 

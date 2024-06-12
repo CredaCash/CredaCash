@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * transaction.h
 */
@@ -22,7 +22,7 @@ class CCObject;
 
 void tx_init(TxPay& tx);
 CCRESULT txpay_create_finish(const string& fn, TxPay& tx, char *output, const uint32_t outsize);
-CCRESULT txpay_to_wire(const string& fn, const TxPay& tx, unsigned err_check, char *output, const uint32_t outsize, char *binbuf, const uint32_t binsize);
+CCRESULT txpay_to_wire(const string& fn, TxPay& tx, unsigned err_check, char *output, const uint32_t outsize, char *binbuf, const uint32_t binsize, uint32_t *pbufpos = NULL);
 
 uint64_t txpay_param_level_from_wire(const CCObject *obj);
 
@@ -43,6 +43,9 @@ unsigned tx_amount_decode_exponent(uint64_t amount, unsigned exponent_bits);
 
 void tx_amount_decode(uint64_t amount, snarkfront::bigint_t& result, bool is_donation, unsigned amount_bits, unsigned exponent_bits);
 uint64_t tx_amount_encode(const snarkfront::bigint_t& amount, bool is_donation, unsigned amount_bits, unsigned exponent_bits, unsigned min_exponent = 0, unsigned max_exponent = -1, unsigned rounding = -1);
+
+uint64_t tx_amount_max(unsigned amount_bits, unsigned exponent_bits, unsigned max_exponent);
+void tx_amount_max(snarkfront::bigint_t& result, unsigned amount_bits, unsigned exponent_bits, unsigned max_exponent);
 
 void tx_set_commit_iv(TxPay& tx);
 

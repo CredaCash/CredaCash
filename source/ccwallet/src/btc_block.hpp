@@ -1,12 +1,14 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * btc_block.hpp
 */
 
 #pragma once
+
+#include <SpinLock.hpp>
 
 class DbConn;
 
@@ -21,7 +23,8 @@ public:
 	BtcBlock()
 	 :	m_current_block(0),
 		m_reported(true),
-		m_used(false)
+		m_used(false),
+		m_lock(__FILE__, __LINE__)
 	{ }
 
 	int Init(DbConn *dbconn);

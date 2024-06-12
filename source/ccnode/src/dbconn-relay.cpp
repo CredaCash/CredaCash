@@ -1,17 +1,19 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * dbconn-relay.cpp
 */
 
 #include "ccnode.h"
 #include "dbconn.hpp"
+#include "seqnum.hpp"
 #include "witness.hpp"
 
 #include <dblog.h>
 #include <CCobjects.hpp>
+#include <xtransaction.hpp>
 
 #define TRACE_DBCONN	(g_params.trace_relay_db)
 
@@ -24,9 +26,6 @@
 #define RELAY_DOWLOAD_RETRY_SECS			5
 #define RELAY_DOWLOAD_RETRY_BYTES_PER_SEC	2000
 #define RELAY_DOWNLOAD_TIME_MAX				15
-
-static atomic<int64_t> g_relay_block_seqnum(VALID_BLOCK_SEQNUM_START);
-static atomic<int64_t> g_relay_tx_seqnum(1);
 
 static mutex Relay_Objs_db_mutex;	// to avoid inconsistency problems with shared cache
 
@@ -43,17 +42,17 @@ DbConnRelayObjs::DbConnRelayObjs()
 	CCASSERTZ(dblog(sqlite3_prepare_v2(Relay_Objs_db, "begin exclusive;", -1, &Relay_Objs_begin, NULL)));
 	CCASSERTZ(dblog(sqlite3_prepare_v2(Relay_Objs_db, "rollback;", -1, &Relay_Objs_rollback, NULL)));
 	CCASSERTZ(dblog(sqlite3_prepare_v2(Relay_Objs_db, "commit;", -1, &Relay_Objs_commit, NULL)));
-	CCASSERTZ(dblog(sqlite3_prepare_v2(Relay_Objs_db, "select Seqnum, Status from Relay_Objs where ObjId = ?1;", -1, &Relay_Objs_select_seqnum, NULL)));
+	CCASSERTZ(dblog(sqlite3_prepare_v2(Relay_Objs_db, "select Seqnum, Status from Relay_Objs where ObjId = ?1;", -1, &Relay_Objs_select_objid, NULL)));
 	CCASSERTZ(dblog(sqlite3_prepare_v2(Relay_Objs_db, "insert into Relay_Objs (Seqnum, Time, ObjId, Status) values (?1, ?2, ?3, ?4);", -1, &Relay_Objs_insert, NULL)));
 #if TEST_SEND_TO_SELF
 	// for testing the relay: download objects even if they're already been downloaded:
 	#error needs to be implemented
 #else
-	CCASSERTZ(dblog(sqlite3_prepare_v2(Relay_Objs_db, "select Seqnum, Time, ObjId, Size, Level, PriorOid, Witness from Relay_Peers, Relay_Objs using (Seqnum) where Peer = ?1 and PeerStatus = " STRINGIFY(RELAY_PEER_STATUS_READY) " and Status = " STRINGIFY(RELAY_STATUS_ANNOUNCED) " and (Seqnum < 0 or (Seqnum > 0 and Level <= ?2)) and strftime('%s','now') >= Timeout order by Seqnum limit ?3;", -1, &Relay_Objs_select_download, NULL)));
+	CCASSERTZ(dblog(sqlite3_prepare_v2(Relay_Objs_db, "select Seqnum, Time, ObjId, Size, Level, PriorOid, Witness from Relay_Peers, Relay_Objs using (Seqnum) where Peer = ?1 and PeerStatus = " STRINGIFY(RELAY_PEER_STATUS_READY) " and Status = " STRINGIFY(RELAY_STATUS_ANNOUNCED) " and (Seqnum <= " STRINGIFY(BLOCK_SEQNUM_MAX) " or (Seqnum > " STRINGIFY(BLOCK_SEQNUM_MAX) " and Level <= ?2)) and strftime('%s','now') >= Timeout order by Seqnum limit ?3;", -1, &Relay_Objs_select_download, NULL)));
 #endif
 	CCASSERTZ(dblog(sqlite3_prepare_v2(Relay_Objs_db, "update Relay_Objs set Status = ?2, Timeout = strftime('%s','now') + ?3 where ObjId = ?1;", -1, &Relay_Objs_update, NULL)));
 
-	CCASSERTZ(dblog(sqlite3_prepare_v2(Relay_Objs_db, "select Seqnum, Time from Relay_Objs where Seqnum between ?1 and ?2 order by Seqnum limit 1;", -1, &Relay_Objs_select_oldest, NULL)));
+	CCASSERTZ(dblog(sqlite3_prepare_v2(Relay_Objs_db, "select Seqnum, ObjId, Time from Relay_Objs where Seqnum between ?1 and ?2 order by Seqnum limit 1;", -1, &Relay_Objs_select_oldest, NULL)));
 	CCASSERTZ(dblog(sqlite3_prepare_v2(Relay_Objs_db, "delete from Relay_Objs where Seqnum = ?1;", -1, &Relay_Objs_delete_seqnum, NULL)));
 	CCASSERTZ(dblog(sqlite3_prepare_v2(Relay_Objs_db, "delete from Relay_Objs where ObjId = ?1;", -1, &Relay_Objs_delete_oid, NULL)));
 
@@ -86,7 +85,7 @@ DbConnRelayObjs::~DbConnRelayObjs()
 	DbFinalize(Relay_Objs_begin, explain);
 	DbFinalize(Relay_Objs_rollback, explain);
 	DbFinalize(Relay_Objs_commit, explain);
-	DbFinalize(Relay_Objs_select_seqnum, explain);
+	DbFinalize(Relay_Objs_select_objid, explain);
 	DbFinalize(Relay_Objs_insert, explain);
 	DbFinalize(Relay_Objs_select_download, explain);
 	DbFinalize(Relay_Objs_update, explain);
@@ -111,7 +110,7 @@ void DbConnRelayObjs::DoRelayObjsFinish(bool rollback)
 
 	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnRelayObjs::DoRelayObjsFinish dbconn " << uintptr_t(this) << " rollback " << rollback;
 
-	sqlite3_reset(Relay_Objs_select_seqnum);
+	sqlite3_reset(Relay_Objs_select_objid);
 	sqlite3_reset(Relay_Objs_insert);
 	sqlite3_reset(Relay_Objs_select_download);
 	sqlite3_reset(Relay_Objs_update);
@@ -143,7 +142,7 @@ void DbConnRelayObjs::RelayObjsInsert(unsigned peer, unsigned type, const relay_
 	lock_guard<mutex> lock(Relay_Objs_db_mutex);	// sql statements must be reset before lock is released
 	Finally finally(boost::bind(&DbConnRelayObjs::DoRelayObjsFinish, this, 1));		// 1 = rollback
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnRelayObjs::RelayObjsInsert peer Conn " << peer << " type " << type << " oid " << buf2hex(&req_params.oid, sizeof(ccoid_t)) << " size " << req_params.size << " level " << req_params.level << " obj status " << obj_status << " peer status " << peer_status;
+	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnRelayObjs::RelayObjsInsert peer Conn " << peer << " type " << type << " oid " << buf2hex(&req_params.oid, CC_OID_TRACE_SIZE) << " size " << req_params.size << " level " << req_params.level << " obj status " << obj_status << " peer status " << peer_status;
 
 	// BEGIN
 
@@ -151,12 +150,12 @@ void DbConnRelayObjs::RelayObjsInsert(unsigned peer, unsigned type, const relay_
 
 	// check if ObjId already in db
 
-	if (dblog(sqlite3_bind_blob(Relay_Objs_select_seqnum, 1, &req_params.oid, sizeof(ccoid_t), SQLITE_STATIC))) return;
+	if (dblog(sqlite3_bind_blob(Relay_Objs_select_objid, 1, &req_params.oid, sizeof(ccoid_t), SQLITE_STATIC))) return;
 
 	int rc;
 	int64_t seqnum;
 
-	if (dblog(rc = sqlite3_step(Relay_Objs_select_seqnum), DB_STMT_SELECT)) return;
+	if (dblog(rc = sqlite3_step(Relay_Objs_select_objid), DB_STMT_SELECT)) return;
 
 	if (RandTest(RTEST_DB_ERRORS))
 	{
@@ -167,17 +166,17 @@ void DbConnRelayObjs::RelayObjsInsert(unsigned peer, unsigned type, const relay_
 
 	if (dbresult(rc) == SQLITE_ROW)
 	{
-		if (sqlite3_data_count(Relay_Objs_select_seqnum) != 2)
+		if (sqlite3_data_count(Relay_Objs_select_objid) != 2)
 		{
-			BOOST_LOG_TRIVIAL(error) << "DbConnRelayObjs::RelayObjsInsert Relay_Objs_select_seqnum returned " << sqlite3_data_count(Relay_Objs_select_seqnum) << " columns";
+			BOOST_LOG_TRIVIAL(error) << "DbConnRelayObjs::RelayObjsInsert Relay_Objs_select_objid returned " << sqlite3_data_count(Relay_Objs_select_objid) << " columns";
 
 			return;
 		}
 
 		// fetch existing Seqnum
 
-		seqnum = sqlite3_column_int64(Relay_Objs_select_seqnum, 0);
-		obj_status = sqlite3_column_int(Relay_Objs_select_seqnum, 1);
+		seqnum = sqlite3_column_int64(Relay_Objs_select_objid, 0);
+		obj_status = sqlite3_column_int(Relay_Objs_select_objid, 1);
 
 		if (dblog(sqlite3_extended_errcode(Relay_Objs_db), DB_STMT_SELECT)) return;	// check if error retrieving results
 
@@ -195,9 +194,13 @@ void DbConnRelayObjs::RelayObjsInsert(unsigned peer, unsigned type, const relay_
 		// add ObjId to db with new Seqnum
 
 		if (type == CC_TYPE_BLOCK)
-			seqnum = g_relay_block_seqnum.fetch_add(1);
+			seqnum = g_seqnum[BLOCKSEQ][RELAYSEQ].NextNum();
+		else if (Xtx::TypeIsXreq(type))
+			seqnum = g_seqnum[XREQSEQ][RELAYSEQ].NextNum();
 		else
-			seqnum = g_relay_tx_seqnum.fetch_add(1);
+			seqnum = g_seqnum[TXSEQ][RELAYSEQ].NextNum();
+
+		if (!seqnum) return;
 
 		auto ticks = ccticks();
 
@@ -209,11 +212,11 @@ void DbConnRelayObjs::RelayObjsInsert(unsigned peer, unsigned type, const relay_
 
 		if (dblog(sqlite3_step(Relay_Objs_insert), DB_STMT_STEP)) return;
 
-		if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnRelayObjs::RelayObjsInsert adding new seqnum " << seqnum << " for obj tag " << type << " announced " << ticks;
+		if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnRelayObjs::RelayObjsInsert adding new seqnum " << seqnum << " for obj tag type " << type << " announced " << ticks;
 	}
 	else
 	{
-		BOOST_LOG_TRIVIAL(error) << "DbConnRelayObjs::RelayObjsInsert Relay_Objs_select_seqnum returned " << rc;
+		BOOST_LOG_TRIVIAL(error) << "DbConnRelayObjs::RelayObjsInsert Relay_Objs_select_objid returned " << rc;
 
 		return;
 	}
@@ -238,6 +241,7 @@ void DbConnRelayObjs::RelayObjsInsert(unsigned peer, unsigned type, const relay_
 		}
 
 		auto rc = sqlite3_step(Relay_Peers_insert);
+
 		if (dbresult(rc) == SQLITE_CONSTRAINT)
 		{
 			// peer sent CC_MSG_HAVE_BLOCK or CC_MSG_HAVE_TX more than once?
@@ -267,7 +271,7 @@ void DbConnRelayObjs::RelayObjsInsert(unsigned peer, unsigned type, const relay_
 	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnRelayObjs::RelayObjsInsert success";
 }
 
-int DbConnRelayObjs::RelayObjsFindDownloads(unsigned conn_index, uint64_t tx_level_max, uint8_t *output, unsigned bufsize, relay_request_param_buf_t& req_params, int maxobjs, int64_t bytes_pending, bool &have_blocks, unsigned &nobjs, unsigned &nbytes)
+int DbConnRelayObjs::RelayObjsFindDownloads(unsigned conn_index, uint64_t last_indelible_level, uint8_t *output, unsigned bufsize, relay_request_param_buf_t& req_params, int maxobjs, int64_t bytes_pending, bool &have_blocks, unsigned &nobjs, unsigned &nbytes)
 {
 	have_blocks = false;
 	nobjs = 0;
@@ -305,13 +309,13 @@ int DbConnRelayObjs::RelayObjsFindDownloads(unsigned conn_index, uint64_t tx_lev
 	// SELECT entries from Relay_Objs --> Peer, maxobj
 
 	if (dblog(sqlite3_bind_int64(Relay_Objs_select_download, 1, conn_index))) return -1;
-	if (dblog(sqlite3_bind_int64(Relay_Objs_select_download, 2, tx_level_max))) return -1;
+	if (dblog(sqlite3_bind_int64(Relay_Objs_select_download, 2, last_indelible_level))) return -1;
 	if (dblog(sqlite3_bind_int(Relay_Objs_select_download, 3, maxobjs))) return -1;
 
 	int nfound = 0;
 	uint32_t bufpos = 0;
 
-	while (nfound < maxobjs)
+	while (nfound < maxobjs && !g_shutdown)
 	{
 		int rc;
 
@@ -350,7 +354,7 @@ int DbConnRelayObjs::RelayObjsFindDownloads(unsigned conn_index, uint64_t tx_lev
 		auto priorid_blob = sqlite3_column_blob(Relay_Objs_select_download, 5);
 		auto witness = sqlite3_column_int(Relay_Objs_select_download, 6);
 
-		if (seqnum < 0)
+		if (seqnum <= BLOCK_SEQNUM_MAX)
 			have_blocks = true;
 		else if (have_blocks)	// don't mix Blocks and Tx's
 			break;
@@ -387,7 +391,7 @@ int DbConnRelayObjs::RelayObjsFindDownloads(unsigned conn_index, uint64_t tx_lev
 		total_size += size;
 		timeout = RELAY_DOWLOAD_RETRY_SECS + total_size/RELAY_DOWLOAD_RETRY_BYTES_PER_SEC;
 
-		if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnRelayObjs::RelayObjsFindDownloads found seqnum " << seqnum << " announced " << announce_ticks << " peer Conn " << conn_index << " oid " << buf2hex(objid_blob, sizeof(ccoid_t)) << " size " << size << " total size " << total_size << " timeout " << timeout;
+		if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnRelayObjs::RelayObjsFindDownloads found seqnum " << seqnum << " announced " << announce_ticks << " peer Conn " << conn_index << " oid " << buf2hex(objid_blob, CC_OID_TRACE_SIZE) << " size " << size << " total size " << total_size << " timeout " << timeout;
 
 		// UPDATE PeerStatus so the object will not get downloaded again from this peer
 
@@ -406,7 +410,7 @@ int DbConnRelayObjs::RelayObjsFindDownloads(unsigned conn_index, uint64_t tx_lev
 
 		sqlite3_reset(Relay_Peers_update_seqnum);	// release lock
 
-		if (!IsWitness() || seqnum > 0)
+		if (!IsWitness() || seqnum > BLOCK_SEQNUM_MAX)
 		{
 			// UPDATE Relay_Objs so the object will not get downloaded again from a different peer until after the timeout
 			// note: if sqlite "read uncommitted" is disabled, this update to the timeout in Relay_Objs will not been seen until after the sqlite transaction commits,
@@ -431,13 +435,13 @@ int DbConnRelayObjs::RelayObjsFindDownloads(unsigned conn_index, uint64_t tx_lev
 
 		// output object in SEND command
 
-		BOOST_LOG_TRIVIAL(debug) << "DbConnRelayObjs::RelayObjsFindDownloads preparing to send CC_CMD_SEND_BLOCK/CC_CMD_SEND_TX seqnum " << seqnum << " level " << level << " oid " << buf2hex(objid_blob, sizeof(ccoid_t));
+		BOOST_LOG_TRIVIAL(debug) << "DbConnRelayObjs::RelayObjsFindDownloads preparing to send CC_CMD_SEND_BLOCK/CC_CMD_SEND_TX seqnum " << seqnum << " level " << level << " oid " << buf2hex(objid_blob, CC_OID_TRACE_SIZE);
 
 		if (!bufpos)
 		{
 			copy_to_buf(bufpos, sizeof(bufpos), bufpos, output, bufsize);  // save space for size word
 
-			uint32_t tag = seqnum < 0 ? CC_CMD_SEND_BLOCK : CC_CMD_SEND_TX;
+			uint32_t tag = seqnum <= BLOCK_SEQNUM_MAX ? CC_CMD_SEND_BLOCK : CC_CMD_SEND_TX;
 
 			copy_to_buf(tag, sizeof(tag), bufpos, output, bufsize);
 		}
@@ -493,12 +497,12 @@ int DbConnRelayObjs::RelayObjsFindDownloads(unsigned conn_index, uint64_t tx_lev
 	return 0;
 }
 
-int DbConnRelayObjs::RelayObjsSetStatus(const ccoid_t& oid, int obj_status, int timeout)
+int DbConnRelayObjs::RelayObjsSetStatus(const ccoid_t& oid, unsigned obj_status, int timeout)
 {
 	lock_guard<mutex> lock(Relay_Objs_db_mutex);	// sql statements must be reset before lock is released
 	Finally finally(boost::bind(&DbConnRelayObjs::DoRelayObjsFinish, this, 0));		// 0 = reset only
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnRelayObjs::RelayObjsSetStatus obj status " << obj_status << " oid " << buf2hex(&oid, sizeof(ccoid_t));
+	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnRelayObjs::RelayObjsSetStatus obj status " << obj_status << " oid " << buf2hex(&oid, CC_OID_TRACE_SIZE);
 
 	int64_t seqnum = -1;
 
@@ -506,11 +510,11 @@ int DbConnRelayObjs::RelayObjsSetStatus(const ccoid_t& oid, int obj_status, int 
 	{
 		if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnRelayObjs::RelayObjsSetStatus fetching seqnum for obj with status " << obj_status;
 
-		if (dblog(sqlite3_bind_blob(Relay_Objs_select_seqnum, 1, &oid, sizeof(ccoid_t), SQLITE_STATIC))) break;
+		if (dblog(sqlite3_bind_blob(Relay_Objs_select_objid, 1, &oid, sizeof(ccoid_t), SQLITE_STATIC))) break;
 
 		int rc;
 
-		if (dblog(rc = sqlite3_step(Relay_Objs_select_seqnum), DB_STMT_SELECT)) break;
+		if (dblog(rc = sqlite3_step(Relay_Objs_select_objid), DB_STMT_SELECT)) break;
 
 		if (RandTest(RTEST_DB_ERRORS))
 		{
@@ -524,16 +528,16 @@ int DbConnRelayObjs::RelayObjsSetStatus(const ccoid_t& oid, int obj_status, int 
 
 		if (dbresult(rc) == SQLITE_ROW)
 		{
-			if (sqlite3_data_count(Relay_Objs_select_seqnum) != 2)
+			if (sqlite3_data_count(Relay_Objs_select_objid) != 2)
 			{
-				BOOST_LOG_TRIVIAL(error) << "DbConnRelayObjs::RelayObjsSetStatus Relay_Objs_select_seqnum returned " << sqlite3_data_count(Relay_Objs_select_seqnum) << " columns";
+				BOOST_LOG_TRIVIAL(error) << "DbConnRelayObjs::RelayObjsSetStatus Relay_Objs_select_objid returned " << sqlite3_data_count(Relay_Objs_select_objid) << " columns";
 
 				break;
 			}
 
 			// fetch existing Seqnum
 
-			auto s = sqlite3_column_int64(Relay_Objs_select_seqnum, 0);
+			auto s = sqlite3_column_int64(Relay_Objs_select_objid, 0);
 
 			if (dblog(sqlite3_extended_errcode(Relay_Objs_db), DB_STMT_SELECT)) break;	// check if error retrieving results
 
@@ -543,13 +547,13 @@ int DbConnRelayObjs::RelayObjsSetStatus(const ccoid_t& oid, int obj_status, int 
 		}
 		else
 		{
-			BOOST_LOG_TRIVIAL(error) << "DbConnRelayObjs::RelayObjsSetStatus Relay_Objs_select_seqnum returned " << rc;
+			BOOST_LOG_TRIVIAL(error) << "DbConnRelayObjs::RelayObjsSetStatus Relay_Objs_select_objid returned " << rc;
 		}
 
 		break;
 	}
 
-	sqlite3_reset(Relay_Objs_select_seqnum);
+	sqlite3_reset(Relay_Objs_select_objid);
 
 	// ObjId, Status, Timeout
 	if (dblog(sqlite3_bind_blob(Relay_Objs_update, 1, &oid, sizeof(ccoid_t), SQLITE_STATIC))) return -1;
@@ -569,19 +573,19 @@ int DbConnRelayObjs::RelayObjsSetStatus(const ccoid_t& oid, int obj_status, int 
 
 	if (changes == 1)
 	{
-		if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnRelayObjs::RelayObjsSetStatus set obj status = " << obj_status << " for oid " << buf2hex(&oid, sizeof(ccoid_t));
+		if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnRelayObjs::RelayObjsSetStatus set obj status = " << obj_status << " for oid " << buf2hex(&oid, CC_OID_TRACE_SIZE);
 	}
 	else if (changes == 0)
 	{
-		BOOST_LOG_TRIVIAL(warning) << "DbConnRelayObjs::RelayObjsSetStatus sqlite3_changes " << changes << " in Relay_Objs after update of oid " << buf2hex(&oid, sizeof(ccoid_t));
+		BOOST_LOG_TRIVIAL(warning) << "DbConnRelayObjs::RelayObjsSetStatus sqlite3_changes " << changes << " in Relay_Objs after update of oid " << buf2hex(&oid, CC_OID_TRACE_SIZE);
 	}
 	else
 	{
-		BOOST_LOG_TRIVIAL(error) << "DbConnRelayObjs::RelayObjsSetStatus sqlite3_changes " << changes << " in Relay_Objs after update of oid " << buf2hex(&oid, sizeof(ccoid_t));
+		BOOST_LOG_TRIVIAL(error) << "DbConnRelayObjs::RelayObjsSetStatus sqlite3_changes " << changes << " in Relay_Objs after update of oid " << buf2hex(&oid, CC_OID_TRACE_SIZE);
 	}
 
 	// delete Tx from Relay_Peers but keep blocks to prevent peer from swamping us with many blocks at the same level
-	while (obj_status == RELAY_STATUS_DOWNLOADED && seqnum > 0)	// use "while" so we can use "break" if there's an error
+	while (obj_status == RELAY_STATUS_DOWNLOADED && seqnum > BLOCK_SEQNUM_MAX)	// use "while" so we can use "break" if there's an error
 	{
 		if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnRelayObjs::RelayObjsSetStatus deleting seqnum " << seqnum << " obj status " << obj_status << " from peers table";
 
@@ -668,14 +672,13 @@ int DbConnRelayObjs::RelayObjsDeleteSeqnum(int64_t seqnum)
 	return 0;
 }
 
-int DbConnRelayObjs::RelayObjsGetExpires(int64_t min_seqnum, int64_t max_seqnum, int64_t& next_expires_seqnum, uint32_t& next_expires_t0)
+int DbConnRelayObjs::RelayObjsGetExpires(int64_t min_seqnum, int64_t max_seqnum, int64_t& next_expires_seqnum, ccoid_t& oid, uint32_t& next_expires_t0)
 {
 	lock_guard<mutex> lock(Relay_Objs_db_mutex);	// sql statements must be reset before lock is released
 	Finally finally(boost::bind(&DbConnRelayObjs::DoRelayObjsFinish, this, 0));		// 0 = reset only
 
 	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnRelayObjs::RelayObjsGetExpires min_seqnum " << min_seqnum << " max_seqnum " << max_seqnum;
 
-	// preset these in case of error
 	auto last_expires_seqnum = next_expires_seqnum;
 	next_expires_seqnum = -1;
 
@@ -703,16 +706,18 @@ int DbConnRelayObjs::RelayObjsGetExpires(int64_t min_seqnum, int64_t max_seqnum,
 		return -1;
 	}
 
-	if (sqlite3_data_count(Relay_Objs_select_oldest) != 2)
+	if (sqlite3_data_count(Relay_Objs_select_oldest) != 3)
 	{
 		BOOST_LOG_TRIVIAL(error) << "DbConnRelayObjs::RelayObjsGetExpires select returned " << sqlite3_data_count(Relay_Objs_select_oldest) << " columns";
 
 		return -1;
 	}
 
-	// Seqnum, Bufp, Time
+	// Seqnum, ObjId, Time
 	auto seqnum = sqlite3_column_int64(Relay_Objs_select_oldest, 0);
-	auto t0 = sqlite3_column_int(Relay_Objs_select_oldest, 1);
+	auto objid_blob = sqlite3_column_blob(Relay_Objs_select_oldest, 1);
+	auto objid_size = sqlite3_column_bytes(Relay_Objs_select_oldest, 1);
+	auto t0 = sqlite3_column_int(Relay_Objs_select_oldest, 2);
 
 	if (seqnum == last_expires_seqnum)
 	{
@@ -734,6 +739,9 @@ int DbConnRelayObjs::RelayObjsGetExpires(int64_t min_seqnum, int64_t max_seqnum,
 
 	next_expires_seqnum = seqnum;
 	next_expires_t0 = t0;
+
+	if (objid_size == sizeof(oid))
+		memcpy((void*)&oid, objid_blob, sizeof(oid));
 
 	return 0;
 }

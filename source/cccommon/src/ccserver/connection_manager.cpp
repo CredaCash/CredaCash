@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * connection_manager.cpp
 */
@@ -15,6 +15,8 @@ namespace CCServer {
 
 ConnectionManager::~ConnectionManager()
 {
+	lock_guard<FastSpinLock> lock(m_conn_mgr_lock);
+
 	for (auto connection : m_connections)
 		delete connection;
 }
@@ -73,7 +75,7 @@ void ConnectionManager::FreeConnection(pconnection_t connection)
 		}
 	}
 
-	if (was_freed && m_free_callback_obj)
+	if (was_freed && m_free_callback_obj && !g_shutdown)
 		m_free_callback_obj->HandleFreeConnection();
 
 	if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << connection->m_conn_index << " ConnectionManager::FreeConnection done";

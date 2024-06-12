@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2020 Creda Software, Inc.
+ * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
  *
  * commitments.cpp
 */
@@ -26,11 +26,7 @@ void Commitments::Init(DbConn *dbconn)
 
 	auto rc = dbconn->ParameterSelect(DB_KEY_COMMIT_COMMITNUM_HI, 0, &row_end, sizeof(row_end));
 	if (rc < 0)
-	{
-		const char *msg = "FATAL ERROR Commitments::Init error retrieving next commitment number";
-
-		return g_blockchain.SetFatalError(msg);
-	}
+		return (void)g_blockchain.SetFatalError("Commitments::Init error retrieving next commitment number");
 
 	if (rc == 0)
 	{
@@ -90,6 +86,9 @@ bool Commitments::UpdateCommitTree(DbConn *dbconn, SmartBuf newobj, uint64_t tim
 		m_next_tree_update_commitnum = m_next_commitnum.load();
 		uint64_t row_end = m_next_tree_update_commitnum - 1;
 
+		CCASSERT(sizeof(nullhash) <= TX_MERKLE_BYTES);
+
+		nullhash.clear();
 		memcpy((void*)&nullhash, &auxp->block_hash, TX_MERKLE_BYTES);
 		nullhash = nullhash * bigint_t(1UL);	// modulo prime
 
