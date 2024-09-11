@@ -20,7 +20,7 @@
 
 #define TRACE_SPINLOCK	0
 
-//!#define RTEST_CUZZ_SPINLOCK	32
+//!#define RTEST_CUZZ_SPINLOCK		64
 
 #ifndef RTEST_CUZZ_SPINLOCK
 #define RTEST_CUZZ_SPINLOCK		0	// don't test
@@ -83,7 +83,7 @@ public:
 
 		mutex.clear();
 
-		//if (RTEST_CUZZ_SPINLOCK && !(rand() % (RTEST_CUZZ_SPINLOCK > 0 ? RTEST_CUZZ_SPINLOCK : 1))) usleep(rand() & 63);
+		//if (RandTest(RTEST_CUZZ_SPINLOCK)) usleep(rand() & 63);
 	}
 };
 
@@ -154,6 +154,6 @@ public:
 
 			mutex.clear();
 
-			if (RTEST_CUZZ_SPINLOCK && !(rand() % (RTEST_CUZZ_SPINLOCK > 0 ? RTEST_CUZZ_SPINLOCK : 1))) usleep(rand() & 63);
+			if (RandTest(RTEST_CUZZ_SPINLOCK)) usleep(rand() & 63);
 	}
 };

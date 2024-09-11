@@ -13,6 +13,7 @@
 
 #include <jsonutil.h>
 #include <txquery.h>
+#include <CCobjects.hpp>
 #include <transaction.h>
 #include <transaction.hpp>
 #include <xtransaction.hpp>
@@ -26,8 +27,16 @@
 #define TXCONN_READ_MAX		200000	//@@!
 #define TXCONN_WRITE_MAX	8000	//@@!
 
+#define TXQUERY_TARGET_PROPOGATION_TIME		(2*60)
+#define TXQUERY_TIMESTAMP_PAST_ALLOWANCE	(40*60 -TXQUERY_TARGET_PROPOGATION_TIME)	// < TRANSACT_TIMESTAMP_PAST_ALLOWANCE, so timestamp is regenerated before the msg would be rejected by the tx server
+
+//!#define RTEST_SIM_RETRY			2
 //!#define RTEST_TX_SUBMIT_ERRORS	4
-//!#define RTEST_CUZZ			32
+//!#define RTEST_CUZZ			64
+
+#ifndef RTEST_SIM_RETRY
+#define RTEST_SIM_RETRY			0	// don't test
+#endif
 
 #ifndef RTEST_TX_SUBMIT_ERRORS
 #define RTEST_TX_SUBMIT_ERRORS	0	// don't test
@@ -114,9 +123,19 @@ const string& TxQuery::GetHost()
 	return hosts[i];
 }
 
-int TxQuery::TryQuery(PowType powtype, bool is_retry, vector<char> *pquery)
+int TxQuery::PrepareQuery(PowType powtype, uint64_t expire_time, bool is_retry, vector<char> *pquery)
 {
-	if (TRACE_TXQUERY) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " TxQuery::TryQuery powtype " << powtype << " is_retry " << is_retry << " conn state " << m_conn_state;
+	if (RandTest(RTEST_SIM_RETRY))
+		is_retry = true;
+
+	// expire_time is relative to the local clock unixtime()
+	// if expire_time > 0, returns 2 when the expire_time is reached
+
+	if (TRACE_TXQUERY && expire_time) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " TxQuery::PrepareQuery powtype " << powtype << " expire_time " << expire_time << " now " << unixtime() << " is_retry " << is_retry << " conn state " << m_conn_state;
+	else if (TRACE_TXQUERY)          BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " TxQuery::PrepareQuery powtype " << powtype << " expire_time " << expire_time <<                          " is_retry " << is_retry << " conn state " << m_conn_state;
+
+	if (!pquery)
+		pquery = &m_writebuf;
 
 	// get or update params if needed
 
@@ -140,30 +159,81 @@ int TxQuery::TryQuery(PowType powtype, bool is_retry, vector<char> *pquery)
 		return -1;
 	}
 
-	// send query
-
-	if (!pquery)
-		pquery = &m_writebuf;
-
-	uint64_t timestamp = unixtime() + txparams.clock_diff;
-
-	rc = tx_reset_work(string(), timestamp, (char*)pquery->data(), pquery->size());
-	CCASSERTZ(rc);
-
-	if (powtype)
+	auto difficulty = txparams.query_work_difficulty;
+	if (!powtype)
+		difficulty = 0;
+	if (powtype == PowType_Tx)
 	{
-		// TODO: implement a timeout
-		auto difficulty = txparams.query_work_difficulty;
-		if (powtype == PowType_Tx)
-			difficulty = txparams.tx_work_difficulty;
-		if (powtype == PowType_Xcx_Pay)
+		auto tag = *(uint32_t*)(pquery->data() + 4);
+		if (Xtx::TypeIsXpay(CCObject::ObjType(tag)))
 			difficulty = txparams.xcx_pay_work_difficulty;
+		else
+			difficulty = txparams.tx_work_difficulty;
 
-		auto rc = tx_set_work(string(), 0, TX_POW_NPROOFS, -1, difficulty, (char*)pquery->data(), pquery->size());
-		if (g_shutdown) return -1;
-		CCASSERTZ(rc);
+		if (TRACE_TXQUERY) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " TxQuery::PrepareQuery powtype " << powtype << " type " << CCObject::ObjType(tag) << " tag " << hex << tag << " difficulty " << difficulty << dec;
 	}
 
+	if (expire_time)
+	{
+		// adjust expire_time to allow time to send the msg
+
+		auto life_time = expire_time - unixtime();
+		if (life_time > 2*TXQUERY_TARGET_PROPOGATION_TIME)
+			expire_time -= TXQUERY_TARGET_PROPOGATION_TIME;
+		else if (life_time > 0)
+			expire_time -= life_time/2;
+	}
+
+	auto t0 = ccticks();
+
+	while (true) // use break to exit
+	{
+		uint64_t now = unixtime();
+		if (expire_time && now >= expire_time)
+		{
+			BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " TxQuery::PrepareQuery reached expire_time " << expire_time << " powtype " << powtype << " difficulty " << difficulty << " elasped time " << ccticks_elapsed(t0, ccticks());
+
+			return 2;
+		}
+
+		auto restart = now + TXQUERY_TIMESTAMP_PAST_ALLOWANCE;	// restart before the msg would be rejected by the tx server
+
+		if (expire_time && restart > expire_time)
+			restart = expire_time;
+
+		if (TRACE_TXQUERY) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " TxQuery::PrepareQuery tx_reset_work powtype " << powtype << " now " << now << " restart " << restart << " expire_time " << expire_time;
+
+		uint64_t timestamp = now + txparams.clock_diff;
+
+		rc = tx_reset_work(string(), timestamp, pquery->data(), pquery->size());
+		CCASSERTZ(rc);
+
+		while (powtype)
+		{
+			rc = tx_set_work(string(), 0, TX_POW_NPROOFS, 1 << 26, difficulty, pquery->data(), pquery->size());
+			if (g_shutdown) return -1;
+			CCASSERT(rc >= 0);
+
+			auto time_left = restart - unixtime();
+
+			//if (TRACE_TXQUERY) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " TxQuery::PrepareQuery tx_set_work rc " << rc << " time_left " << time_left;
+
+			if (!rc || time_left <= 0)
+				break;
+		}
+
+		if (!rc)
+			break;
+	}
+
+	if (TRACE_TXQUERY && difficulty && expire_time) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " TxQuery::PrepareQuery tx_set_work powtype " << powtype << " difficulty " << difficulty << " elasped time " << ccticks_elapsed(t0, ccticks()) << " expire_time " << expire_time << " now " << unixtime();
+	else if (TRACE_TXQUERY && difficulty)          BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " TxQuery::PrepareQuery tx_set_work powtype " << powtype << " difficulty " << difficulty << " elasped time " << ccticks_elapsed(t0, ccticks());
+
+	return 0;
+}
+
+int TxQuery::TryQuery(PowType powtype, vector<char> *pquery)
+{
 	if (RandTest(RTEST_CUZZ)) ccsleep(rand() & 3);
 
 	WaitForStopped(IsInteractive());
@@ -174,6 +244,9 @@ int TxQuery::TryQuery(PowType powtype, bool is_retry, vector<char> *pquery)
 
 	m_result_code = -1;
 	m_data_written = false;
+
+	if (!pquery)
+		pquery = &m_writebuf;
 
 	m_pquery = pquery;
 
@@ -186,6 +259,7 @@ int TxQuery::TryQuery(PowType powtype, bool is_retry, vector<char> *pquery)
 		if (TRACE_TXQUERY) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " TxQuery::TryQuery posting query; m_stopping " << m_stopping.load();
 
 		static const string null;
+		int rc;
 
 		if (g_params.transact_tor)
 			rc = Post("TxQuery::TryQuery", boost::bind(&Connection::HandleConnectOutgoingTor, this, g_params.torproxy_port, ref(GetHost()), (g_params.transact_tor_single_query ? ref(null) : ref(GetHost())), AutoCount(this)));
@@ -218,33 +292,50 @@ int TxQuery::TryQuery(PowType powtype, bool is_retry, vector<char> *pquery)
 
 	Stop();	// !!! for now
 
-	if (m_data_written && powtype)
-		m_possibly_sent = true;
+	if (powtype && m_data_written)
+		m_possibly_sent = true;		// msg may have been successfully sent
 
 	if (g_shutdown) return -1;
 
 	if (RandTest(RTEST_CUZZ)) ccsleep(rand() & 7);
 
 	if (m_result_code)
-			ClearHost();
+			ClearHost();	// retry with different server
 
 	return m_result_code;
 }
 
-int TxQuery::SubmitQuery(PowType powtype, bool is_retry, Json::Value *root, vector<char> *pquery, bool debug)
+int TxQuery::SubmitQuery(PowType powtype, uint64_t expire_time, bool is_retry, Json::Value *root, vector<char> *pquery, bool skip_prepare, bool debug)
 {
-	if (TRACE_TXQUERY) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " TxQuery::SubmitQuery pquery " << hex << (uintptr_t)pquery << dec << " size " << (pquery ? pquery->size() : m_writebuf.size());
+	// returns 2 on timeout
+	// returns 1 if response is not valid json
 
-	int result_code = -1;
+	if (TRACE_TXQUERY) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " TxQuery::SubmitQuery pquery " << hex << (uintptr_t)pquery << dec << " size " << (pquery ? pquery->size() : m_writebuf.size()) << " skip_prepare " << skip_prepare << " debug " << debug;
 
 	if (root)
 		root->clear();
 
+	int result_code = -1;
+
 	while (true)	// break on error
 	{
-		auto rc = TryQuery(powtype, is_retry, pquery);
+		int rc = 0;
+		if (!skip_prepare)
+			rc = PrepareQuery(powtype, expire_time, is_retry, pquery);
+		if (!rc)
+			rc = TryQuery(powtype, pquery);
 
-		if (rc) break;
+		if (rc)
+		{
+			m_nred = 0;
+
+			if (m_pread)
+				m_pread[0] = 0;
+
+			result_code = rc;
+
+			break;
+		}
 
 		m_pread[m_nred] = 0;
 
@@ -260,12 +351,10 @@ int TxQuery::SubmitQuery(PowType powtype, bool is_retry, Json::Value *root, vect
 		if (debug) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " TxQuery::SubmitQuery reply " << m_pread;
 		else if (TRACE_TXQUERY) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " TxQuery::SubmitQuery reply " << m_pread;
 
-		if (m_pread[0] != '{')
-		{
-			result_code = 1;
+		result_code = 1;
 
+		if (m_pread[0] != '{')
 			break;
-		}
 
 		if (root)
 		{
@@ -305,6 +394,7 @@ int TxQuery::SubmitQuery(PowType powtype, bool is_retry, Json::Value *root, vect
 		}
 
 		result_code = 0;
+
 		break;
 	}
 
@@ -313,13 +403,9 @@ int TxQuery::SubmitQuery(PowType powtype, bool is_retry, Json::Value *root, vect
 	return result_code;
 }
 
-int TxQuery::SubmitTx(TxPay& ts, uint64_t& next_commitnum)
+int TxQuery::TxToWire(TxPay& ts)
 {
-	if (TRACE_TXQUERY) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " TxQuery::SubmitTx";
-
-	int result_code = -1;
-	next_commitnum = 0;
-	m_possibly_sent = false;
+	if (TRACE_TXQUERY) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " TxQuery::TxToWire";
 
 	string fn;
 	char output[128] = {0};
@@ -330,7 +416,7 @@ int TxQuery::SubmitTx(TxPay& ts, uint64_t& next_commitnum)
 	auto rc = txpay_to_wire(fn, ts, -1, output, outsize, m_writebuf.data(), m_writebuf.size());
 	if (rc)
 	{
-		BOOST_LOG_TRIVIAL(error) << Name() << " Conn " << m_conn_index << " TxQuery::SubmitTx txpay_to_wire failed: " << output;
+		BOOST_LOG_TRIVIAL(error) << Name() << " Conn " << m_conn_index << " TxQuery::TxToWire txpay_to_wire failed: " << output;
 
 		m_pread = m_readbuf.data();
 		auto nbytes = (outsize < m_readbuf.size() ? outsize : m_readbuf.size() - 1);
@@ -340,7 +426,53 @@ int TxQuery::SubmitTx(TxPay& ts, uint64_t& next_commitnum)
 		return 1;
 	}
 
+	return 0;
+}
+
+int TxQuery::PrepareTx(TxPay& ts, uint64_t expire_time, vector<char>& wire)
+{
+	if (TRACE_TXQUERY) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " TxQuery::PrepareTx expire_time " << expire_time;
+
+	auto rc = TxToWire(ts);
+	if (rc)
+		return rc;
+
+	rc = PrepareQuery(PowType_Tx, expire_time, true); // set is_retry true to force param update
+	if (rc)
+		return rc;
+
+	auto size = *(uint32_t*)(m_writebuf.data());
+	wire.resize(size);
+	memcpy(wire.data(), m_writebuf.data(), size);
+
+	return 0;
+}
+
+int TxQuery::SubmitTx(TxPay& ts, uint64_t expire_time, uint64_t& next_commitnum, bool debug)
+{
+	if (TRACE_TXQUERY) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " TxQuery::SubmitTx expire_time " << expire_time << " pquery " << " debug " << debug;
+
+	auto rc = TxToWire(ts);
+	if (rc)
+		return rc;
+
+	return DoSubmitTx(expire_time, next_commitnum, m_writebuf, false, debug);
+}
+
+int TxQuery::SubmitPreparedTx(uint64_t& next_commitnum, vector<char>& wire, bool debug)
+{
+	if (TRACE_TXQUERY) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " TxQuery::SubmitPreparedTx debug " << debug;
+
+	return DoSubmitTx(0, next_commitnum, wire, true, debug);
+}
+
+int TxQuery::DoSubmitTx(uint64_t expire_time, uint64_t& next_commitnum, vector<char>& wire, bool skip_prepare, bool debug)
+{
 	//if (RandTest(2)) ccsleep(40);	// for testing
+
+	int result_code = -1;
+	next_commitnum = 0;
+	m_possibly_sent = false;
 
 	for (int i = 0; i <= g_params.tx_submit_retries; ++i)
 	{
@@ -349,11 +481,16 @@ int TxQuery::SubmitTx(TxPay& ts, uint64_t& next_commitnum)
 		if (g_params.transact_tor_single_query)
 			ClearHost();
 
-		auto powtype = PowType_Tx;
-		if (ts.tag_type == CC_TYPE_XCX_PAYMENT)
-			powtype = PowType_Xcx_Pay;
+		auto already_possibly_sent = m_possibly_sent;
 
-		auto rc = SubmitQuery(powtype, i);
+		auto rc = SubmitQuery(PowType_Tx, expire_time, i, NULL, &wire, skip_prepare, debug);
+
+		if (rc > 1)
+		{
+			result_code = rc;
+
+			break;
+		}
 
 		if (!i && RandTest(RTEST_TX_SUBMIT_ERRORS))
 		{
@@ -368,8 +505,12 @@ int TxQuery::SubmitTx(TxPay& ts, uint64_t& next_commitnum)
 		{
 			if (!strncmp(m_pread, "OK:", 3))
 			{
+				string fn;
+				char output[1] = {0};
+				uint32_t outsize = sizeof(output);
 				string key;
 				bigint_t bigval;
+
 				rc = parse_int_value(fn, key, &m_pread[3], 64, 0UL, bigval, output, outsize);
 				if (rc)
 					BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " TxQuery::SubmitTx error parsing commitment number " << m_pread;
@@ -383,6 +524,8 @@ int TxQuery::SubmitTx(TxPay& ts, uint64_t& next_commitnum)
 
 			if (!strncmp(m_pread, "INVALID:expired", 15))
 			{
+				m_possibly_sent = already_possibly_sent;	// restore previous state
+
 				result_code = 2;
 
 				break;
@@ -390,6 +533,8 @@ int TxQuery::SubmitTx(TxPay& ts, uint64_t& next_commitnum)
 
 			if (!strncmp(m_pread, "INVALID:", 8))
 			{
+				m_possibly_sent = already_possibly_sent;	// restore previous state
+
 				result_code = 1;
 
 				break;
@@ -398,6 +543,7 @@ int TxQuery::SubmitTx(TxPay& ts, uint64_t& next_commitnum)
 			if (!strncmp(m_pread, "UNKNOWN:", 8))
 			{
 				m_possibly_sent = true;		// tx may have been accepted
+
 				result_code = -1;
 
 				break;
@@ -405,7 +551,8 @@ int TxQuery::SubmitTx(TxPay& ts, uint64_t& next_commitnum)
 
 			if (!strncmp(m_pread, "ERROR:", 6))
 			{
-				m_possibly_sent = false;	// tx was not accepted
+				m_possibly_sent = already_possibly_sent;	// restore previous state
+
 				result_code = -1;
 
 				break;
@@ -426,7 +573,7 @@ int TxQuery::QueryParams(TxParams& txparams, vector<char> &querybuf)
 
 	int result_code = -1;
 
-	auto rc = tx_query_parameters_create(string(), (char*)querybuf.data(), querybuf.size());
+	auto rc = tx_query_parameters_create(string(), querybuf.data(), querybuf.size());
 	CCASSERTZ(rc);
 
 	for (int i = 0; i <= g_params.tx_query_retries; ++i)
@@ -435,7 +582,7 @@ int TxQuery::QueryParams(TxParams& txparams, vector<char> &querybuf)
 
 		Json::Value root;
 
-		auto rc = SubmitQuery(PowType_None, i, &root, &querybuf);
+		auto rc = SubmitQuery(PowType_None, 0, i, &root, &querybuf);
 		if (rc) continue;
 
 		if (root.size() != 1)
@@ -887,7 +1034,7 @@ int TxQuery::QuerySerialnums(uint64_t blockchain, const bigint_t *serialnums, un
 		if (g_params.transact_tor_single_query)
 			ClearHost();
 
-		auto rc = SubmitQuery(PowType_Query, i, &root);
+		auto rc = SubmitQuery(PowType_Query, 0, i, &root);
 		if (rc) continue;
 
 		if (root.size() != 1)
@@ -1036,7 +1183,7 @@ int TxQuery::QueryInputs(const uint64_t *commitnum, const unsigned ncommits, TxP
 		if (g_params.transact_tor_single_query)
 			ClearHost();
 
-		auto rc = SubmitQuery(PowType_Query, i, &root);
+		auto rc = SubmitQuery(PowType_Query, 0, i, &root);
 		if (rc) continue;
 
 		if (root.size() != 1)
@@ -1418,7 +1565,7 @@ int TxQuery::QueryAddress(uint64_t blockchain, const bigint_t& address, const ui
 		if (g_params.transact_tor_single_query)
 			ClearHost();
 
-		auto rc = SubmitQuery(PowType_Query, i, &root);
+		auto rc = SubmitQuery(PowType_Query, 0, i, &root);
 
 		if (rc > 0)
 		{
@@ -1482,7 +1629,7 @@ int TxQuery::ParseQueryXreqsResults(const unsigned xcx_type, const bigint_t& min
 	uint32_t outsize = 0;
 	int rc;
 
-	auto select_buyers = Xtx::TypeIsSeller(xcx_type);
+	auto select_buyers = !Xtx::TypeIsBuyer(xcx_type);
 	if (TRACE_TXQUERY) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " TxQuery::ParseQueryXreqsResults xcx_type " << xcx_type << " select_buyers " << select_buyers;
 
 	if (results.json.size() != 1)
@@ -1871,7 +2018,7 @@ int TxQuery::ParseQueryXreqsResults(const unsigned xcx_type, const bigint_t& min
 		self.base_costs = base_costs;
 		self.quote_costs = quote_costs;
 
-		auto direction = Xreq::RateSign(self.IsSeller()); // sell reqs are more competitive when rounded down; buy reqs up
+		auto direction = -Xreq::RateSign(self.IsBuyer()); // sell reqs are more competitive when rounded down; buy reqs up
 
 		bool compete = other.pending_match_rate.asFloat() && other.pending_match_hold_time > 0;
 		int rounding = 0;
@@ -2047,7 +2194,7 @@ int TxQuery::QueryXreqs(const unsigned xcx_type, const bigint_t& min_amount, con
 		if (g_params.transact_tor_single_query)
 			ClearHost();
 
-		auto rc = SubmitQuery(PowType_Query, i, &results.json);
+		auto rc = SubmitQuery(PowType_Query, 0, i, &results.json);
 
 		if (rc > 0)
 		{
@@ -2700,7 +2847,7 @@ int TxQuery::QueryXmatchreq(uint64_t blockchain, const ccoid_t& objid, uint64_t 
 		if (g_params.transact_tor_single_query)
 			ClearHost();
 
-		auto rc = SubmitQuery(PowType_Query, i, &root);
+		auto rc = SubmitQuery(PowType_Query, 0, i, &root);
 
 		if (rc > 0)
 		{
@@ -2854,7 +3001,7 @@ int TxQuery::QueryXmatch(uint64_t blockchain, uint64_t matchnum, QueryXmatchResu
 		if (g_params.transact_tor_single_query)
 			ClearHost();
 
-		auto rc = SubmitQuery(PowType_Query, i, &root);
+		auto rc = SubmitQuery(PowType_Query, 0, i, &root);
 
 		if (rc > 0)
 		{
@@ -2968,7 +3115,7 @@ int TxQuery::QueryXminingInfo(QueryXreqsMiningInfoResults &results)
 		if (g_params.transact_tor_single_query)
 			ClearHost();
 
-		auto rc = SubmitQuery(PowType_Query, i, &results.json);
+		auto rc = SubmitQuery(PowType_Query, 0, i, &results.json);
 
 		if (rc > 0)
 		{

@@ -22,6 +22,7 @@
 #include <CCobjects.hpp>
 #include <CCmint.h>
 #include <transaction.h>
+#include <xtransaction-xpay.hpp>
 #include <ccserver/server.hpp>
 #include <ccserver/connection_manager.hpp>
 
@@ -33,7 +34,10 @@
 #define RELAY_DOWNLOAD_LOW_WATER	12	//((CC_TX_SEND_MAX)/2)
 #define RELAY_DOWNLOAD_HIGH_WATER	5
 
-#define RELAY_DIR_REFRESH			(25*60)
+#define RELAY_DIR_REFRESH				(25*60)
+
+#define RELAY_TIMESTAMP_PAST_ALLOWANCE		(60*60) // >= TRANSACT_TIMESTAMP_PAST_ALLOWANCE + relay expire_age + 10
+#define RELAY_TIMESTAMP_FUTURE_ALLOWANCE	(10*60)
 
 //!#define TEST_CUZZ					1
 //!#define RTEST_NO_SEND_TX				4
@@ -156,6 +160,7 @@ void RelayConnection::HandleReadComplete()
 	case CC_TAG_XCX_NAKED_SELL:
 	case CC_TAG_XCX_SIMPLE_BUY:
 	case CC_TAG_XCX_SIMPLE_SELL:
+	case CC_TAG_XCX_SIMPLE_TRADE:
 	case CC_TAG_XCX_PAYMENT:
 	{
 		CCASSERT(CC_MSG_HEADER_SIZE == sizeof(CCObject::Header));
@@ -329,8 +334,8 @@ void RelayConnection::HandleMsgReadComplete(const boost::system::error_code& e, 
 				//	as a result, undelayed tx's on the public relay should end up being requested first
 				// with RTEST_DELAY_TXS, blocks are requested on the private relay only, after a delay
 				//	as a result, undelayed blocks on the public relay should end up being requested first
-				if (RTEST_DELAY_BLOCKS && (rand() % (RTEST_DELAY_BLOCKS + 1))) usleep(rand() & (1024*1024-1));
-				if (RTEST_DELAY_TXS && (rand() % (RTEST_DELAY_TXS + 1))) usleep(rand() & (1024*1024-1));
+				if (RandTest(RTEST_DELAY_BLOCKS)) usleep(rand() & (1024*1024-1));
+				if (RandTest(RTEST_DELAY_TXS)) usleep(rand() & (1024*1024-1));
 				relay_dbconn->RelayObjsInsert(m_conn_index, (tag == CC_MSG_HAVE_BLOCK) ? CC_TYPE_BLOCK : CC_TYPE_TXPAY, req_params, RELAY_STATUS_ANNOUNCED, RELAY_PEER_STATUS_READY);
 			}
 		}
@@ -482,6 +487,7 @@ void RelayConnection::HandleMsgReadComplete(const boost::system::error_code& e, 
 	case CC_TAG_XCX_NAKED_SELL:
 	case CC_TAG_XCX_SIMPLE_BUY:
 	case CC_TAG_XCX_SIMPLE_SELL:
+	case CC_TAG_XCX_SIMPLE_TRADE:
 
 		if (priority == PROCESS_Q_PRIORITY_TX)
 			priority = PROCESS_Q_PRIORITY_X_REQ;
@@ -633,6 +639,15 @@ void RelayConnection::HandleMsgReadComplete(const boost::system::error_code& e, 
 					return Stop();
 				}
 
+				auto timestamp = *(uint64_t*)(obj->ObjPtr() + CC_MSG_HEADER_SIZE);
+
+				if (tx_check_timestamp(timestamp, RELAY_TIMESTAMP_PAST_ALLOWANCE, RELAY_TIMESTAMP_FUTURE_ALLOWANCE))
+				{
+					BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleMsgReadComplete tag " << hex << tag << dec << " timestamp " << timestamp << " not valid";
+
+					return Stop();
+				}
+
 				auto difficulty = g_params.tx_work_difficulty;
 				if (tag == CC_TAG_XCX_PAYMENT)
 					 difficulty = g_params.xcx_pay_work_difficulty;
@@ -642,7 +657,7 @@ void RelayConnection::HandleMsgReadComplete(const boost::system::error_code& e, 
 					// note: Proof of Work might fail because the peer tampered with the nonces. To prevent this from be used as a Denial of Service attack,
 					// we have not yet set the object status to RELAY_STATUS_DOWNLOADED, so it can be downloaded again from a different peer that thinks the Tx is valid
 
-					BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleMsgReadComplete error proof-of-work failed";
+					BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleMsgReadComplete tag " << hex << tag << dec << " proof-of-work not valid";
 
 					return Stop();
 				}
@@ -776,7 +791,9 @@ void RelayConnection::HandleMsgReadComplete(const boost::system::error_code& e, 
 			break;
 		}
 
-		BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleMsgReadComplete received obj bufp " << (uintptr_t)smartobj.BasePtr() << " tag " << hex << obj->ObjTag() << dec << " size " << obj->ObjSize() << " oid " << buf2hex(obj->OidPtr(), CC_OID_TRACE_SIZE);
+		if (TRACE_XPAYS && obj->ObjTag() == CC_TAG_XCX_PAYMENT)
+		      BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleMsgReadComplete received obj bufp " << (uintptr_t)smartobj.BasePtr() << " tag " << hex << obj->ObjTag() << dec << " size " << obj->ObjSize() << " oid " << buf2hex(obj->OidPtr(), CC_OID_TRACE_SIZE);
+		else BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleMsgReadComplete received obj bufp " << (uintptr_t)smartobj.BasePtr() << " tag " << hex << obj->ObjTag() << dec << " size " << obj->ObjSize() << " oid " << buf2hex(obj->OidPtr(), CC_OID_TRACE_SIZE);
 
 		relay_dbconn->RelayObjsSetStatus(*obj->OidPtr(), RELAY_STATUS_DOWNLOADED, 0);
 
@@ -795,6 +812,7 @@ void RelayConnection::HandleMsgReadComplete(const boost::system::error_code& e, 
 		else
 		{
 			auto rc = ProcessTx::TxEnqueueValidate(relay_dbconn, false, false, priority, smartobj, m_conn_index, m_use_count.load());
+			if (TRACE_XPAYS && obj->ObjTag() == CC_TAG_XCX_PAYMENT) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " RelayConnection::HandleMsgReadComplete TxEnqueueValidate returned " << rc << " for obj bufp " << (uintptr_t)smartobj.BasePtr() << " tag " << hex << obj->ObjTag() << dec << " size " << obj->ObjSize() << " oid " << buf2hex(obj->OidPtr(), CC_OID_TRACE_SIZE);
 
 			if (rc == 1)
 			{
@@ -896,6 +914,7 @@ void RelayConnection::CheckToSend()
 		case CC_TAG_XCX_NAKED_SELL:
 		case CC_TAG_XCX_SIMPLE_BUY:
 		case CC_TAG_XCX_SIMPLE_SELL:
+		case CC_TAG_XCX_SIMPLE_TRADE:
 		case CC_TAG_XCX_PAYMENT:
 
 			if (RandTest(RTEST_NO_SEND_TX))
@@ -911,6 +930,7 @@ void RelayConnection::CheckToSend()
 				continue;
 			}
 			//if (TRACE_RELAY) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " RelayConnection::CheckToSend sending tag " << hex << obj->ObjTag() << dec << " size " << obj->ObjSize() << " oid " << buf2hex(obj->OidPtr(), CC_OID_TRACE_SIZE);
+			if (TRACE_XPAYS && obj->ObjTag() == CC_TAG_XCX_PAYMENT) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " RelayConnection::CheckToSend sending tag " << hex << obj->ObjTag() << dec << " size " << obj->ObjSize() << " oid " << buf2hex(obj->OidPtr(), CC_OID_TRACE_SIZE);
 			break;
 
 		default:
@@ -1480,11 +1500,11 @@ void RelayThread::ThreadProc(boost::function<void()> threadproc)
 {
 	relay_dbconn = new DbConn;
 
-	if (TRACE_RELAY) BOOST_LOG_TRIVIAL(trace) << "RelayThread::ThreadProc start " << (uintptr_t)this << " dbconn " << (uintptr_t)relay_dbconn;
+	BOOST_LOG_TRIVIAL(info) << "RelayThread::ThreadProc start " << (uintptr_t)this << " dbconn " << (uintptr_t)relay_dbconn;
 
 	threadproc();
 
-	if (TRACE_RELAY) BOOST_LOG_TRIVIAL(trace) << "RelayThread::ThreadProc end " << (uintptr_t)this << " dbconn " << (uintptr_t)relay_dbconn;
+	BOOST_LOG_TRIVIAL(info) << "RelayThread::ThreadProc end " << (uintptr_t)this << " dbconn " << (uintptr_t)relay_dbconn;
 
 	delete relay_dbconn;
 }

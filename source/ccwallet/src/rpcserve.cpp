@@ -334,6 +334,13 @@ void RpcConnection::HandleContentReadComplete(const boost::system::error_code& e
 
 void RpcConnection::HandleWriteHeader(const boost::system::error_code& e, shared_ptr<string> buf, AutoCount pending_op_counter)
 {
+	if (g_disable_malloc_logging)
+	{
+		g_disable_malloc_logging = false;
+
+		cc_malloc_logging(false);
+	}
+
 	if (CheckOpCount(pending_op_counter))
 		return;
 
@@ -424,11 +431,11 @@ void RpcThread::ThreadProc(boost::function<void()> threadproc)
 {
 	dbconn = new DbConn;
 
-	if (TRACE_RPCSERVE) BOOST_LOG_TRIVIAL(trace) << "RpcThread::ThreadProc start " << (uintptr_t)this << " dbconn " << (uintptr_t)dbconn;
+	BOOST_LOG_TRIVIAL(info) << "RpcThread::ThreadProc start " << (uintptr_t)this << " dbconn " << (uintptr_t)dbconn;
 
 	threadproc();
 
-	if (TRACE_RPCSERVE) BOOST_LOG_TRIVIAL(trace) << "RpcThread::ThreadProc end " << (uintptr_t)this << " dbconn " << (uintptr_t)dbconn;
+	BOOST_LOG_TRIVIAL(info) << "RpcThread::ThreadProc end " << (uintptr_t)this << " dbconn " << (uintptr_t)dbconn;
 
 	delete dbconn;
 }

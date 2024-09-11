@@ -378,7 +378,7 @@ void DbInit::CreateDBs()
 	//	PendingMatchRate == 0 -> no pending match
 	//	PendingMatchRate > 0 and PendingMatchHoldTime = 0 -> immediate match pending
 	//	PendingMatchRate > 0 and PendingMatchHoldTime > 0 -> possible future match on hold
-	CCASSERTZ(dbexec(Xreqs_db, CREATE_TABLE_SQL "Xreqs (Seqnum integer primary key not null, "
+	CCASSERTZ(dbexec(Xreqs_db, CREATE_TABLE_SQL "Xreqs (Seqnum integer primary key not null, LinkedSeqnum integer, "
 		"ObjId blob not null, Type integer not null, IsBuyer integer check (IsBuyer = 0 or IsBuyer = 1), ExpireTime integer not null check (ExpireTime > 0), "
 		"BaseAsset integer not null, QuoteAsset integer not null, ForeignAsset string, MinAmount blob not null, MaxAmount blob not null, "
 		"NetRateRequired numeric not null, WaitDiscount numeric not null, BaseCosts numeric not null, QuoteCosts numeric not null, "

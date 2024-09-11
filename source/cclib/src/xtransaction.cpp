@@ -67,7 +67,9 @@ string Xtx::TypeString(unsigned type)
 		"Crosschain Naked Buy Request", "Crosschain Naked Sell Request",
 		"Crosschain Simple Buy Request", "Crosschain Simple Sell Request",
 		"Crosschain Buy Request", "Crosschain Sell Request",
-		"Crosschain Payment Claim", "Crosschain Forfeit", "Crosschain Cancel",
+		"Crosschain Match Accept", "Crosschain Cancel",
+		"Crosschain Payment Claim",
+		"Crosschain Mining Trade Request", "Crosschain Mining Buy Request", "Crosschain Mining Sell Request",
 		"INVALID"
 	};
 

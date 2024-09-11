@@ -13,7 +13,11 @@
 #include <atomic>
 #include <iostream>
 
+//#define TRACE_SMARTBUF		1 // Note: enabling this will cause an access fault on shutdown because boost::log object is destroyed before all the SmartBuf's
+
+#ifndef TRACE_SMARTBUF
 #define TRACE_SMARTBUF		0
+#endif
 
 class SmartBuf
 {
@@ -56,7 +60,7 @@ public:
 
 	unsigned IncRef();
 
-	unsigned DecRef();
+	unsigned DecRef(bool test_delay = false);
 
 	~SmartBuf();
 

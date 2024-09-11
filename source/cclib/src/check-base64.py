@@ -20,7 +20,9 @@ while True:
 	s = s.rstrip('\n')
 	e = e.rstrip('\n')
 
-	enc = base64.b64encode(s)
+	#print s, e
+
+	enc = base64.b64encode(bytearray.fromhex(s))
 
 	if enc != e:
 		print 'encode error:'

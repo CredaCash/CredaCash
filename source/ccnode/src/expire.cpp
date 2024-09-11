@@ -20,13 +20,17 @@
 
 static const int32_t relay_block_expire_age = 10*60*CCTICKS_PER_SEC;
 //static const int32_t relay_block_expire_age = 1*60*CCTICKS_PER_SEC;	// for testing
+//static const int32_t relay_block_expire_age = 0*CCTICKS_PER_SEC;	// for testing
 
 static const int32_t relay_tx_expire_age = 10*60*CCTICKS_PER_SEC;
 //static const int32_t relay_tx_expire_age = 0*CCTICKS_PER_SEC;			// for testing
 
+// note: Relay db does not hold objects, so ValidObj expiration times should be >= RelayObj expiration times
+
 static const int32_t valid_block_expire_age = 12*60*CCTICKS_PER_SEC;
-//static const int32_t valid_block_expire_age = 1*60*CCTICKS_PER_SEC;	// for testing
 //static const int32_t valid_block_expire_age = 60*60*CCTICKS_PER_SEC;	// for testing
+//static const int32_t valid_block_expire_age = 1*60*CCTICKS_PER_SEC;	// for testing
+//static const int32_t valid_block_expire_age = 0*60*CCTICKS_PER_SEC;	// for testing
 
 static const int32_t valid_tx_expire_age = 12*60*CCTICKS_PER_SEC;
 //static const int32_t valid_tx_expire_age = 0*CCTICKS_PER_SEC;			// for testing
@@ -47,8 +51,8 @@ class RelayObjsExpire : public ExpireObj
 	}
 
 public:
-	RelayObjsExpire(const char *name, int64_t min_seqnum, int64_t max_seqnum, int32_t expire_age, bool expire_age_can_change)
-	 : ExpireObj(name, min_seqnum, max_seqnum, expire_age, expire_age_can_change)
+	RelayObjsExpire(const char *name, int64_t min_seqnum, int64_t max_seqnum, int32_t expire_age, bool is_valid_objs)
+	 : ExpireObj(name, min_seqnum, max_seqnum, expire_age, is_valid_objs)
 	{ }
 };
 
@@ -69,8 +73,8 @@ class ValidObjsExpire : public ExpireObj
 	}
 
 public:
-	ValidObjsExpire(const char *name, int64_t min_seqnum, int64_t max_seqnum, int32_t expire_age, bool expire_age_can_change)
-	 : ExpireObj(name, min_seqnum, max_seqnum, expire_age, expire_age_can_change)
+	ValidObjsExpire(const char *name, int64_t min_seqnum, int64_t max_seqnum, int32_t expire_age, bool is_valid_objs)
+	 : ExpireObj(name, min_seqnum, max_seqnum, expire_age, is_valid_objs)
 	{ }
 };
 
@@ -104,7 +108,7 @@ void ExpireObj::Stop()
 
 void ExpireObj::ThreadProc()
 {
-	if (TRACE_EXPIRE) BOOST_LOG_TRIVIAL(trace) << "ExpireObj::ThreadProc " << m_name << " start m_min_seqnum " << m_min_seqnum << " m_max_seqnum " << m_max_seqnum << " m_expire_age " << m_expire_age << " m_dbconn " << (uintptr_t)m_dbconn;
+	BOOST_LOG_TRIVIAL(info) << "ExpireObj::ThreadProc " << m_name << " start m_min_seqnum " << m_min_seqnum << " m_max_seqnum " << m_max_seqnum << " m_expire_age " << m_expire_age << " m_dbconn " << (uintptr_t)m_dbconn;
 
 	while (!g_shutdown)
 	{
@@ -113,7 +117,7 @@ void ExpireObj::ThreadProc()
 		ccsleep(10);
 	}
 
-	if (TRACE_EXPIRE) BOOST_LOG_TRIVIAL(trace) << "ExpireObj::ThreadProc " << m_name << " end m_min_seqnum " << m_min_seqnum << " m_max_seqnum " << m_max_seqnum << " m_expire_age " << m_expire_age << " m_dbconn " << (uintptr_t)m_dbconn;
+	BOOST_LOG_TRIVIAL(info) << "ExpireObj::ThreadProc " << m_name << " end m_min_seqnum " << m_min_seqnum << " m_max_seqnum " << m_max_seqnum << " m_expire_age " << m_expire_age << " m_dbconn " << (uintptr_t)m_dbconn;
 }
 
 void ExpireObj::DoExpires()
@@ -160,16 +164,22 @@ void ExpireObj::DoExpires()
 				break;
 
 			auto sec = (m_expire_age - age + CCTICKS_PER_SEC/2) / CCTICKS_PER_SEC;
-			if (m_expire_age_can_change && sec > 10)
-				sec = 10;	// in case m_expire_age is changed externally while this is sleeping
 
 			if (sec <= 0)
 				break;
 
-			ccsleep(sec);
+			#if 0
+			if (sec > 10)
+			{
+				ccsleep(10);
 
-			if (g_shutdown)
+				return;		// return to recheck object time in case it's changed by another thread during the sleep
+			}
+			#endif
+
+			if (ccsleep(sec))
 				return;
+
 		}
 
 		while (is_ccmint)
@@ -192,31 +202,28 @@ void ExpireObj::DoExpires()
 			if (param_level > 1 && param_level + CC_MINT_ACCEPT_SPAN < block_level)
 				break;	// expire now
 
-			ccsleep(2);	// wait for new indelible level
-
-			if (g_shutdown)
+			if (ccsleep(2))	// wait for new indelible level
 				return;
 		}
 
 		while (objtype == CC_TYPE_BLOCK)
 		{
-			auto prune_level = g_blockchain.ComputePruneLevel(0, BLOCK_PRUNE_ROUNDS + 3);
+			auto prune_level = g_blockchain.ComputePruneLevel(0, BLOCK_PRUNE_ROUNDS + 2 + 2 * m_is_valid_objs);
 
 			auto block = (Block*)obj;
 			auto wire = block->WireData();
 
-			if (TRACE_EXPIRE) BOOST_LOG_TRIVIAL(debug) << "ExpireObj::DoExpires " << m_name << " block level " << wire->level.GetValue() << " prune level " << prune_level;
+			if (TRACE_EXPIRE) BOOST_LOG_TRIVIAL(debug) << "ExpireObj::DoExpires " << m_name << " block seqnum " << next_expires_seqnum << " bufp " << (uintptr_t)next_expires_smartobj.BasePtr() << " level " << wire->level.GetValue() << " prune level " << prune_level;
 
 			if (wire->level.GetValue() < prune_level)
 			{
-				block->SetPriorBlock(SmartBuf());	// break the link so prior block can be destroyed
+				if (m_is_valid_objs)
+					block->SetPriorBlock(SmartBuf());	// break the link so prior block can be freed
 
 				break;
 			}
 
-			ccsleep(10);	// wait for blockchain to advance
-
-			if (g_shutdown)
+			if (ccsleep(10))	// wait for blockchain to advance
 				return;
 		}
 
@@ -234,10 +241,10 @@ void Expire::Init()
 	m_expireobjs.push_back(new ValidObjsExpire("ValidObjs-Blocks", g_seqnum[BLOCKSEQ][VALIDSEQ].seqmin, g_seqnum[BLOCKSEQ][VALIDSEQ].seqmax, valid_block_expire_age, true));
 	m_expireobjs.push_back(new RelayObjsExpire("RelayObjs-Blocks", g_seqnum[BLOCKSEQ][RELAYSEQ].seqmin, g_seqnum[BLOCKSEQ][RELAYSEQ].seqmax, relay_block_expire_age, false));
 
-	m_expireobjs.push_back(new ValidObjsExpire("ValidObjs-Txs", g_seqnum[TXSEQ][VALIDSEQ].seqmin, g_seqnum[TXSEQ][VALIDSEQ].seqmax, valid_tx_expire_age, false));
+	m_expireobjs.push_back(new ValidObjsExpire("ValidObjs-Txs", g_seqnum[TXSEQ][VALIDSEQ].seqmin, g_seqnum[TXSEQ][VALIDSEQ].seqmax, valid_tx_expire_age, true));
 	m_expireobjs.push_back(new RelayObjsExpire("RelayObjs-Txs", g_seqnum[TXSEQ][RELAYSEQ].seqmin, g_seqnum[TXSEQ][RELAYSEQ].seqmax, relay_tx_expire_age, false));
 
-	m_expireobjs.push_back(new ValidObjsExpire("ValidObjs-Xreq", g_seqnum[XREQSEQ][VALIDSEQ].seqmin, g_seqnum[XREQSEQ][VALIDSEQ].seqmax, valid_tx_expire_age, false));
+	m_expireobjs.push_back(new ValidObjsExpire("ValidObjs-Xreq", g_seqnum[XREQSEQ][VALIDSEQ].seqmin, g_seqnum[XREQSEQ][VALIDSEQ].seqmax, valid_tx_expire_age, true));
 	m_expireobjs.push_back(new RelayObjsExpire("RelayObjs-Xreq", g_seqnum[XREQSEQ][RELAYSEQ].seqmin, g_seqnum[XREQSEQ][RELAYSEQ].seqmax, relay_tx_expire_age, false));
 
 	for (auto expireobj : m_expireobjs)
@@ -307,7 +314,7 @@ void Expire::ChangeExpireAge(unsigned i, int32_t age)
 		return;
 	}
 
-	CCASSERT(m_expireobjs[i]->m_expire_age_can_change);
+	CCASSERT(m_expireobjs[i]->m_is_valid_objs);
 
 	if (age < 0)
 		age = m_expireobjs[i]->m_default_expire_age;

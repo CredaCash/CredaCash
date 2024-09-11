@@ -164,44 +164,46 @@ void start_shutdown()
 #endif
 }
 
-void wait_for_shutdown(unsigned millisec)
+bool wait_for_shutdown(unsigned millisec)
 {
+	if (g_shutdown)
+		return true;
+
 	unique_lock<mutex> lock(shutdown_mutex);
 
 	if (g_shutdown)
-		return;
+		return true;
 
 	if (millisec != (unsigned)(-1))
 	{
 		shutdown_condition_variable.wait_for(lock, chrono::milliseconds(millisec));
-
-		return;
 	}
-	else
+	else while (!g_shutdown)
 	{
-		while (!g_shutdown)
-		{
-			shutdown_condition_variable.wait(lock);
-		}
+		shutdown_condition_variable.wait(lock);
 	}
+
+	return g_shutdown;
 }
 
-void ccsleep(int sec)
+bool ccsleep(int sec)
 {
 	if (sec > 0)
-		wait_for_shutdown(sec*1000);
+		return wait_for_shutdown(sec*1000);
+	else
+		return g_shutdown;
 }
 
-void set_nice(int nice)
+void set_nice(int _nice)
 {
-	if (!nice)
+	if (!_nice)
 		return;
 
 #ifdef _WIN32
 	auto hthread = GetCurrentThread();
 	int priority = GetThreadPriority(hthread);
 
-	priority -= nice;
+	priority -= _nice;
 
 	if (priority > THREAD_PRIORITY_TIME_CRITICAL)
 		priority = THREAD_PRIORITY_TIME_CRITICAL;
@@ -213,26 +215,14 @@ void set_nice(int nice)
 	else if (priority < THREAD_PRIORITY_LOWEST)
 		priority = THREAD_PRIORITY_LOWEST;
 
-	SetThreadPriority(hthread, priority);
+	auto rc = SetThreadPriority(hthread, priority);
+	(void)rc;
+
+	//cerr << "SetThreadPriority(" << hthread << "," << priority << ") returned " << rc << " GetLastError " << GetLastError() << endl;
 #else
-	sched_param sp;
-	sched_getparam(0, &sp);
+	auto rc = nice(_nice);
+	(void)rc;
 
-	if (nice < 0)
-	{
-		if (sp.sched_priority > nice)
-			sp.sched_priority -= nice;
-		else if (sp.sched_priority > 1)
-			sp.sched_priority = 1;
-	}
-	else
-	{
-		sp.sched_priority -= nice;
-
-		if (sp.sched_priority > 99)
-			sp.sched_priority = 99;
-	}
-
-	sched_setparam(0, &sp);
+	//cerr << "nice(" << _nice << ") returned " << rc << " errno " << errno << endl;
 #endif
 }

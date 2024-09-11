@@ -46,6 +46,7 @@
 #define TRACE_BLOCKCHAIN		(g_params.trace_blockchain)
 #define TRACE_SERIALNUM_CHECK	(g_params.trace_serialnum_check)
 #define TRACE_DELIBLETX_CHECK	(g_params.trace_delibletx_check)
+#define TRACE_TRANSACT			(g_params.trace_tx_server)
 
 #define TRACE_SIGNING			0
 
@@ -901,6 +902,8 @@ void BlockChain::SetLastIndelible(SmartBuf smartobj)
 	m_last_matching_start_block_time = g_process_xreqs.m_matching_block_time.load();
 
 	m_last_indelible_ticks = ccticks();
+
+	if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(debug) << "BlockChain::SetLastIndelible last_indelible_level " << m_last_indelible_level << " last_matching_start_block_time " << m_last_matching_start_block_time;
 }
 
 void BlockChain::GetLastIndelibleValues(BlockChainStatus& blockchain_status)
@@ -911,6 +914,8 @@ void BlockChain::GetLastIndelibleValues(BlockChainStatus& blockchain_status)
 	blockchain_status.last_indelible_timestamp = m_last_indelible_timestamp;
 	blockchain_status.last_matching_completed_block_time = m_last_matching_completed_block_time;
 	blockchain_status.last_matching_start_block_time = m_last_matching_start_block_time;
+
+	if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(debug) << "BlockChain::GetLastIndelibleValues last_indelible_level " << m_last_indelible_level << " last_matching_start_block_time " << m_last_matching_start_block_time;
 }
 
 /*
@@ -1005,7 +1010,7 @@ bool BlockChain::DoConfirmationLoop(DbConn *dbconn, SmartBuf newobj, TxPay& txbu
 	if (rc)
 		return g_blockchain.SetFatalError("BlockChain::DoConfirmations error committing db write");
 
-	SetLastIndelible(m_new_indelible_block);
+	SetLastIndelible(m_new_indelible_block);	// for consistency, call after EndWrite
 
 	m_new_indelible_block.ClearRef();
 
@@ -1285,6 +1290,28 @@ bool BlockChain::IndexTxs(DbConn *dbconn, uint64_t blocktime, SmartBuf smartobj,
 
 		//if (TRACE_SERIALNUM_CHECK) BOOST_LOG_TRIVIAL(trace) << "BlockChain::IndexTxs ptxdata " << (uintptr_t)pdata << " txsize " << txsize << " data " << buf2hex(pdata, 16);
 
+		if (IsWitness())
+		{
+			// delete obj from ValidObjs so witness won't spend time trying to add it to another block
+
+			ccoid_t oid;
+			SmartBuf obj;
+
+			CCObject::ComputeMessageObjId(pdata, &oid);
+
+			auto rc = dbconn->ValidObjsGetObj(oid, &obj);
+
+			//BOOST_LOG_TRIVIAL(info) << "BlockChain::IndexTxs ValidObjsGetObj " << buf2hex(&oid, CC_OID_TRACE_SIZE) << " returned " << rc;
+
+			if (!rc)
+			{
+				auto rc = dbconn->ValidObjsDeleteObj(obj);
+				(void)rc;
+
+				//BOOST_LOG_TRIVIAL(info) << "BlockChain::IndexTxs ValidObjsDeleteObj " << buf2hex(&oid, CC_OID_TRACE_SIZE) << " returned " << rc;
+			}
+		}
+
 		auto rc = tx_from_wire(txbuf, (char*)pdata, txsize);
 		if (rc)
 		{
@@ -1426,7 +1453,8 @@ void BlockChain::CheckCreatePseudoSerialnum(TxPay& txbuf, shared_ptr<Xtx>& xtx, 
 
 		//CCRandom(&txbuf.inputs[i].S_serialnum, TX_SERIALNUM_BYTES);	// for testing
 
-		if (TRACE_SERIALNUM_CHECK) BOOST_LOG_TRIVIAL(trace) << "BlockChain::CheckCreatePseudoSerialnum created serialnum " << buf2hex(&txbuf.inputs[i].S_serialnum, TX_SERIALNUM_BYTES) << " hashkey " << buf2hex(&txbuf.inputs[i].S_hashkey, TX_HASHKEY_BYTES) << " from " << xpay->DebugString();
+		if                (TRACE_XPAYS)  BOOST_LOG_TRIVIAL(info) << "BlockChain::CheckCreatePseudoSerialnum created serialnum " << buf2hex(&txbuf.inputs[i].S_serialnum, TX_SERIALNUM_BYTES) << " hashkey " << buf2hex(&txbuf.inputs[i].S_hashkey, TX_HASHKEY_BYTES) << " from " << xpay->DebugString();
+		else if (TRACE_SERIALNUM_CHECK) BOOST_LOG_TRIVIAL(trace) << "BlockChain::CheckCreatePseudoSerialnum created serialnum " << buf2hex(&txbuf.inputs[i].S_serialnum, TX_SERIALNUM_BYTES) << " hashkey " << buf2hex(&txbuf.inputs[i].S_hashkey, TX_HASHKEY_BYTES) << " from " << xpay->DebugString();
 	}
 	else
 	{
@@ -1567,6 +1595,30 @@ bool BlockChain::AddXreq(DbConn *dbconn, uint64_t blocktime, Xreq& xreq, const v
 
 	CCObject::ComputeMessageObjId(wire, &xreq.objid);
 
+	if (xreq.type != CC_TYPE_XCX_MINING_TRADE)
+		return AddOneXreq(dbconn, blocktime, xreq);
+
+	Xreq xreq2(xreq);
+
+	xreq.ConvertTradeToBuy();
+	xreq2.ConvertTradeToSell();
+
+	xreq2.seqnum = g_seqnum[XREQSEQ][VALIDSEQ].NextNum();
+	xreq2.xreqnum = g_exchange.GetNextXreqnum(true);
+
+	xreq.linked_seqnum = xreq2.seqnum;
+
+	auto rc = AddOneXreq(dbconn, blocktime, xreq);
+	if (rc)
+		return rc;
+
+	xreq2.linked_seqnum = xreq.seqnum;
+
+	return AddOneXreq(dbconn, blocktime, xreq2);
+}
+
+bool BlockChain::AddOneXreq(DbConn *dbconn, uint64_t blocktime, Xreq& xreq)
+{
 	if (TRACE_BLOCKCHAIN) BOOST_LOG_TRIVIAL(LOG_SYNC_DEBUG) << "BlockChain::AddXreq blocktime " << blocktime << " xreqnum " << xreq.xreqnum << " objid " << buf2hex(&xreq.objid, CC_OID_TRACE_SIZE);
 
 	auto rc = g_process_xreqs.AddRequest(dbconn, xreq);
@@ -1590,7 +1642,8 @@ bool BlockChain::AddXreq(DbConn *dbconn, uint64_t blocktime, Xreq& xreq, const v
 
 bool BlockChain::ProcessXpayment(DbConn *dbconn, uint64_t blocktime, const Xpay& xpay, bigint_t& donation, TxPay& txbuf)
 {
-	if (TRACE_BLOCKCHAIN) BOOST_LOG_TRIVIAL(trace) << "BlockChain::ProcessXpayment blocktime " << blocktime << " " << xpay.DebugString();
+	if           (TRACE_XPAYS)  BOOST_LOG_TRIVIAL(info) << "BlockChain::ProcessXpayment blocktime " << blocktime << " " << xpay.DebugString();
+	else if (TRACE_BLOCKCHAIN) BOOST_LOG_TRIVIAL(trace) << "BlockChain::ProcessXpayment blocktime " << blocktime << " " << xpay.DebugString();
 
 	if (xpay.foreign_amount <= 0)
 	{

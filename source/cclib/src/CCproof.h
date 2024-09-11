@@ -59,6 +59,8 @@ CCPROOF_API CCProof_GenKeys();
 
 CCPROOF_API CCProof_Init(const std::wstring& proof_key_dir = std::wstring());
 
+CCPROOF_API CCProof_Free();
+
 CCPROOF_API CCProof_GenProof(TxPay& tx);
 
 CCPROOF_API CCProof_PreloadVerifyKeys(bool require_all = false);

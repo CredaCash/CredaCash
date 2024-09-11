@@ -6,11 +6,17 @@
  * xtransaction-xpay.hpp
 */
 
-// The Xreq class represents exchange trade payments (msg type CC_TYPE_XCX_PAYMENT)
+// The Xpay class represents exchange trade payments (msg type CC_TYPE_XCX_PAYMENT)
 
 #pragma once
 
 #include "xtransaction.hpp"
+
+//#define TRACE_XPAYS		1
+
+#ifndef TRACE_XPAYS
+#define TRACE_XPAYS		0	// don't trace
+#endif
 
 #if TEST_XREQ
 #pragma pack(push, 1)
@@ -19,6 +25,7 @@
 class Xpay : public Xtx
 {
 public:
+	UniFloat	match_left_to_pay;
 	UniFloat	foreign_amount;
 	uint64_t	foreign_amount_fp;
 

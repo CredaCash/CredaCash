@@ -15,14 +15,15 @@ using namespace boost::log::trivial;
 
 #define USE_SMARTBUF_GUARD		1
 
-//#define RTEST_DELAY_SMARTBUF_RELEASE	32
+//!#define RTEST_DELAY_SMARTBUF_RELEASE	32
 
 #ifndef RTEST_DELAY_SMARTBUF_RELEASE
 #define RTEST_DELAY_SMARTBUF_RELEASE	0	// don't test
 #endif
 
-#define SMARTBUF_GUARD	0x84758362
-#define SMARTBUF_FREE	0x28472919
+#define SMARTBUF_GUARD_LO	0x84758362
+#define SMARTBUF_GUARD_HI	0x41037396
+#define SMARTBUF_FREE		0x28472919
 
 std::atomic<int64_t> bytecount(0);
 std::atomic<unsigned> objcount(0);
@@ -64,48 +65,48 @@ SmartBuf::SmartBuf(size_t bufsize)
 
 	if (TRACE_SMARTBUF) BOOST_LOG_TRIVIAL(debug) << "SmartBuf " << (uintptr_t)this << " malloc'ed bufp " << (uintptr_t)bufp << " size " << bufsize << " useable size " << usize << " sizeof(refcount_t) " << sizeof(refcount_t) << " required alignment " << std::alignment_of<refcount_t>::value << " size of bufp " << sizeof(buf);
 
-	if (bufp)
+	if (!bufp)
+		return;
+
+	auto asize = alloc_size(bufp);
+
+	CCASSERT(asize >= msize);
+	CCASSERT(usize >= bufsize);
+
+	memset(bufp, 0, asize);
+
+	if (0 && TRACE_SMARTBUF) BOOST_LOG_TRIVIAL(debug) << "SmartBuf " << (uintptr_t)this << " zero'ed bufp " << (uintptr_t)bufp << " size " << asize;
+
+	if (USE_SMARTBUF_GUARD)
 	{
-		auto asize = alloc_size(bufp);
+		*(uint32_t*)bufp = SMARTBUF_GUARD_LO;
 
-		CCASSERT(asize >= msize);
-		CCASSERT(usize >= bufsize);
+		*(uint32_t*)(bufp + asize - sizeof(uint32_t)) = SMARTBUF_GUARD_HI;
+	}
 
-		memset(bufp, 0, asize);
+	SetRefCount(bufp, 1);
 
-		if (0 && TRACE_SMARTBUF) BOOST_LOG_TRIVIAL(debug) << "SmartBuf " << (uintptr_t)this << " zero'ed bufp " << (uintptr_t)bufp << " size " << asize;
+	if (USE_SMARTBUF_GUARD) CheckGuard(bufp);
 
-		if (USE_SMARTBUF_GUARD)
+	static unsigned t0 = 0;
+	if (!t0)
+		t0 = time(NULL);
+
+	bytecount += asize;
+
+	auto nobjs = objcount.fetch_add(1);
+	if (!(nobjs & (127)))
+	{
+		if (nobjs > maxobjcount.load())
 		{
-			*(uint32_t*)bufp = SMARTBUF_GUARD;
+			maxobjcount.store(nobjs);
 
-			*(uint32_t*)(bufp + asize - sizeof(uint32_t)) = SMARTBUF_GUARD;
-		}
+			unsigned t = time(NULL);
+			unsigned dt = t - t0;
+			t0 = t;
 
-		SetRefCount(bufp, 1);
-
-		if (USE_SMARTBUF_GUARD) CheckGuard(bufp);
-
-		static unsigned t0 = 0;
-		if (!t0)
-			t0 = time(NULL);
-
-		bytecount += asize;
-
-		auto nobjs = objcount.fetch_add(1);
-		if (!(nobjs & (127)))
-		{
-			if (nobjs > maxobjcount.load())
-			{
-				maxobjcount.store(nobjs);
-
-				unsigned t = time(NULL);
-				unsigned dt = t - t0;
-				t0 = t;
-
-				//cerr << "SmartBuf nobjs " << nobjs << " dt " << dt << endl;
-				if (1 || TRACE_SMARTBUF) BOOST_LOG_TRIVIAL(info) << "SmartBuf nobjs " << nobjs << " dt " << dt;	// !!! note "1+..." and "info"
-			}
+			//cerr << "SmartBuf nobjs " << nobjs << " dt " << dt << endl;
+			if (1 || TRACE_SMARTBUF) BOOST_LOG_TRIVIAL(info) << "SmartBuf nobjs " << nobjs << " dt " << dt;
 		}
 	}
 }
@@ -117,7 +118,7 @@ void SmartBuf::CheckGuard(const uint8_t* bufp, bool refcount_iszero) const
 	auto refcount = GetRefCount(bufp);
 
 	auto guard = *(uint32_t*)bufp;
-	if (guard != SMARTBUF_GUARD)
+	if (guard != SMARTBUF_GUARD_LO)
 	{
 		BOOST_LOG_TRIVIAL(fatal) << "@ *** ERROR SmartBuf " << (uintptr_t)this << " CheckGuard bufp " << (uintptr_t)bufp << " bad front guard " << hex << guard << dec << " buffer size " << size(bufp) << " refcount " << refcount;
 		BOOST_LOG_TRIVIAL(fatal) << "@ *** ERROR SmartBuf " << (uintptr_t)this << " buffer contents " << buf2hex(bufp, size(bufp));
@@ -142,7 +143,7 @@ void SmartBuf::CheckGuard(const uint8_t* bufp, bool refcount_iszero) const
 	}
 
 	guard = *(uint32_t*)(bufp + alloc_size(bufp) - sizeof(uint32_t));
-	if (guard != SMARTBUF_GUARD)
+	if (guard != SMARTBUF_GUARD_HI)
 	{
 		BOOST_LOG_TRIVIAL(fatal) << "@ *** ERROR SmartBuf " << (uintptr_t)this << " CheckGuard bufp " << (uintptr_t)bufp << " bad back guard " << hex << guard << dec << " buffer size " << size(bufp) << " refcount " << refcount;
 		BOOST_LOG_TRIVIAL(fatal) << "@ *** ERROR SmartBuf " << (uintptr_t)this << " buffer contents " << buf2hex(bufp, size(bufp));
@@ -238,20 +239,27 @@ unsigned SmartBuf::IncRef()
 
 	//if (TRACE_SMARTBUF) BOOST_LOG_TRIVIAL(debug) << "SmartBuf " << (uintptr_t)this << " IncRef bufp " << (uintptr_t)bufp;
 
-	if (USE_SMARTBUF_GUARD) CheckGuard(bufp);
-
 	auto refcount = ((refcount_t*)(bufp + USE_SMARTBUF_GUARD * sizeof(uint32_t)))->fetch_add(1) + 1;
+
+	if (!refcount)
+	{
+		BOOST_LOG_TRIVIAL(fatal) << "@ *** ERROR SmartBuf " << (uintptr_t)this << " IncRef with refcount zero; bufp " << (uintptr_t)bufp << " size " << size(bufp);
+		BOOST_LOG_TRIVIAL(fatal) << "@ *** ERROR SmartBuf " << (uintptr_t)this << " buffer contents " << buf2hex(bufp, size(bufp));
+
+		CCASSERT(0); raise(SIGTERM);
+	}
+
+	if (USE_SMARTBUF_GUARD) CheckGuard(bufp);
 
 	if (!(refcount & 127) && refcount > maxrefcount.load())
 	{
 		maxrefcount.store(refcount);
 
-		//cout << "SmartBuf max refcount " << refcount << endl;	// comment this out
-
-		if (1 || TRACE_SMARTBUF) BOOST_LOG_TRIVIAL(info) << "SmartBuf max refcount " << refcount;	// !!! note "1+..." and "info"
+		//cout << "SmartBuf max refcount " << refcount << endl;
+		if (1 || TRACE_SMARTBUF) BOOST_LOG_TRIVIAL(info) << "SmartBuf max refcount " << refcount;
 	}
 
-	// debugging; don't use in production code:
+	// for debugging; don't use in production code:
 	// if (refcount && !(refcount & 0x3fff)) BOOST_LOG_TRIVIAL(warning) << "SmartBuf " << (uintptr_t)this << " IncRef bufp " << (uintptr_t)bufp << " to refcount " << refcount << " buffer contents " << buf2hex(data(), size(bufp) < 256 ? size(bufp) : 256);
 
 	if (0 && TRACE_SMARTBUF) BOOST_LOG_TRIVIAL(debug) << "SmartBuf " << (uintptr_t)this << " IncRef bufp " << (uintptr_t)bufp << " to refcount " << refcount;
@@ -259,7 +267,7 @@ unsigned SmartBuf::IncRef()
 	return refcount;
 }
 
-unsigned SmartBuf::DecRef()
+unsigned SmartBuf::DecRef(bool test_delay)
 {
 	auto bufp = buf.load();
 
@@ -275,8 +283,6 @@ unsigned SmartBuf::DecRef()
 
 	if (!refcount)
 	{
-		if (bufp && RandTest(RTEST_DELAY_SMARTBUF_RELEASE)) sleep(1);
-
 		auto asize = alloc_size(bufp);
 
 		if (TRACE_SMARTBUF) BOOST_LOG_TRIVIAL(debug) << "SmartBuf " << (uintptr_t)this << " freeing bufp " << (uintptr_t)bufp << " size " << asize;
@@ -290,6 +296,8 @@ unsigned SmartBuf::DecRef()
 
 			*(uint32_t*)(bufp + asize - sizeof(uint32_t)) = SMARTBUF_FREE;
 		}
+
+		if (test_delay && RandTest(RTEST_DELAY_SMARTBUF_RELEASE)) sleep(5);
 
 		if (naux && auxp[0])
 		{
@@ -327,7 +335,7 @@ SmartBuf::~SmartBuf()
 
 	if (!bufp) return;
 
-	if (RandTest(RTEST_DELAY_SMARTBUF_RELEASE)) sleep(1);
+	//if (RandTest(RTEST_DELAY_SMARTBUF_RELEASE)) sleep(1);
 
 	if (0 && TRACE_SMARTBUF) BOOST_LOG_TRIVIAL(debug) << "SmartBuf " << (uintptr_t)this << " destructor bufp " << (uintptr_t)bufp;
 
@@ -355,7 +363,7 @@ SmartBuf& SmartBuf::operator= (const SmartBuf& s)
 	auto bufp = buf.load();
 	auto sbufp = s.buf.load();
 
-	if (bufp && RandTest(RTEST_DELAY_SMARTBUF_RELEASE)) sleep(1);
+	//if (bufp && RandTest(RTEST_DELAY_SMARTBUF_RELEASE)) sleep(1);
 
 	if (0 && TRACE_SMARTBUF) BOOST_LOG_TRIVIAL(debug) << "SmartBuf " << (uintptr_t)this << " bufp " << (uintptr_t)bufp << " assigned from smartbuf " << (uintptr_t)&s << " bufp " << (uintptr_t)sbufp;
 
@@ -398,7 +406,7 @@ void SmartBuf::ClearRef()
 
 	if (!bufp) return;
 
-	if (RandTest(RTEST_DELAY_SMARTBUF_RELEASE)) sleep(1);
+	//if (RandTest(RTEST_DELAY_SMARTBUF_RELEASE)) sleep(1);
 
 	if (0 && TRACE_SMARTBUF) BOOST_LOG_TRIVIAL(debug) << "SmartBuf " << (uintptr_t)this << " ClearRef bufp " << (uintptr_t)bufp;
 

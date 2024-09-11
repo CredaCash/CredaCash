@@ -53,9 +53,11 @@ void LpcService::WaitForShutdown()
 
 void LpcThread::ThreadProc(boost::function<void()> threadproc)
 {
-	if (TRACE_LPCSERVE) BOOST_LOG_TRIVIAL(trace) << "LpcThread::ThreadProc start " << (uintptr_t)this;
+	BOOST_LOG_TRIVIAL(info) << "LpcThread::ThreadProc start " << (uintptr_t)this;
+
+	//cc_malloc_logging_not_this_thread(true);
 
 	threadproc();
 
-	if (TRACE_LPCSERVE) BOOST_LOG_TRIVIAL(trace) << "LpcThread::ThreadProc end " << (uintptr_t)this;
+	BOOST_LOG_TRIVIAL(info) << "LpcThread::ThreadProc end " << (uintptr_t)this;
 }

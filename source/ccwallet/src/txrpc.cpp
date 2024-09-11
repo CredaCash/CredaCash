@@ -350,7 +350,7 @@ void cc_send(bool async, CP string& ref_id_req, CP string& dest, CP bigint_t& am
 
 	Transaction tx;
 
-	rc = tx.CreateTxPay(dbconn, txquery, async, ref_id, CC_TYPE_TXPAY, dest, dest_chain, destination, amount, comment, comment_to, subfee);
+	rc = tx.CreateTxPay(dbconn, txquery, async*Transaction::TX_MODE_ASYNC, ref_id, CC_TYPE_TXPAY, dest, dest_chain, destination, amount, comment, comment_to, subfee);
 
 	if (TRACE_TX) BOOST_LOG_TRIVIAL(info) << "cc_send ref_id " << ref_id << " dest " << dest << " amount " << amount << " result rc " << rc << " txid " << tx.GetBtcTxid();
 
@@ -999,6 +999,8 @@ void cc_exchange_query_mining_info(RPC_STDPARAMS)
 
 	root["wallet-exchange-request-minimum-amount"] = CCXFLOAT_STRING_PREFIX + UniFloat(XCX_REQ_MIN).asFullString();
 
+	root["mining-request-pledge"] = XREQ_SIMPLE_PLEDGE;
+
 	//rstream << results.json;
 
 	XreqQueryJsonWriter writer;
@@ -1071,13 +1073,19 @@ void cc_exchange_query_requests(CP unsigned xcx_type, CP bigint_t& min_amount, C
 		//cerr << i << " " << root[key] << " " << buf2hex(&objid, sizeof(objid)) << endl;
 
 		rc = dbconn->TransactionSelectObjIdDescendingId(objid, INT64_MAX, tx);
-		if (rc < 0) throw txrpc_wallet_error;
+		if (rc < 0) throw txrpc_wallet_db_error;
+		if (rc)
+		{
+			Xreq::ConvertTradeObjIdToSellObjId(objid);
+			rc = dbconn->TransactionSelectObjIdDescendingId(objid, INT64_MAX, tx);
+			if (rc < 0) throw txrpc_wallet_db_error;
+		}
+
+		key = "self-origin";
+		root[key] = !rc;
 
 		if (!rc)
 		{
-			key = "self-origin";
-			root[key] = true;
-
 			key = "wallet-txid";
 			root[key] = tx.GetBtcTxid();
 		}
@@ -1144,13 +1152,39 @@ These 7 fields are not supported in this UI:
 	HoldTime(=0), HoldTimeRequired(=0)
 */
 
-void cc_crosschain_request_create(bool async, CP string& ref_id_req, CP unsigned xcx_type, CP bigint_t& min_amount, CP bigint_t& max_amount, CP double& rate, CP double& costs, CP uint64_t quote_asset, CP string& foreign_asset, CP string& foreign_address, unsigned expiration, CP double& wait_discount, RPC_STDPARAMS)
+void cc_crosschain_request_create(int mode, CP string& ref_id_req, CP unsigned xcx_type, CP bigint_t& min_amount, CP bigint_t& max_amount, CP double& rate, CP double& costs, CP uint64_t quote_asset, CP string& foreign_asset, CP string& foreign_address, uint64_t expiration, CP double& wait_discount, RPC_STDPARAMS)
 {
 	auto ref_id = ref_id_req;
 
-	if (TRACE_TX) BOOST_LOG_TRIVIAL(info) << "cc_crosschain_request_create async " << async << " ref_id " << ref_id << " xcx_type " << xcx_type << " min_amount " << min_amount << " max_amount " << max_amount << " rate " << rate << " costs " << costs << " foreign_asset " << foreign_asset << " foreign_address " << foreign_address << " expiration " << expiration << " wait_discount " << wait_discount;
+	if (TRACE_TX) BOOST_LOG_TRIVIAL(info) << "cc_crosschain_request_create mode " << mode << " ref_id " << ref_id << " xcx_type " << xcx_type << " min_amount " << min_amount << " max_amount " << max_amount << " rate " << rate << " costs " << costs << " foreign_asset " << foreign_asset << " foreign_address " << foreign_address << " expiration " << expiration << " wait_discount " << wait_discount;
 
-	// TODO? create destination with something other than SECRET_TYPE_SPENDABLE_DESTINATION and MAIN_PRE_DESTINATION_ID?
+	// round rate to be more lenient
+
+	auto req_rate = rate;
+	auto direction = -Xreq::RateSign(Xtx::TypeIsBuyer(xcx_type));
+	if (!rate) direction = 1;
+	int rounding = 0;
+
+	while (!g_shutdown)
+	{
+		auto encoded = UniFloat::WireEncode(rate, rounding);
+		req_rate = UniFloat::WireDecode(encoded).asFloat();
+
+		encoded = UniFloat::WireEncode(req_rate);
+		req_rate = UniFloat::WireDecode(encoded).asFloat();
+
+		//cerr << rounding << " " << UniFloat(rate) << " " << UniFloat(req_rate) << endl;
+
+		if (direction < 0 && req_rate <= rate)
+			break;
+		else if (direction > 0 && req_rate >= rate && req_rate > 0)
+			break;
+
+		rounding += direction;
+
+		if (rounding < -5000 || rounding > 5000)
+			throw txrpc_wallet_error;
+	}
 
 	TxParams txparams;
 
@@ -1159,6 +1193,9 @@ void cc_crosschain_request_create(bool async, CP string& ref_id_req, CP unsigned
 
 	if (!expiration)
 		expiration = (IsTestnet(txparams.blockchain) ? 5*60 : 10*60);
+
+	// TODO: check to see if the ref_id already exists before creating a new destination
+	// TODO? create destination with something other than SECRET_TYPE_SPENDABLE_DESTINATION and MAIN_PRE_DESTINATION_ID?
 
 	Secret dest, address;
 	SpendSecretParams params;
@@ -1171,7 +1208,7 @@ void cc_crosschain_request_create(bool async, CP string& ref_id_req, CP unsigned
 
 	CCASSERT(address.id);
 
-	Xreq xreq(xcx_type, expiration, min_amount, max_amount, rate, costs, quote_asset, foreign_asset, foreign_address, IsTestnet(txparams.blockchain));
+	Xreq xreq(xcx_type, expiration, min_amount, max_amount, req_rate, costs, quote_asset, foreign_asset, foreign_address, IsTestnet(txparams.blockchain));
 
 	xreq.hold_time = XREQ_SIMPLE_HOLD_TIME;
 	xreq.hold_time_required = XREQ_SIMPLE_HOLD_TIME;
@@ -1185,21 +1222,65 @@ void cc_crosschain_request_create(bool async, CP string& ref_id_req, CP unsigned
 	if (xreq.IsSimple())
 		xreq.pledge = XREQ_SIMPLE_PLEDGE;
 
-	if (xreq.IsSeller() || xreq.pledge == 100)
-		xreq.amount_carry_out = max_amount;
-	else if (xreq.pledge)
-		xreq.amount_carry_out = max_amount * bigint_t(xreq.pledge) / bigint_t(100UL);	// pledge amounts always rounded down
+	if (xreq.IsSeller())
+		xreq.amount_carry_out = xreq.max_amount;
+	else
+		xreq.amount_carry_out = 0UL;
+
+	if (xreq.IsBuyer() && xreq.pledge == 100)
+		xreq.amount_carry_out = xreq.amount_carry_out + xreq.max_amount;
+	else if (xreq.IsBuyer() && xreq.pledge)
+		xreq.amount_carry_out = xreq.amount_carry_out + xreq.max_amount * bigint_t(xreq.pledge) / bigint_t(100UL);	// pledge amounts always rounded down
 
 	Transaction tx;
 
-	rc = tx.CreateTxPay(dbconn, txquery, async, ref_id, xreq.type, "", 0, 0UL, 0UL, "", "", false, &xreq);
+	rc = tx.CreateTxPay(dbconn, txquery, mode, ref_id, xreq.type, "", 0, 0UL, 0UL, "", "", false, &xreq);
 
-	if (TRACE_TX) BOOST_LOG_TRIVIAL(info) << "cc_crosschain_request_create ref_id " << ref_id << " xcx_type " << xcx_type << " min_amount " << min_amount << " max_amount " << max_amount << " rate " << rate << " foreign_asset " << foreign_asset << " result rc " << rc << " txid " << tx.GetBtcTxid();
+	if (TRACE_TX) BOOST_LOG_TRIVIAL(info) << "cc_crosschain_request_create ref_id " << ref_id << " xcx_type " << xcx_type << " min_amount " << min_amount << " max_amount " << max_amount << " rate " << req_rate << " foreign_asset " << foreign_asset << " result rc " << rc << " txid " << tx.GetBtcTxid() << " wire_data.size " << tx.wire_data.size();
 
 	// TODO: how does the tx status get updated?
 
-	if (!rc)
+	if (rc)
+		return;
+	else if (mode != Transaction::TX_MODE_PREPARE)
 		rstream << tx.GetBtcTxid();
+	else
+	{
+		string data;
+
+		base64_encode(base64sym, tx.wire_data.data(), tx.wire_data.size(), data, true);
+
+		rstream << "{\"txid\":\"" << tx.GetBtcTxid() << "\"";
+		rstream << ",\"refid\":\"" << tx.ref_id << "\"";
+		rstream << ",\"data\":\"" << data << "\"";
+		rstream << "}";
+	}
+}
+
+void cc_broadcast(CP string& ref_id, CP string& data, RPC_STDPARAMS)
+{
+	if (TRACE_TX) BOOST_LOG_TRIVIAL(info) << "cc_broadcast ref_id " << ref_id << " data " << data;
+
+	TxParams txparams;
+
+	auto rc = g_txparams.GetParams(txparams, txquery);
+	if (rc) throw txrpc_server_error;
+
+	Transaction tx;
+
+	rc = tx.BeginAndReadTxRefId(dbconn, ref_id);
+	if (rc < 0) throw txrpc_wallet_db_error;
+	if (rc) throw txrpc_txid_not_found;
+
+	rc = base64_decode(base64bin, data, tx.wire_data);
+	if (rc) throw RPC_Exception(RPC_INVALID_PARAMETER, "invalid data");
+
+	rc = tx.SendPreparedTx(dbconn, txquery, txparams);
+
+	if (rc)
+		return;
+
+	rstream << tx.GetBtcTxid();
 }
 
 void cc_exchange_requests_pending_totals(CP uint64_t base_asset, CP uint64_t quote_asset, CP string& foreign_asset, RPC_STDPARAMS)
@@ -1362,7 +1443,7 @@ static void stream_match(const Xmatch& xmatch, bool is_buyer, bool is_seller, in
 		if (!xmatch.wallet_paid)
 			rstream << "\"Make payment on foreign blockchain, then mark as paid in this wallet using cc.crosschain_match_mark_paid\"";
 		else
-			rstream << "\"After payment has 'payment-confirmations-required' on foreign blockchain, submit payment advice here using cc.crosschain_payment_claim\"";
+			rstream << "\"After payment reaches 'payment-confirmations-required' on foreign blockchain, submit payment advice here using cc.crosschain_payment_claim\"";
 	}
 	if (xmatch.next_deadline)
 	{
@@ -1543,23 +1624,45 @@ void cc_crosschain_match_mark_paid(uint64_t matchnum, CP string& foreign_txid, d
 	rstream << "}";
 }
 
+static void assert_if_match_closed(const Xmatch& xmatch)
+{
+	if (xmatch.status == XMATCH_STATUS_PAID)
+		throw RPC_Exception(RPC_INVALID_ADDRESS_OR_KEY, "Match is already paid");
+
+	if (Xmatch::StatusIsClosed(xmatch.status))
+		throw RPC_Exception(RPC_INVALID_ADDRESS_OR_KEY, "Match payment time has expired");
+}
+
 void cc_crosschain_payment_claim(bool async, CP string& ref_id_req, uint64_t matchnum, double amount, CP string& foreign_block_id, string& foreign_txid, double reminder_minutes, double minimum_advance_minutes, RPC_STDPARAMS)
 {
-	auto ref_id = ref_id_req;
-
 	if (TRACE_TX) BOOST_LOG_TRIVIAL(info) << "cc_crosschain_payment_claim async " << async << " ref_id_req " << ref_id_req << " matchnum " << matchnum << " amount " << amount << " foreign_block_id " << foreign_block_id << " foreign_txid " << foreign_txid << " reminder_minutes " << reminder_minutes << " minimum_advance_minutes " << minimum_advance_minutes;
 
+	Transaction tx;
 	Xmatch xmatch;
 
 	auto rc = dbconn->ExchangeMatchSelectNum(matchnum, xmatch);
 	if (rc < 0) throw txrpc_wallet_db_error;
 	if (rc) throw txrpc_match_not_found;
 
-	if (Xmatch::StatusIsClosed(xmatch.status))
-		throw RPC_Exception(RPC_INVALID_ADDRESS_OR_KEY, "Match is closed");
+	rc = tx.BeginAndReadTxRefId(dbconn, ref_id_req);
+	if (rc < 0) throw txrpc_wallet_db_error;
+	if (rc)
+	{
+		// when starting a new request with this ref_id, first check match status
+		// (for an existing ref_id, this is skipped so that the prior tx result is returned regardless of the current match status)
 
-	if (Xmatch::StatusIsPending(xmatch.status))
-		throw RPC_Exception(RPC_INVALID_ADDRESS_OR_KEY, "Match is still pending");
+		assert_if_match_closed(xmatch);
+
+		// poll to see if prior payment claim went through
+
+		BlockChainStatus blockchain_status;
+		ExchangeMatch::PollXmatch(dbconn, txquery, xmatch, blockchain_status);
+
+		assert_if_match_closed(xmatch);
+
+		if (Xmatch::StatusIsPending(xmatch.status))
+			throw RPC_Exception(RPC_INVALID_ADDRESS_OR_KEY, "Match is still pending");
+	}
 
 	if (!amount)
 		amount = xmatch.AmountToPay(true).asFloat();
@@ -1574,14 +1677,13 @@ void cc_crosschain_payment_claim(bool async, CP string& ref_id_req, uint64_t mat
 
 	// TODO: add a preliminary inquiry of the tx server to make sure pay advice is good before creating network msg with large POW
 
+	auto ref_id = ref_id_req;
+
 	Xpay xpay(matchnum, amount, foreign_block_id, foreign_txid);
 
-	Transaction tx;
-
-	rc = tx.CreateTxPay(dbconn, txquery, async, ref_id, xpay.type, "", 0, 0UL, 0UL, "", "", false, &xpay);
+	rc = tx.CreateTxPay(dbconn, txquery, async*Transaction::TX_MODE_ASYNC, ref_id, xpay.type, "", 0, 0UL, 0UL, "", "", false, &xpay);
 
 	// TODO: how does the tx status get updated?
-	// TODO: this payment advice could be simultaneous with a conflicting payment advice, so at some point, need to detect status
 
 	if (TRACE_TX) BOOST_LOG_TRIVIAL(info) << "cc_crosschain_payment_claim ref_id " << ref_id << " matchnum " << matchnum << " amount " << amount << " result rc " << rc << " txid " << tx.GetBtcTxid();
 

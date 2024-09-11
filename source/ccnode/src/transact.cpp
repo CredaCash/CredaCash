@@ -52,7 +52,8 @@
 #define TRANSACT_TIMEOUT				10	// timeout for entire connection, excluding validation
 #define TRANSACT_VALIDATION_TIMEOUT		20
 
-#define TRANSACT_CLOCK_ALLOWANCE					(5*60)
+#define TRANSACT_TIMESTAMP_PAST_ALLOWANCE		(40*60)
+#define TRANSACT_TIMESTAMP_FUTURE_ALLOWANCE		(5*60)
 
 #define TRACE_TRANSACT	(g_params.trace_tx_server)
 
@@ -125,7 +126,7 @@ void TransactConnection::HandleReadComplete()
 
 		if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleReadComplete CC_TAG_TX_QUERY_*";
 
-		clock_allowance = TRANSACT_CLOCK_ALLOWANCE;
+		clock_allowance = TRANSACT_TIMESTAMP_PAST_ALLOWANCE;
 
 		break;
 
@@ -136,11 +137,12 @@ void TransactConnection::HandleReadComplete()
 	case CC_TAG_XCX_NAKED_SELL:
 	case CC_TAG_XCX_SIMPLE_BUY:
 	case CC_TAG_XCX_SIMPLE_SELL:
+	case CC_TAG_XCX_SIMPLE_TRADE:
 	case CC_TAG_XCX_PAYMENT:
 	{
 		if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleReadComplete tag " << hex << tag << dec;
 
-		clock_allowance = TRANSACT_CLOCK_ALLOWANCE;
+		clock_allowance = TRANSACT_TIMESTAMP_PAST_ALLOWANCE;
 
 		CCASSERT(CC_MSG_HEADER_SIZE == sizeof(CCObject::Header));
 
@@ -174,13 +176,15 @@ void TransactConnection::HandleReadComplete()
 		return;
 	}
 
-	if (clock_allowance && tx_check_timestamp(*(uint64_t*)(m_pread + CC_MSG_HEADER_SIZE), clock_allowance))
+	auto timestamp = *(uint64_t*)(m_pread + CC_MSG_HEADER_SIZE);
+
+	if (clock_allowance && tx_check_timestamp(timestamp, clock_allowance, TRANSACT_TIMESTAMP_FUTURE_ALLOWANCE))
 	{
 		char *outbuf = m_writebuf.data();
 
 		sprintf(outbuf, "ERROR:invalid timestamp:%s", to_string(unixtime()).c_str());
 
-		if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleReadComplete error invalid timestamp; sending " << outbuf;
+		if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleReadComplete message tag " << hex << tag << dec << " error invalid timestamp " << timestamp << "; sending " << outbuf;
 
 		WriteAsync("TransactConnection::HandleReadComplete", boost::asio::buffer(outbuf, strlen(outbuf) + 1),
 				boost::bind(&Connection::HandleWrite, this, boost::asio::placeholders::error, AutoCount(this)));
@@ -273,6 +277,7 @@ void TransactConnection::HandleMsgReadComplete(const boost::system::error_code& 
 	case CC_TAG_XCX_NAKED_SELL:
 	case CC_TAG_XCX_SIMPLE_BUY:
 	case CC_TAG_XCX_SIMPLE_SELL:
+	case CC_TAG_XCX_SIMPLE_TRADE:
 	case CC_TAG_XCX_PAYMENT:
 	{
 		proof_difficulty = g_params.tx_work_difficulty;
@@ -417,6 +422,7 @@ void TransactConnection::HandleMsgReadComplete(const boost::system::error_code& 
 	case CC_TAG_XCX_NAKED_SELL:
 	case CC_TAG_XCX_SIMPLE_BUY:
 	case CC_TAG_XCX_SIMPLE_SELL:
+	case CC_TAG_XCX_SIMPLE_TRADE:
 
 		return HandleTx(PROCESS_Q_PRIORITY_X_REQ_HI, smartobj);
 
@@ -1064,7 +1070,7 @@ void TransactConnection::HandleTxQueryXreqs(const char *msg, unsigned size)
 
 	xreq.foreign_asset = string(msg + bufpos, size - bufpos);
 
-	auto select_buyers = Xtx::TypeIsSeller(xcx_type);
+	auto select_buyers = !Xtx::TypeIsBuyer(xcx_type);
 
 	xreq.type = 0;
 	xreq.db_search_max = 0;
@@ -1229,7 +1235,7 @@ void TransactConnection::HandleTxQueryXreqs(const char *msg, unsigned size)
 		os << ",\"base-costs\":" << xreq.base_costs JSON_ENDL
 		os << ",\"quote-costs\":" << xreq.quote_costs JSON_ENDL
 		os << ",\"destination\":\"0x" << hex << xreq.destination << dec << "\"" JSON_ENDL
-		if (xreq.IsSeller())
+		if (xreq.foreign_address.length())
 			os << ",\"foreign-address\":\"" << json_escape(xreq.foreign_address) << "\"" JSON_ENDL
 
 		os << ",\"add-immediately-to-blockchain\":" << xreq.flags.add_immediately_to_blockchain JSON_ENDL
@@ -1705,7 +1711,7 @@ void TransactConnection::SendTimeout()
 {
 	static const string outbuf = "UNKNOWN:server timeout";
 
-	BOOST_LOG_TRIVIAL(error) << Name() << " Conn " << m_conn_index << " TransactConnection::SendTimeout sending " << outbuf;
+	BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " TransactConnection::SendTimeout sending " << outbuf;
 
 	WriteAsync("TransactConnection::SendTimeout", boost::asio::buffer(outbuf.c_str(), outbuf.size() + 1),
 			boost::bind(&Connection::HandleWrite, this, boost::asio::placeholders::error, AutoCount(this)));
@@ -1813,11 +1819,11 @@ void TransactThread::ThreadProc(boost::function<void()> threadproc)
 {
 	tx_dbconn = new DbConn;
 
-	if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(trace) << "TransactThread::ThreadProc start " << (uintptr_t)this << " dbconn " << (uintptr_t)tx_dbconn;
+	BOOST_LOG_TRIVIAL(info) << "TransactThread::ThreadProc start " << (uintptr_t)this << " dbconn " << (uintptr_t)tx_dbconn;
 
 	threadproc();
 
-	if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(trace) << "TransactThread::ThreadProc end " << (uintptr_t)this << " dbconn " << (uintptr_t)tx_dbconn;
+	BOOST_LOG_TRIVIAL(info) << "TransactThread::ThreadProc end " << (uintptr_t)this << " dbconn " << (uintptr_t)tx_dbconn;
 
 	delete tx_dbconn;
 }

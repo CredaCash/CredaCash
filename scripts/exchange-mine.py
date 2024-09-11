@@ -1,4 +1,6 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python
+
+from __future__ import print_function
 
 '''
 CredaCash(TM) Exchange Mining Script
@@ -12,164 +14,81 @@ It is used in conjunction with the CredaCash Exchange Autopay script (exchange-p
 a CredaCash wallet, and a Bitcoin Cash core wallet. (Note the Electron Cash wallet is not
 supported by the script due to concerns about its reliability.)
 
-This script first checks to see that the autopay script is working.
+This script first optionally checks to see that the autopay script is working.
 It then makes matching buy and sell requests (wash trading) that meet the mining criteria:
-	- Simple buy requests of CredaCash for BCH.
+	- Simple trade request of CredaCash and BCH.
 	- Requested exchange rate slightly higher than the running average.
 	- Match amount between 20% and 180% of the running average.
 
-The number of requests it makes per hour is set in the config file.
+This script using simple trade requests, which is a request type intended specifically for mining.
+It is equivalent to a buy request and sell request at the same rate. However, for the purpose of
+mining only (not matching), it is credited with twice its rate, and the request therefore only
+required half the rate to mine.
 
-This script will suspend requests if either the CredaCash of BCH balance falls below the minimum
-set in the config file.  It will also stop if at any time the autopay script appears to fail.
+The buy and sell requests created by the simple trade request will either match each other, or one
+or both will match a simple buy or sell request submitted by another user. The possible outcomes are:
+
+	1. The buy and sell requests match each other in a wash trade. This qualifies for mining,
+			so the net result will be an increase in CredaCash by the amount mined.
+
+	2. The buy and sell requests both match other requests. The result will be a net gain
+			of CredaCash, a net gain of BCH, or both. This trade also qualfies for mining, resulting
+			in an increase in CredaCash by the amount mined.
+
+	3. The sell request is unmatched, while the buy request matches a different sell request that
+			offers a lower rate. The net result will be an exchange of BCH for CredaCash at a rate better
+			than the requested match rate. This also qualfies for mining, resulting in an increase in
+			CredaCash by the amount mined.
+
+	4. The buy request is unmatched, while the sell request matches a different buy request that
+			offers a higher rate. The net result will be an exchange of CredaCash for BCH at a rate better
+			than the requested match rate. This trade (an unmatched buy request) does not qualify for mining.
+
+The minimum and maximum acceptable exchange rate, and the number of requests to make each hour
+are set in the config file.
 
 The wallet balances and the total amount mined by the CredaCash wallet are reported on the console.
+Over time, if more buy requests match than sell requests or vice-versa, the amount of CredaCash
+or BCH in the wallet may decrease. Mining will be suspended if either of these balances fall
+below the minimums set in the config file.
 
 '''
 
-Minimum_Allowed_Payment_Minutes = 4	# It is considered a payment failure if a payment is not made
-									#   at least this many minutes before the payment deadline
+RATE_WARNING = '''
+*** IMPORTANT: The number of mining requests per minute in the config file should
+not be set higher than 120 until you are sure your computer can create payment
+claims at the chosen rate. This can be determined by examining the average
+payment claim time reported by the exchange autopay script during mining.
+'''
 
-BCH_MIN_SEND_AMOUNT = 1e-4
+MINING_ABORT = '''
+Mining aborted due to missed exchange match payment. This may be caused by
+network connection problems, by the exchange autopay script aborting or being
+stopped, or by this computer being unable to generate payment claims fast enough
+to keep up with the mining rate. This script may be restarted to continue
+mining, but if this problem occurs frequently, it may need to be investigated.
+'''
 
-test_rounding = False
-rounding_test = {}
+MAX_PAYMENT_BACKLOG_MINUTES = 60	# Mining will be paused if the backlog of matches to be paid or claimed exceeds this value
+MIN_PAYMENT_TIME_PERCENTAGE = 60	# Mining will be paused if a match payment is not claimed within this %'age of the allowed time
+MIN_ALLOWED_PAYMENT_MINUTES = 4		# Mining will be halted if a match payment is not claimed at least this many minutes before the deadline
 
-import sys
-import os
+BCH_MIN_SEND_AMOUNT = 1e-4					# don't do exchange requests that involve less than this amount of BCH
+EXCHANGE_REQUEST_EXPIRATION_SECONDS = 90	# expiration seconds for exchange requests
+
+TEST_ROUNDING = False
+
+exchange_common = 'exchange-common.py'
+with open(exchange_common) as f:
+    code = compile(f.read(), exchange_common, 'exec')
+    exec(code)
+
 import threading
-import traceback
-import requests
-import json
-import random
 import math
-import time
-import pprint
-
-if not sys.version.startswith('2.7.') or not ('GCC' in sys.version or '64 bit' in sys.version or 'AMD64' in sys.version):
-	print 'ERROR: This script requires Python 2.7.x (64 bit version).'
-	exit()
-
-MINING = 'Mining'
-CREDACASH = 'CredaCash'
-FOREIGN = 'BCH'
-BITCOIND = 'Bitcoind'
 
 CC_TYPE_XCX_SIMPLE_BUY = 6
 XMATCH_STATUS_ACCEPTED = 6
 XMATCH_STATUS_PAID = 9
-
-def do_rpc(s, c, method, params=()):
-	req = '{"id":0,"method":"' + method + '","params":'
-	if isinstance(params, dict):
-		params = json.dumps(params)
-		#print params
-		req += params
-	else:
-		req += '['
-		for i in range(len(params)):
-			if i: req += ','
-			p = params[i]
-			if isinstance(p, basestring) and p != 'true' and p != 'false':
-				req += '"' + (params[i]) + '"'
-			else:
-				req += str(params[i])
-		req += ']'
-	req += '}\n'
-	#print 'performing rpc port %d request %s\n' % (c.port, req),
-	try:
-		r = s.post('http://127.0.0.1:%d' % c.port, auth=(c.user, c.pwd), data=req, timeout=360)
-	except Exception as e:
-		print '%d Warning: rpc port %d exception %s req %s\n' % (time.time(), c.port, type(e), req),
-		#traceback.print_exc()
-		return None
-	#print 'rpc status code %d response: %s\n', (r.status_code, r.text),
-	if r.status_code != 200: # and method not in ('sendtoaddress', 'payto', 'broadcast'):
-		print '%d Warning: rpc port %d status code %d req %s\n' % (time.time(), c.port, r.status_code, req),
-	if method.startswith('cc.dump'):
-		return None
-	try:
-		j = json.loads(r.text)
-		if 'result' in (j or ()):
-			rv = j['result']
-		else:
-			rv = None
-		if rv is None:
-			print '%d Warning: rpc port %d result "%s" req %s\n' % (time.time(), c.port, j['error']['message'], req),
-		return rv
-	except:
-		#pprint.pprint(r)
-		if hasattr(r, 'text'):
-			print '%d Warning: rpc port %d json load failed "%s" req %s\n' % (time.time(), c.port, r.text.encode('ascii', 'backslashreplace'), req),
-		else:
-			print '%d Warning: rpc port % d no text returned for req %s\n' % (time.time(), c.port, req),
-		return None
-
-class Config:
-	def __init__(self, c, conf_file, s):
-		try:
-			c = c.pop(s)
-		except KeyError:
-			print 'ERROR: missing required section "%s" in config file %s' % (s, conf_file)
-			exit()
-		if s == FOREIGN:
-			self.type			= self.getkey(c, conf_file, s, 'type', validvals=[BITCOIND, ])
-		else:
-			self.type			= s
-		if self.type == MINING:
-			self.reqs_per_hr	= self.getkey(c, conf_file, s, 'exchange requests per hour')
-			self.req_min_amt	= self.getkey(c, conf_file, s, 'exchange request minimum amount')
-			self.req_max_amt	= self.getkey(c, conf_file, s, 'exchange request maximum amount')
-			self.min_cc_bal		= self.getkey(c, conf_file, s, 'minimum CredaCash balance', False, 20)
-			self.min_bch_bal	= self.getkey(c, conf_file, s, 'minimum BCH balance', False, 20)
-			self.skip_pay_test	= self.getkey(c, conf_file, s, 'skip autopay test', False, False)
-		if self.type == CREDACASH or self.type == BITCOIND:
-			self.port			= self.getkey(c, conf_file, s, 'port')
-			self.user			= self.getkey(c, conf_file, s, 'user')
-			self.pwd			= self.getkey(c, conf_file, s, 'password')
-		self.del_excluded_keys(c)
-		if len(c) > 0:
-			print 'ERROR: unrecognized key in section "%s" of config file %s:' % (s, conf_file), c
-			exit()
-
-	@staticmethod
-	def getkey(c, conf_file, s, k, required=True, defval=None, validvals=()):
-		try:
-			val = c.pop(k)
-			if not len(validvals):
-				return val
-			for v in validvals:
-				if val == v:
-					return val
-			print 'ERROR: key "%s" in section "%s" of config file %s must be one of these values:' % (k, s, conf_file), validvals
-			exit()
-		except KeyError:
-			if defval is not None:
-				return defval
-			if not required:
-				return None
-			else:
-				print 'ERROR: missing required key "%s" in section "%s" of config file %s' % (k, s, conf_file)
-				exit()
-
-	@staticmethod
-	def del_excluded_keys(c):
-		for k in c.keys():
-			if k.startswith('x-'):
-				del c[k]
-
-def parse_config(conf_file):
-	global Creda, Foreign, Mining
-	conf_fp = open(conf_file)
-	c = json.load(conf_fp)
-	#print c
-	Creda = Config(c, conf_file, CREDACASH)
-	Foreign = Config(c, conf_file, FOREIGN)
-	Mining = Config(c, conf_file, MINING)
-	Config.del_excluded_keys(c)
-	if len(c) > 0:
-		print 'ERROR: unrecognized elements in configuration file %s:' % conf_file, c
-		exit()
 
 def get_mining_info(s):
 	try:
@@ -239,19 +158,19 @@ class PayChecker:
 		return PayChecker.test_matchnum
 
 	# This function checks that all of this wallet's BCH buy request matches have been paid at least
-	# Minimum_Allowed_Payment_Minutes prior to the payment deadline.
+	# MIN_ALLOWED_PAYMENT_MINUTES prior to the payment deadline.
 	# If not, there is a problem making BCH payments and this mining script will stop.
 
 	@staticmethod
 	def Check(s):
-		r = do_rpc(s, Creda, 'cc.crosschain_match_action_list', (Minimum_Allowed_Payment_Minutes, 'true'))
+		r = do_rpc(s, Creda, 'cc.crosschain_match_action_list', (MIN_ALLOWED_PAYMENT_MINUTES, 'true'))
 		for m in (r or ()):
 			# cc.crosschain_match_action_list was called with following arguments:
-			#	minutes_until_deadline = Minimum_Allowed_Payment_Minutes and override_reminder_times = True
+			#	minutes_until_deadline = MIN_ALLOWED_PAYMENT_MINUTES and override_reminder_times = True
 			# If any results are returned, BCH payments are not being made or dangerously close to not being made
 			PayChecker.status_bad = True
 			pprint.pprint(m)
-			print 'BCH Payment Error: match not paid %d minutes before deadline\n' % Minimum_Allowed_Payment_Minutes,
+			print('BCH Payment Error: match not paid %d minutes before deadline\n' % MIN_ALLOWED_PAYMENT_MINUTES, end='')
 
 	@staticmethod
 	def StatusIsBad():
@@ -259,8 +178,8 @@ class PayChecker:
 
 def pay_monitor_thread():
 	interval = 120
-	interval = int(min(interval, Minimum_Allowed_Payment_Minutes * 60 / 2))
-	print 'pay_monitor_thread interval %d\n' % interval,
+	interval = int(min(interval, MIN_ALLOWED_PAYMENT_MINUTES * 60 / 2))
+	print('pay_monitor_thread interval %d\n' % interval, end='')
 	last_time = time.time()
 	s = requests.Session()
 	while True:
@@ -273,31 +192,69 @@ def pay_monitor_thread():
 
 def mine_thread():
 	interval = 3600.0 / Mining.reqs_per_hr
-	print 'mine_thread interval %g\n' % interval,
+	print('mine_thread interval %g\n' % interval, end='')
 	s = requests.Session()
+	backlog = 0
+	deadline = 0
 	last_time = time.time()
 	while True:
+		r = do_rpc(s, Creda, 'cc.crosschain_match_action_list')
+		#pprint.pprint(r)
+		if r is None:
+			print('%d mine_thread unable to check match payment backlog\n' % time.time(), end='')
+			time.sleep(20)
+			continue
+		if len(r) * interval > 60 * MAX_PAYMENT_BACKLOG_MINUTES:
+			if backlog != len(r):
+				backlog = len(r)
+				print('%d mine_thread paused mining with match payment backlog of %d entries\n' % (time.time(), len(r)), end='')
+			time.sleep(15)
+			continue
+		backlog = 0
+
+		mins = 0
+		allow = 0
+		for e in (r or ()):
+			#pprint.pprint(e)
+			pi = e['payment-info']
+			mins = pi['deadline-minutes']
+			allow = pi['payment-time'] * MIN_PAYMENT_TIME_PERCENTAGE / (60 * 100)
+			if mins < allow:
+				break
+		if mins < allow:
+			if deadline != mins:
+				deadline = mins
+				print('%d mine_thread paused mining with match payment deadline %d < %d minutes\n' % (time.time(), mins, allow), end='')
+			time.sleep(15)
+			continue
+		deadline = 0
+
+		mine_one(s)
+
 		sleep = interval * (0.5 + random.random())		# randomize to increase privacy
 		sleep -= time.time() - last_time
 		if sleep > 0:
 			time.sleep(sleep)
 		last_time = time.time()
 		#print '%d mine_thread\n' % last_time,
-		mine_one(s)
 
 def mine_one(s):
+
+		# Report wallet balances
+
 		bch_bal = get_balance(s, Foreign)
 		pending = do_rpc(s, Creda, 'cc.exchange_requests_pending_totals', ('bch', ))
+
 		mi = get_mining_info(s)
 
 		if bch_bal is None:
-			print '%d mine_thread error getting BCH wallet balance\n' % time.time(),
+			print('%d mine_thread error getting BCH wallet balance\n' % time.time(), end='')
 			return
 		if not pending:
-			print '%d mine_thread error getting wallet pending balances\n' % time.time(),
+			print('%d mine_thread error getting wallet pending balances\n' % time.time(), end='')
 			return
 		if not mi:
-			print '%d mine_thread error getting CredaCash mining info\n' % time.time(),
+			print('%d mine_thread error getting CredaCash mining info\n' % time.time(), end='')
 			return
 
 		cc_bal = pending['wallet-balance']
@@ -305,57 +262,83 @@ def mine_one(s):
 		cc_pending += pending['buy-request-pending-totals']['pledge-amount']	# CredaCash tied up in buy requests
 		cc_net_bal = cc_bal + cc_pending
 
-		rate = mi['mining-match-average-rate']
+		market_rate = mi['mining-match-average-rate']
+
+		report_rate = market_rate
+
+		if Mining.min_exchg_rate:
+			report_rate = max(report_rate, Mining.min_exchg_rate)
+		if Mining.max_exchg_rate:
+			report_rate = min(report_rate, Mining.max_exchg_rate)
+
 		mined = mi['wallet-total-mined']
-		total_in_cc = cc_net_bal + bch_bal/rate
-		total_in_bch = total_in_cc * rate
-		print 'Mined %g Balances %g Creda + %g BCH at rate %g = %g Creda or %g BCH\n' \
-			% (mined, cc_net_bal, bch_bal, rate, total_in_cc, total_in_bch),
+		total_in_cc = cc_net_bal + bch_bal/report_rate
+		total_in_bch = total_in_cc * report_rate
+
+		print('Mined %g Balances %g Creda + %g BCH at rate %g = %g Creda or %g BCH\n' \
+			% (mined, cc_net_bal, bch_bal, report_rate, total_in_cc, total_in_bch), end='')
 		#print 'Mined %g wallet %g pending %g total %g\n' \
 		#	% (mined, cc_bal, cc_pending, cc_net_bal),
 
-		# buy request at slightly higher than average buy req match rate reqired, to ensure mining
-		rate = mi['mining-request-average-match-rate-required'] * 1.001
+		# Determine the request rate required to mine.
+		# In order to mine, the buy request rate needs to be slightly higher than the average buy req match rate required.
+		# This script mines using mining trade requests, which, for the purpose of mining only (not for matching),
+		# are counted as having twice the request rate, and therefore only require half the rate in order to mine
+		# (this accounts for the "/ 2.0" in the calculation below).
 
-		# Note: this script is setting the request estimated costs to zero, and as a result,
-		# the request net_rate_required = the request match rate required.
-		# If the req costs were not zero, then the buyer and seller net_rate_required
-		# would need to be computed using the formulas:
-		#  buyer net_rate = (match_base_amount * match_rate + quote_costs) / (match_base_amount - base_costs)
-		# seller net_rate = (match_base_amount * match_rate - quote_costs) / (match_base_amount + base_costs)
+		mining_rate = mi['mining-request-average-match-rate-required'] * 1.001	# slightly higher than the averate rate
+		mining_rate /= 2.0														# only half required for trade requests
+
+		# Determine the rate for the exchange requests.
+		# The higher of the average exchange rate or the rate required to mine is used,
+		# limited by the min and max values optionally set in the config file.
+
+		match_rate = max(market_rate, mining_rate)
+
+		if Mining.min_exchg_rate:
+			match_rate = max(match_rate, Mining.min_exchg_rate)
+		if Mining.max_exchg_rate:
+			match_rate = min(match_rate, Mining.max_exchg_rate)
+
+		# Check if the match_rate is high enough to mine, and if not, submit lower non-mining
+		# requests in order to push down the average until it's low enough to mine at the requested rate.
+
+		if match_rate < mining_rate:
+			print('Requested match rate %g < required mining rate %g; submitting lower rate requests to push down the mining rate...\n' \
+				% (match_rate, mining_rate), end='')
+
+			# The desired match rate is not high enough to mine. Therefore, push down the rate required by submitting
+			# requests at half the rate required to mine, limited by the min rate if one is specified in the config file.
+
+			match_rate = mining_rate / 2.0
+			if Mining.min_exchg_rate:
+				match_rate = max(match_rate, Mining.min_exchg_rate)
+
+		# Determine the exchange request amount
 
 		min_amount = Mining.req_min_amt
 		max_amount = Mining.req_max_amt
 
-		min_amount = max(min_amount, BCH_MIN_SEND_AMOUNT / rate)
+		min_amount = max(min_amount, BCH_MIN_SEND_AMOUNT / match_rate)
 
 		min_amount = max(min_amount, 0.2 * mi['mining-match-average-amount'])
 		max_amount = min(max_amount, 1.8 * mi['mining-match-average-amount'])
 
 		if min_amount > max_amount:
-			print '%d mine_thread skipping exchange requests; min_amount %g > max_amount %g\n' % (time.time(), min_amount, max_amount),
+			print('%d mine_thread skipping exchange requests; min_amount %g > max_amount %g\n' % (time.time(), min_amount, max_amount), end='')
 			return
 
-		do_sell = 1
-
-		max_amount = min(max_amount, cc_bal - Mining.min_cc_bal)
+		max_amount = min(max_amount, (cc_bal - Mining.min_cc_bal) / (1 + mi['mining-request-pledge']/100.0))
 		if max_amount < min_amount:
-			do_sell = 0
-
-		max_amount = min(max_amount, (cc_bal - Mining.min_cc_bal) / (do_sell + 0.5))
-		if max_amount < min_amount:
-			print '%d mine_thread skipping exchange requests; insufficient CredaCash balance %g, minimum request amount %g\n' % (time.time(), cc_bal, min_amount),
+			print('%d mine_thread skipping exchange requests; insufficient CredaCash balance %g, minimum request amount %g\n' % (time.time(), cc_bal, min_amount), end='')
 			return
-
-		if not do_sell:
-			print '%d mine_thread skipping exchange sell request; insufficient CredaCash balance %g, minimum request amount %g\n' % (time.time(), cc_bal, min_amount),
 
 		bch_allocated = pending['buy-request-pending-totals']['quote-amount']
 		bch_net_bal = bch_bal - bch_allocated
 
-		max_amount = min(max_amount, (bch_net_bal - Mining.min_bch_bal) / rate)
+		max_amount = min(max_amount, (bch_net_bal - Mining.min_bch_bal) / match_rate)
 		if max_amount < min_amount:
-			print '%d mine_thread skipping exchange requests; insufficient BCH free balance %g, minimum request amount %g rate %g\n' % (time.time(), bch_net_bal, min_amount, rate),
+			print('%d mine_thread skipping exchange requests; insufficient BCH free balance %g, minimum request amount %g rate %g\n' % (time.time(), bch_net_bal, min_amount, match_rate), end='')
 			return
 
 		amount = random.random() * (max_amount - min_amount) + min_amount
@@ -378,20 +361,41 @@ def mine_one(s):
 			break
 
 		if not adj_amount:
-			print '%d mine_thread skipping exchange requests; unable to round %g; min request %g max request %g\n' % (time.time(), amount, min_amount, max_amount),
+			print('%d mine_thread skipping exchange requests; unable to round %g; min request %g max request %g\n' % (time.time(), amount, min_amount, max_amount), end='')
 			return
 
 		amount = adj_amount
 
-		expiration = 60 + mi['mining-request-minimum-expiration-time']
+		# Create exchange request
 
-		if not submit_xreq(s, 0, amount, rate, expiration):
+		foreign_address = do_rpc(s, Foreign, 'getnewaddress')
+		if not foreign_address:
+			print('Error obtaining a BCH address\n', end='')
 			return
-		if do_sell:
-			submit_xreq(s, 1, amount, rate, expiration)
+		if not foreign_address.startswith('bitcoincash:') and not foreign_address.startswith('bch'):
+			print('Error: unrecognized BCH address %s\n' % foreign_address, end='')
+			return
+
+		expiration = mi['mining-request-minimum-expiration-time'] + EXCHANGE_REQUEST_EXPIRATION_SECONDS
+
+		submit_xreq(s, 'trade', amount, match_rate, foreign_address, expiration)	# send trade request
+
+def submit_xreq(s, type, amount, rate, foreign_address, expiration):
+	txid = do_rpc(s, Creda, 'cc.crosschain_request_create', ('', 's'+type[0], amount, amount, rate, 0, 'bch', foreign_address, expiration))
+	if txid:
+		print('Submitted crosschain %s request time %d amount %g rate %g\n' % (type, time.time(), amount, rate), end='')
+		return txid
+	else:
+		print('Crosschain %s request failed time %d amount %g rate %g\n' % (type, time.time(), amount, rate), end='')
+		return None
+
+rounding_test = {}
 
 def round_to_power(amount, rounding):
-	# amount must be 1, 2, 3, 5 or 7 multiplied by a power of 10
+	if not amount:
+		return 0
+
+	# round amount to 1, 2, 3, 5 or 7 multiplied by a power of 10
 	expon = int(math.log10(amount))
 	mant = amount / math.pow(10, expon) + rounding
 
@@ -424,7 +428,7 @@ def round_to_power(amount, rounding):
 
 	#print '%g\t%g' % (adj_amount, amount + 0.5)
 
-	if rounding == 0 and test_rounding:
+	if rounding == 0 and TEST_ROUNDING:
 		global rounding_test
 		if not adj_amount in rounding_test:
 			rounding_test[adj_amount] = [amount, amount]
@@ -438,44 +442,22 @@ def round_to_power(amount, rounding):
 	return adj_amount
 
 if 0:
-	test_rounding = True
+	TEST_ROUNDING = True
 	for i in range(10000000):
 		amount = 1 + 130 * random.random()
 		round_to_power(amount, 0)
 	pprint.pprint(rounding_test)
 	exit()
 
-def submit_xreq(s, type, amount, rate, expiration = 0):
-	if type > 1:
-		type = 1
-	req = ('buy ','sell')[type]
-	if req[0] == 'b':
-		foreign_address = ''
-	else:
-		foreign_address = do_rpc(s, Foreign, 'getnewaddress')
-		if not foreign_address:
-			print 'Error obtaining a BCH address\n',
-			return False
-		if not foreign_address.startswith('bitcoincash:') and not foreign_address.startswith('bch'):
-			print 'Error: unrecognized BCH address %s\n' % foreign_address,
-			return False
-	txid = do_rpc(s, Creda, 'cc.crosschain_request_create', ('', 's'+req[0], amount, amount, rate, 0, 'bch', foreign_address, expiration))
-	if txid:
-		print 'Submitted crosschain %s request time %d amount %g rate %g\n' % (req, time.time(), amount, rate),
-		return True
-	else:
-		print 'Crosschain %s request failed time %d amount %g rate %g\n' % (req, time.time(), amount, rate),
-		return False
-
 def check_foreign_wallet(s):
 	r = get_balance(s, Foreign)
 	if r is None:
-		print 'ERROR: no BCH wallet loaded; run the exchange-pay.py script before running this script'
+		print('ERROR: no BCH wallet loaded; run the exchange-pay.py script before running this script')
 		return False
 	return True
 
 def pay_monitor_startup(s):
-	print 'pay_monitor_startup'
+	print('pay_monitor_startup')
 
 	# init match pay check
 	PayChecker.Init(s)
@@ -483,39 +465,44 @@ def pay_monitor_startup(s):
 	# sanity check config
 	mi = get_mining_info(s)
 	#pprint.pprint(mi)
-	global Mining, Minimum_Allowed_Payment_Minutes
+	global Mining, EXCHANGE_REQUEST_EXPIRATION_SECONDS, MIN_ALLOWED_PAYMENT_MINUTES
 
 	lim = 10
 	if Mining.min_cc_bal < lim:
-		print 'minimum CredaCash balance adjusted from', Mining.min_cc_bal, 'to', lim
+		print('minimum CredaCash balance adjusted from', Mining.min_cc_bal, 'to', lim)
 		Mining.min_cc_bal = lim
 
 	lim = 0.001
 	if Mining.min_bch_bal < lim:
-		print 'minimum BCH balance adjusted from', Mining.min_bch_bal, 'to', lim
+		print('minimum BCH balance adjusted from', Mining.min_bch_bal, 'to', lim)
 		Mining.min_bch_bal = lim
 
 	lim = mi['wallet-exchange-request-minimum-amount']
 	if Mining.req_min_amt < lim:
-		print 'exchange request minimum amount adjusted from', Mining.req_min_amt, 'to', lim
+		print('exchange request minimum amount adjusted from', Mining.req_min_amt, 'to', lim)
 		Mining.req_min_amt = lim
 
 	lim = Mining.req_min_amt
 	if Mining.req_max_amt < lim:
-		print 'exchange request maximum amount adjusted from', Mining.req_max_amt, 'to',lim
+		print('exchange request maximum amount adjusted from', Mining.req_max_amt, 'to', lim)
 		Mining.req_max_amt = lim
 
+	lim = 90
+	if EXCHANGE_REQUEST_EXPIRATION_SECONDS < lim:
+		print('EXCHANGE_REQUEST_EXPIRATION_SECONDS adjusted from', EXCHANGE_REQUEST_EXPIRATION_SECONDS, 'to', lim)
+		EXCHANGE_REQUEST_EXPIRATION_SECONDS = lim
+
 	lim = 3
-	if Minimum_Allowed_Payment_Minutes < lim:
-		print 'Minimum_Allowed_Payment_Minutes adjusted from', Minimum_Allowed_Payment_Minutes, 'to', lim
-		Minimum_Allowed_Payment_Minutes = lim
+	if MIN_ALLOWED_PAYMENT_MINUTES < lim:
+		print('MIN_ALLOWED_PAYMENT_MINUTES adjusted from', MIN_ALLOWED_PAYMENT_MINUTES, 'to', lim)
+		MIN_ALLOWED_PAYMENT_MINUTES = lim
 
 	if Mining.skip_pay_test:
-		print 'SKIPPING test of exchange autopay script'
+		print('SKIPPING test of exchange autopay script')
 		return True
 
 	# submit matching exchange requests
-	print 'Testing exchange autopay script...'
+	print('Testing exchange autopay script...')
 	amount = mi['wallet-exchange-request-minimum-amount']
 	rate = mi['mining-request-average-match-rate-required']
 	for i in range(9):	# submit 8 sell reqs, to maximize chance that the buy req will find a match
@@ -523,27 +510,27 @@ def pay_monitor_startup(s):
 			return False
 
 	# wait for match
-	print 'Waiting for test match...'
+	print('Waiting for test match...')
 	while True:
 		time.sleep(30)
 		PayChecker.FindTestMatch(s, amount)
 		test_matchnum = PayChecker.TestMatchnumFound()
 		if test_matchnum:
 			break
-	print 'Found test match matchnum %d' % test_matchnum
+	print('Found test match matchnum %d' % test_matchnum)
 
 	# wait until match is paid by the CredaCash Exchange Autopay script
-	print 'Waiting for test match to be paid and confirmed...'
+	print('Waiting for test match to be paid and confirmed...')
 	while True:
 		time.sleep(30)
 		m = do_rpc(s, Creda, 'cc.exchange_match_info', (test_matchnum, ))
 		mi = m['match-info']
 		status = mi['status']
 		if status == XMATCH_STATUS_PAID:
-			print 'Test match paid'
+			print('Test match paid')
 			return True
 		elif status > XMATCH_STATUS_ACCEPTED:
-			print 'ERROR: test match was not paid'
+			print('ERROR: test match was not paid')
 			return False
 
 def start_thread(target, args=()):
@@ -555,9 +542,9 @@ def start_thread(target, args=()):
 def main(argv):
 
 	if len(argv) > 2:
-		print
-		print 'Usage: python exchange-mine.py [<config_file>]'
-		print
+		print()
+		print('Usage: python exchange-mine.py [<config_file>]')
+		print()
 		exit()
 
 	if len(argv) > 1:
@@ -567,8 +554,33 @@ def main(argv):
 
 	parse_config(conf_file)
 
+	if Foreign.currency != 'bch':
+		print()
+		print('Foreign currency for mining must be bch')
+		print()
+		exit()
+
+	if Foreign.type != BITCOIND:
+		print()
+		print('Foreign server type for mining must be', BITCOIND)
+		print()
+		exit()
+
+	if Mining.reqs_per_hr > 120:
+		print
+		print(RATE_WARNING)
+		print
+		time.sleep(20)
+
+	print('maximum exchange rate: ' + ('%g' % Mining.max_exchg_rate, 'none')[Mining.max_exchg_rate == 0])
+	print('minimum exchange rate: ' + ('%g' % Mining.min_exchg_rate, 'none')[Mining.min_exchg_rate == 0])
+	if Mining.min_exchg_rate and Mining.max_exchg_rate and Mining.min_exchg_rate > Mining.max_exchg_rate:
+		print('Error: minimum exchange rate > maximum exchange rate')
+		exit()
+	print()
+
 	start_time = time.time()
-	print 'start time %d' % start_time
+	print('start time %d' % start_time)
 
 	s = requests.Session()
 
@@ -576,20 +588,28 @@ def main(argv):
 		exit()
 
 	if not pay_monitor_startup(s):
-		print 'ERROR: startup failed'
+		print('ERROR: startup failed')
 		exit()
 
 	t1 = start_thread(pay_monitor_thread)
 	t2 = start_thread(mine_thread)
 
+	if not hasattr(t1,'is_alive'):
+		t1.is_alive = t1.isAlive
+		t2.is_alive = t2.isAlive
+
 	while True:
 		time.sleep(2)
-		if not t1.isAlive():
-			if not PayChecker.StatusIsBad():
-				print 'ERROR: pay monitor thread exited\n',
+		if not t1.is_alive():
+			if PayChecker.StatusIsBad():
+				print()
+				print(MINING_ABORT)
+				print()
+			else:
+				print('ERROR: pay monitor thread exited\n', end='')
 			exit()
-		if not t2.isAlive():
-			print 'ERROR: mining thread exited\n',
+		if not t2.is_alive():
+			print('ERROR: mining thread exited\n', end='')
 			exit()
 
 if __name__ == '__main__':

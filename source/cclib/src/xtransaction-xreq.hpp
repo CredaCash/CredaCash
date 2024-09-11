@@ -75,6 +75,7 @@ public:
 	uint64_t	address_id;				// used by wallet
 
 	int64_t		seqnum;
+	int64_t		linked_seqnum;
 	int64_t		best_other_seqnum;
 
 	uint64_t	blocktime;
@@ -184,7 +185,7 @@ public:
 		for_testnet = for_testnet_;
 	}
 
-	Xreq(const unsigned type, const unsigned expiration, const bigint_t& min_amount, const bigint_t& max_amount, const UniFloat& net_rate_required, const UniFloat& quote_costs, const uint64_t quote_asset, const string& foreign_asset, const string& foreign_address, const bool for_testnet);
+	Xreq(const unsigned type, const uint64_t expiration, const bigint_t& min_amount, const bigint_t& max_amount, const UniFloat& net_rate_required, const UniFloat& quote_costs, const uint64_t quote_asset, const string& foreign_asset, const string& foreign_address, const bool for_testnet);
 
 	static Xreq* Cast(Xtx* p)
 	{
@@ -210,6 +211,11 @@ public:
 
 	bool NormalizeForeignAddress();
 	bool CheckForeignAddress() const;
+
+	void ConvertTradeToBuy();
+	void ConvertTradeToSell();
+	static void ConvertTradeObjIdToSellObjId(ccoid_t& objid);
+	static void ConvertTradeObjIdToSellObjId(unsigned tx_type, unsigned xreq_type, ccoid_t& objid);
 
 	static unsigned DefaultPaymentTime(bool istestnet)
 	{

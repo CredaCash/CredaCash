@@ -18,18 +18,19 @@ class TxBuildEntry
 {
 public:
 	uint64_t start_time;
-	string ref_id;
+	int mode;
 	unsigned type;
-	string encoded_dest;
 	uint64_t dest_chain;
 	snarkfront::bigint_t destination;
 	snarkfront::bigint_t amount;
 	Xtx *xtx;
-
 	unsigned ref_count;
 	bool is_done;
 
-	vector<uint8_t> txbody;	// the constructor may memset to zero all class members above this one
+	string ref_id;	// the constructor may memset to zero all class members above this one
+	string encoded_dest;
+
+	vector<char> txbody;
 
 	TxBuildEntry();
 
@@ -57,7 +58,7 @@ public:
 
 	void Dump(ostream& out);
 
-	int StartBuild(DbConn *dbconn, TxParams& txparams, const string& ref_id, const unsigned type, const string& encoded_dest, const uint64_t dest_chain, const snarkfront::bigint_t& destination, const snarkfront::bigint_t& amount, const Xtx *xtx, TxBuildEntry **entry, Transaction& tx);
+	int StartBuild(DbConn *dbconn, TxParams& txparams, const string& ref_id, int mode, const unsigned type, const string& encoded_dest, const uint64_t dest_chain, const snarkfront::bigint_t& destination, const snarkfront::bigint_t& amount, const Xtx *xtx, TxBuildEntry **entry, Transaction& tx);
 
 	void WaitForCompletion(DbConn *dbconn, TxBuildEntry *entry, Transaction& tx);
 

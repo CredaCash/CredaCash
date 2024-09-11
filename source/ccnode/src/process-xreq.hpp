@@ -43,6 +43,7 @@ class ProcessXreqs
 
 	bool FindMutualMatches(DbConn *dbconn, const uint64_t passnum, uint64_t &next_match_index, const uint64_t block_time, const bool for_witness);
 	void UpdateMutualMatch(DbConn *dbconn, Xreq& xreq, const Xreq& other, const snarkfront::bigint_t& match_amount, const UniFloat& match_rate, uint64_t passnum, uint64_t block_time, uint64_t hold, bool for_witness);
+	bool AddMiningMatches(DbConn *dbconn, uint64_t next_match_index, const uint64_t block_time, const uint64_t max_xreqnum);
 
 	int MakeMatchesPersistent(DbConn *dbconn, const uint64_t block_time, TxPay& txbuf);
 

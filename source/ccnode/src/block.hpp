@@ -10,6 +10,7 @@
 
 #include <CCobjects.hpp>
 #include <SmartBuf.hpp>
+#include <SpinLock.hpp>
 #include <CCbigint.hpp>
 #include <PackedInt.hpp>
 #include <CCparams.h>
@@ -147,8 +148,12 @@ public:
 		return TxDataSize() > 0;
 	}
 
+	static FastSpinLock prior_block_lock;
+
 	SmartBuf GetPriorBlock() const
 	{
+		lock_guard<FastSpinLock> lock(prior_block_lock);
+
 		return SmartBuf(preamble.auxp[1]);
 	}
 

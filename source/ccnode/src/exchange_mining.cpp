@@ -284,6 +284,9 @@ bool ExchangeMining::UpdateMiningStats(const Xmatch& match, UniFloat& base_amoun
 
 	buyer_match_rate_required = xreq.MatchRateRequired(base_amount);
 
+	if (match.xbuy.type == CC_TYPE_XCX_MINING_BUY)
+		buyer_match_rate_required = UniFloat::Multiply(buyer_match_rate_required, 2);
+
 	if (buyer_match_rate_required <= 0)
 		return true;
 
@@ -402,7 +405,8 @@ void ExchangeMining::SetMiningAmount(Xmatch& match)
 	if (!saved.total_remaining_to_mine)
 		return;
 
-	if (match.xbuy.type != CC_TYPE_XCX_SIMPLE_BUY || match.xbuy.quote_asset != XREQ_BLOCKCHAIN_BCH || match.xbuy.base_asset)
+	if ((match.xbuy.type != CC_TYPE_XCX_SIMPLE_BUY && match.xbuy.type != CC_TYPE_XCX_MINING_BUY)
+			|| match.xbuy.quote_asset != XREQ_BLOCKCHAIN_BCH || match.xbuy.base_asset)
 		return;
 
 	if (TRACE_EXCHANGE_MINING) BOOST_LOG_TRIVIAL(debug) << "ExchangeMining::SetMiningAmount " << match.DebugString();
@@ -477,7 +481,8 @@ void ExchangeMining::FinalizeMiningAmount(Xmatch& match, const bigint_t& adj_min
 
 void ExchangeMining::UpdateMatchStats(Xmatch& match, const bigint_t& buyer_amount)
 {
-	if (match.xbuy.type != CC_TYPE_XCX_SIMPLE_BUY || match.xbuy.quote_asset != XREQ_BLOCKCHAIN_BCH || match.xbuy.base_asset)
+	if ((match.xbuy.type != CC_TYPE_XCX_SIMPLE_BUY && match.xbuy.type != CC_TYPE_XCX_MINING_BUY)
+			|| match.xbuy.quote_asset != XREQ_BLOCKCHAIN_BCH || match.xbuy.base_asset)
 		return;
 
 	if (!buyer_amount)

@@ -128,7 +128,7 @@ void WalDB::WalCheckpoint(sqlite3 *db)
 
 void WalDB::WalCheckpointThreadProc(sqlite3 *db)
 {
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "WalDB::WalCheckpointThreadProc " << dbname << " start";
+	BOOST_LOG_TRIVIAL(info) << "WalDB::WalCheckpointThreadProc " << dbname << " start";
 
 	while (!stop_checkpointing.load() && !g_blockchain.HasFatalError() && !g_shutdown)
 	{
@@ -137,7 +137,7 @@ void WalDB::WalCheckpointThreadProc(sqlite3 *db)
 		WalCheckpoint(db);
 	}
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "WalDB::WalCheckpointThreadProc " << dbname << " end";
+	BOOST_LOG_TRIVIAL(info) << "WalDB::WalCheckpointThreadProc " << dbname << " end";
 }
 
 void WalDB::WalStartCheckpointing(sqlite3 *db)

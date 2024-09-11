@@ -22,7 +22,7 @@
 #define TRACE_DB_WRITE	(g_params.trace_db_writes)
 
 //#define TEST_ENABLE_SQLITE_BUSY	1	// when enabled, mutex problems will result in SQLITE_BUSY errors
-//!#define RTEST_CUZZ				32
+//!#define RTEST_CUZZ				64
 
 #define DB_OPEN_PARAMS			"?cache=private&mode=rw"
 #define DB_CREATE_PARAMS		"?cache=private&mode=rwc"
@@ -46,7 +46,7 @@
 #endif
 
 #define DB_TAG			"CredaCash Wallet"
-#define DB_SCHEMA		6
+#define DB_SCHEMA		7
 
 //static boost::shared_mutex db_mutex; // v1.69 boost::shared_mutex is buggy--throwing exceptions that exclusive waiter count went negative
 static mutex db_mutex;
@@ -307,7 +307,7 @@ void DbConn::CreateIndexes()
 
 	CCASSERTZ(dbexec(Wallet_db, CREATE_INDEX_UNIQUE_SQL "Totals_Index on Totals (Type, Reference, Asset, DelayTime desc, Blockchain);"));
 
-	CCASSERTZ(dbexec(Wallet_db, CREATE_INDEX_UNIQUE_SQL "Exchange_Requests_TxId_Index on Exchange_Requests (TxId) where TxId != 0;"));
+	CCASSERTZ(dbexec(Wallet_db, CREATE_INDEX_SQL "Exchange_Requests_TxId_Index on Exchange_Requests (TxId) where TxId != 0;"));
 	CCASSERTZ(dbexec(Wallet_db, CREATE_INDEX_UNIQUE_SQL "Exchange_Requests_Xreqnum_Index on Exchange_Requests (Xreqnum) where Xreqnum != 0;"));
 	CCASSERTZ(dbexec(Wallet_db, CREATE_INDEX_SQL "Exchange_Requests_PollTime_Index on Exchange_Requests (PollTime) where PollTime > 0;"));
 
@@ -532,11 +532,12 @@ void DbConn::PrepareDbConn()
 		const string update_sql = _update_sql + table_sql + " set ";
 		const string select_sql = _select_sql + "* from " + table_sql + " left join Transactions on Id = TxId ";
 		CCASSERTZ(dblog(sqlite3_prepare_v2(Wallet_db, (_insert_sql + table_sql + " values " + values_sql + ";").c_str(), -1, &Exchange_Requests_insert, NULL)));
-		CCASSERTZ(dblog(sqlite3_prepare_v2(Wallet_db, (update_sql + "(Xreqnum, QueryXmatchnum, Disposition, OpenAmount) = (?2, ?3, ?4, ?5) where XId = ?1;").c_str(), -1, &Exchange_Requests_status_update, NULL)));
-		CCASSERTZ(dblog(sqlite3_prepare_v2(Wallet_db, (update_sql + "PollTime = ?2 where TxId = ?1 and TxId != 0;").c_str(), -1, &Exchange_Requests_polling_update, NULL)));
+		CCASSERTZ(dblog(sqlite3_prepare_v2(Wallet_db, (update_sql + "(Xreqnum, QueryXmatchnum, Disposition, OpenAmount) = (max(Xreqnum, ?2), ?3, ?4, ?5) where XId = ?1;").c_str(), -1, &Exchange_Requests_status_update, NULL)));
+		CCASSERTZ(dblog(sqlite3_prepare_v2(Wallet_db, (update_sql + "PollTime = ?2 where XId = ?1;").c_str(), -1, &Exchange_Requests_polling_update, NULL)));
+		CCASSERTZ(dblog(sqlite3_prepare_v2(Wallet_db, (update_sql + "PollTime = ?2 where TxId = ?1 and TxId != 0;").c_str(), -1, &Exchange_Requests_polling_update_txid, NULL)));
 		CCASSERTZ(dblog(sqlite3_prepare_v2(Wallet_db, (select_sql + "where XId >= ?1 order by XId limit 1;").c_str(), -1, &Exchange_Requests_select, NULL)));
 		CCASSERTZ(dblog(sqlite3_prepare_v2(Wallet_db, (select_sql + "where XId <= ?1 order by XId desc limit 1;").c_str(), -1, &Exchange_Requests_select_id_descending, NULL)));
-		CCASSERTZ(dblog(sqlite3_prepare_v2(Wallet_db, (select_sql + "where TxId = ?1 and TxId != 0;").c_str(), -1, &Exchange_Requests_select_txid, NULL)));
+		CCASSERTZ(dblog(sqlite3_prepare_v2(Wallet_db, (select_sql + "where TxId = ?1 and TxId != 0 and XId > ?2 order by XId limit 1;").c_str(), -1, &Exchange_Requests_select_txid, NULL)));
 		CCASSERTZ(dblog(sqlite3_prepare_v2(Wallet_db, (select_sql + "where Xreqnum = ?1 and Xreqnum != 0;").c_str(), -1, &Exchange_Requests_select_xreqnum, NULL)));
 		CCASSERTZ(dblog(sqlite3_prepare_v2(Wallet_db, (select_sql + "where PollTime > 0 and PollTime <= ?1 order by PollTime, XId limit 1;").c_str(), -1, &Exchange_Requests_select_next_poll, NULL)));
 		CCASSERTZ(dblog(sqlite3_prepare_v2(Wallet_db, (_select_sql + "IsBuyer, NetRateRequired, OpenAmount, Pledge from " + table_sql + " "
@@ -743,6 +744,24 @@ int DbConn::CheckDb(bool post_create)
 		return 1;	// retry CheckDb
 	}
 
+	if (!strcmp(schema, "6"))
+	{
+		CheckSchemaUpdateOption();
+
+		if (!post_create)
+			return 1;
+
+		cerr << "Updating wallet to schema version 7\n" << endl;
+
+		CCASSERTZ(dbexec(Wallet_db, begin_exclusive));
+
+		CCASSERTZ(dbexec(Wallet_db, DROP_INDEX_SQL "Exchange_Requests_TxId_Index;"));
+
+		CCASSERTZ(dbexec(Wallet_db, "update Parameters set Value = 7 where Key = " STRINGIFY(DB_KEY_SCHEMA) " and Subkey = 1;"));
+
+		return 1;	// retry CheckDb
+	}
+
 	if (strcmp(schema, db_schema))
 		throw runtime_error("Invalid wallet schema");
 
@@ -853,6 +872,7 @@ void DbConn::CloseDb(bool done)
 	DbFinalize(Exchange_Requests_insert, explain);
 	DbFinalize(Exchange_Requests_status_update, explain);
 	DbFinalize(Exchange_Requests_polling_update, explain);
+	DbFinalize(Exchange_Requests_polling_update_txid, explain);
 	DbFinalize(Exchange_Requests_select, explain);
 	DbFinalize(Exchange_Requests_select_id_descending, explain);
 	DbFinalize(Exchange_Requests_select_txid, explain);
@@ -926,6 +946,7 @@ void DbConn::DoDbFinish()
 	sqlite3_reset(Exchange_Requests_insert);
 	sqlite3_reset(Exchange_Requests_status_update);
 	sqlite3_reset(Exchange_Requests_polling_update);
+	sqlite3_reset(Exchange_Requests_polling_update_txid);
 	sqlite3_reset(Exchange_Requests_select);
 	sqlite3_reset(Exchange_Requests_select_id_descending);
 	sqlite3_reset(Exchange_Requests_select_txid);
@@ -1014,6 +1035,8 @@ int DbConn::BeginWrite()
 int DbConn::Commit()
 {
 	if (TRACE_DB_WRITE) BOOST_LOG_TRIVIAL(debug) << "DbConn::Commit committing db transaction";
+
+	if (RandTest(RTEST_CUZZ)) sleep(1);
 
 	if (dblog(sqlite3_step(db_commit), DB_STMT_STEP))
 	{

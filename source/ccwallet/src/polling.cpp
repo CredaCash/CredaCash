@@ -159,7 +159,9 @@ static atomic<uint64_t> last_empty_time;
 
 void PollThread::ThreadProc()
 {
-	if (TRACE_POLLING) BOOST_LOG_TRIVIAL(trace) << "PollThread::ThreadProc m_dbconn " << (uintptr_t)m_dbconn << " m_txquery " << (uintptr_t)m_txquery;
+	//cc_malloc_logging_not_this_thread(true);
+
+	BOOST_LOG_TRIVIAL(info) << "PollThread::ThreadProc m_dbconn " << (uintptr_t)m_dbconn << " m_txquery " << (uintptr_t)m_txquery;
 
 	time_t t0 = 0;
 
@@ -197,11 +199,11 @@ void PollThread::ThreadProc()
 				++poll_count;
 		}
 
-		if (poll_count > 1) BOOST_LOG_TRIVIAL(info) << "PollThread::DoPoll polled " << poll_count << " addresses";
-		else if (poll_count && TRACE_POLLING) BOOST_LOG_TRIVIAL(debug) << "PollThread::DoPoll polled " << poll_count << " addresses";
+		if (TRACE_POLLING  && poll_count > 1)  BOOST_LOG_TRIVIAL(info) << "PollThread::DoPoll polled " << poll_count << " addresses";
+		else if (TRACE_POLLING && poll_count) BOOST_LOG_TRIVIAL(debug) << "PollThread::DoPoll polled " << poll_count << " addresses";
 	}
 
-	if (TRACE_POLLING) BOOST_LOG_TRIVIAL(trace) << "PollThread::ThreadProc done";
+	BOOST_LOG_TRIVIAL(info) << "PollThread::ThreadProc done";
 }
 
 /* returns:
@@ -260,7 +262,7 @@ int PollThread::DoPoll(uint64_t checktime)
 			rc = (round < 3 ? 1 : dbconn->ExchangeRequestSelectNextPoll(checktime, xreq, &tx));
 			if (!rc)
 			{
-				rc = ExchangeRequest::UpdatePollTime(dbconn, xreq.tx_id);
+				rc = ExchangeRequest::UpdatePollTime(dbconn, xreq.id, false);
 				if (rc) return -1;
 
 				poll_xreq = true;
@@ -287,7 +289,7 @@ int PollThread::DoPoll(uint64_t checktime)
 			uint64_t conservative_lastblocktime;
 			auto estimated_lastblocktime = Polling::EstimatedBlocktime(checktime, &conservative_lastblocktime);
 
-			rc = dbconn->ExchangeMatchSelectNextPoll(conservative_lastblocktime, xmatch, true);
+			rc = dbconn->ExchangeMatchSelectNextPoll(conservative_lastblocktime, xmatch);
 			if (!rc)
 			{
 				ExchangeMatch::UpdatePollTime(xmatch, estimated_lastblocktime);

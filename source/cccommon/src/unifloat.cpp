@@ -176,16 +176,19 @@ string UniFloat::asRoundedString(int rounding, unsigned precision) const
 }
 
 // Encode Float:
-//   exponent = max(0, floor(log2(rate)) + 2^(UNIFLOAT_EXPONENT_BITS - 1)
-//		check: exponent < 2^XCX_RATE_EXPONENT_BITS
-//   mantissa = ceil(rate / 2^(exponent - 2^(UNIFLOAT_EXPONENT_BITS - 1) - UNIFLOAT_MATISSA_BITS)) - 2^XCX_RATE_MATISSA_BITS
-//		check: mantissa >= 0 and mantissa < 2^XCX_RATE_MATISSA_BITS
+//   exponent = max(0, floor(log2(rate)) + 2^(UNIFLOAT_EXPONENT_BITS - 1))
+//		check: exponent < 2^UNIFLOAT_EXPONENT_BITS
+//   mantissa = ceil(rate / 2^(exponent - 2^(UNIFLOAT_EXPONENT_BITS - 1) - UNIFLOAT_MATISSA_BITS)) - 2^UNIFLOAT_MATISSA_BITS
+//		check: mantissa >= 0 and mantissa < 2^UNIFLOAT_MATISSA_BITS
 // Decode Float:
-//   rate = (2^XCX_RATE_MATISSA_BITS + mantissa) * 2^(exponent - 2^(UNIFLOAT_EXPONENT_BITS - 1) - UNIFLOAT_MATISSA_BITS)
+//   rate = (2^UNIFLOAT_MATISSA_BITS + mantissa) * 2^(exponent - 2^(UNIFLOAT_EXPONENT_BITS - 1) - UNIFLOAT_MATISSA_BITS)
 
 int64_t UniFloat::WireEncode(const double& v, int rounding, bool allow_zero)
 {
 	if (TRACE_WIRE) cout << "UniFloat::WireEncode " << v << " rounding " << rounding << " thread " << cc_thread_id() << endl;
+
+	if (!v && rounding > 0)
+		return 1;
 
 	if (!v && allow_zero)
 		return 0;

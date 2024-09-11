@@ -308,6 +308,7 @@ static int process_options(int argc, char **argv)
 		("command", po::value< vector<string> >())
 		("rpcuser", po::value<string>(&g_rpc_service.user_string))
 		("rpcpassword", po::value<string>(&g_rpc_service.pass_string))
+		("interactive-dev", po::value<bool>(&g_params.developer_mode)->default_value(0))
 		("initial-master-secret", po::value<string>(&g_params.initial_master_secret))
 		("initial-master-secret-passphrase", po::value<string>(&g_params.initial_master_secret_passphrase))
 		("billet-domain", po::value<int>(&g_params.billet_domain)->default_value(0))
@@ -540,7 +541,7 @@ static int set_rpc_auth_string()
 	}
 
 	string encoded;
-	base64_encode(base64sym, cookie, encoded);
+	base64_encode_string(base64sym, cookie, encoded);
 
 	g_rpc_service.auth_string = " Basic ";
 	g_rpc_service.auth_string += encoded;
@@ -549,7 +550,7 @@ static int set_rpc_auth_string()
 
 	lock_guard<mutex> lock(g_cerr_lock);
 	check_cerr_newline();
-	cerr << "RPC service username and password saved in file " << w2s(fname) << endl;
+	cerr << "RPC service username and password saved in file \"" << w2s(fname) << "\"" << endl;
 
 	return 0;
 }
@@ -579,6 +580,8 @@ int _dowildcard = 0;	// disable wildcard globbing
 
 int main(int argc, char **argv)
 {
+	//cc_malloc_logging(true);
+
 	//auto t0 = highres_ticks();
 	//sleep(10);
 	//cerr << "highres_ticks " << (highres_ticks() - t0)/10 << endl;
@@ -590,7 +593,7 @@ int main(int argc, char **argv)
 	srand(time(NULL));
 
 	//encode_test(); return 0;
-	//base64_test(base64sym); return 0;
+	//base64_test(base64sym, base64bin); return 0;
 	//XcxTest();
 	//return 0;
 
@@ -883,6 +886,8 @@ do_fatal:
 	finish_handlers();
 
 	//*(int*)0 = 0;
+
+	//cc_malloc_logging(false);
 
 	return result_code;
 }

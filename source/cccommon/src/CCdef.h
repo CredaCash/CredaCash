@@ -109,6 +109,7 @@ using namespace std;
 
 #include <boost/version.hpp>
 
+#include "CCmalloc.h"
 #include "CCutil.h"
 #include "CCticks.hpp"
 #include "CCassert.h"

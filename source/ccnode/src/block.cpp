@@ -68,18 +68,26 @@ SmartBuf Block::GetPriorBlock() const
 {
 	if (TRACE_BLOCK) BOOST_LOG_TRIVIAL(debug) << "Block::GetPriorBlock blockp " << (uintptr_t)this << " prior " << (uintptr_t)preamble.auxp[1];
 
+	lock_guard<FastSpinLock> lock(prior_block_lock);
+
 	return SmartBuf(preamble.auxp[1]);
 }
 #endif
+
+FastSpinLock Block::prior_block_lock(__FILE__, __LINE__);
 
 void Block::SetPriorBlock(SmartBuf priorobj)
 {
 	if (TRACE_BLOCK) BOOST_LOG_TRIVIAL(debug) << "Block::SetPriorBlock blockp " << (uintptr_t)this << " was " << (uintptr_t)preamble.auxp[1] << " setting to " << (uintptr_t)priorobj.BasePtr();
 
-	SmartBuf(preamble.auxp[1]).DecRef();
+	auto curprior = preamble.auxp[1];
+	preamble.auxp[1] = priorobj.BasePtr();
 
 	priorobj.IncRef();
-	preamble.auxp[1] = priorobj.BasePtr();
+
+	lock_guard<FastSpinLock> lock(prior_block_lock);
+
+	SmartBuf(curprior).DecRef(true);
 }
 
 void Block::ChainToPriorBlock(SmartBuf priorobj)

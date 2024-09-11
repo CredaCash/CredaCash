@@ -240,6 +240,13 @@ void do_interactive(DbConn *dbconn, TxQuery& txquery)
 {
 	while (true)
 	{
+		if (g_disable_malloc_logging)
+		{
+			g_disable_malloc_logging = false;
+
+			cc_malloc_logging(false);
+		}
+
 		static string input;
 		input.clear();
 
@@ -380,7 +387,11 @@ int interactive_do_json_command(const string& json, DbConn *dbconn, TxQuery& txq
 	lock_guard<mutex> lock(g_cerr_lock);
 	check_cerr_newline();
 
-	if (!reader.good())
+	if (g_params.developer_mode)
+	{
+		cerr << "Command result:\n" << response << "\n" << endl;
+	}
+	else if (!reader.good())
 	{
 		cerr << "Command result: " << response << endl;
 		cerr << "\nError parsing command result: " << reader.getFormattedErrorMessages() << endl;

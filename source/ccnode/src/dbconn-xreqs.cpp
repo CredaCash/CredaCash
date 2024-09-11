@@ -25,7 +25,7 @@ static mutex Xreqs_db_mutex;				// to avoid inconsistency problems with shared c
 atomic<unsigned> DbConnXreqs::xreq_count_pending(0);
 atomic<unsigned> DbConnXreqs::xreq_count_persistent(0);
 
-static const int xreq_cols = 68;	// number of xreq columns
+static const int xreq_cols = 69;	// number of xreq columns
 static const int nwc = 14;			// number of witness columns
 
 DbConnXreqs::DbConnXreqs()
@@ -39,11 +39,11 @@ DbConnXreqs::DbConnXreqs()
 
 	OpenDb();
 
-	CCASSERTZ(dblog(sqlite3_prepare_v2(Xreqs_db, "insert into Xreqs values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45, ?46, ?47, ?48, ?49, ?50, ?51, ?52, ?53, ?54, ?55, ?56, ?57, ?58, ?59, ?60, ?61, ?62, ?63, ?64, ?65, ?66, ?67, ?68);", -1, &Xreqs_insert, NULL)));
+	CCASSERTZ(dblog(sqlite3_prepare_v2(Xreqs_db, "insert into Xreqs values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45, ?46, ?47, ?48, ?49, ?50, ?51, ?52, ?53, ?54, ?55, ?56, ?57, ?58, ?59, ?60, ?61, ?62, ?63, ?64, ?65, ?66, ?67, ?68, ?69);", -1, &Xreqs_insert, NULL)));
 	CCASSERTZ(dblog(sqlite3_prepare_v2(Xreqs_db, "delete from Xreqs where Seqnum = ?1;", -1, &Xreqs_delete, NULL)));
 	CCASSERTZ(dblog(sqlite3_prepare_v2(Xreqs_db, "select true from Xreqs where QuoteAsset = ?1 and ForeignAddress = ?2 and ForeignAddressUnique and ForeignAddress is not null limit 1;", -1, &Xreqs_select_unique_foreign_address, NULL)));
 	CCASSERTZ(dblog(sqlite3_prepare_v2(Xreqs_db, "select * from Xreqs where Seqnum >= ?1 order by Seqnum limit 1;", -1, &Xreqs_select_seqnum, NULL)));
-	CCASSERTZ(dblog(sqlite3_prepare_v2(Xreqs_db, "select * from Xreqs where Xreqnum >= ?1 order by Xreqnum limit 1;", -1, &Xreqs_select_xreqnum, NULL)));
+	CCASSERTZ(dblog(sqlite3_prepare_v2(Xreqs_db, "select * from Xreqs where Xreqnum >= ?1 and (not ?2 or Type = ?2) order by Xreqnum limit 1;", -1, &Xreqs_select_xreqnum, NULL)));
 	CCASSERTZ(dblog(sqlite3_prepare_v2(Xreqs_db, "select * from Xreqs where ObjId = ?1 order by Seqnum limit 1;", -1, &Xreqs_select_objid, NULL)));
 	CCASSERTZ(dblog(sqlite3_prepare_v2(Xreqs_db, "select * from Xreqs where ExpireTime <= ?1 order by ExpireTime, Xreqnum limit 1;", -1, &Xreqs_select_expire, NULL)));
 	CCASSERTZ(dblog(sqlite3_prepare_v2(Xreqs_db, "select * from Xreqs indexed by Xreqs_OpenRateRequired_Index "
@@ -182,38 +182,39 @@ DbConnXreqs::DbConnXreqs()
 		"and Match.BestOtherSeqnumW = X.Seqnum "
 		+ search_match_order_sql).c_str(), -1, &Xreqs_select_witness_match_seqnum, NULL)));
 	CCASSERTZ(dblog(sqlite3_prepare_v2(Xreqs_db, "update Xreqs set "
-		// ?2 = ForWitness
-		"OpenAmount				= case when     ?2 then OpenAmount else ?3 end, "
-		"OpenRateRequired		= case when     ?2 then OpenRateRequired else ?4 end, "
-		"PendingMatchEpoch		= case when     ?2 then PendingMatchEpoch else ?5 end, "
-		"PendingMatchOrder		= case when     ?2 then PendingMatchOrder else ?6 end, "
-		"PendingMatchAmount		= case when     ?2 then PendingMatchAmount else ?7 end, "
-		"PendingMatchRate		= case when     ?2 then PendingMatchRate else ?8 end, "
-		"PendingMatchHoldTime	= case when     ?2 then PendingMatchHoldTime else ?9 end, "
-		"XreqnumW				= case when not ?2 then XreqnumW else ?10 end, "				// note: Xreqnum   only set by Xreqs_insert
-		"BlockTimeW				= case when not ?2 then BlockTimeW else ?11 end, "				// note: BlockTime only set by Xreqs_insert
-		"MatchingAmount			= case when     ?2 then MatchingAmount  else ?12 end, "
-		"MatchingAmountW		= case when not ?2 then MatchingAmountW else ?12 end, "
-		"MatchingRateRequired	= case when     ?2 then MatchingRateRequired  else ?13 end, "
-		"MatchingRateRequiredW	= case when not ?2 then MatchingRateRequiredW else ?13 end, "
-		"RecalcTime				= case when     ?2 then RecalcTime  else ?14 end, "
-		"RecalcTimeW			= case when not ?2 then RecalcTimeW else ?14 end, "
-		"LastMatched			= case when     ?2 then LastMatched  else ?15 end, "
-		"LastMatchedW			= case when not ?2 then LastMatchedW else ?15 end, "
-		"BestAmount				= case when     ?2 then BestAmount  else ?16 end, "
-		"BestAmountW			= case when not ?2 then BestAmountW else ?16 end, "
-		"BestRate				= case when     ?2 then BestRate  else ?17 end, "
-		"BestRateW				= case when not ?2 then BestRateW else ?17 end, "
-		"BestNetRate			= case when     ?2 then BestNetRate  else ?18 end, "
-		"BestNetRateW			= case when not ?2 then BestNetRateW else ?18 end, "
-		"BestOtherSeqnum		= case when     ?2 then BestOtherSeqnum  else ?19 end, "
-		"BestOtherSeqnumW		= case when not ?2 then BestOtherSeqnumW else ?19 end, "
-		"BestOtherXreqnum		= case when     ?2 then BestOtherXreqnum  else ?20 end, "
-		"BestOtherXreqnumW		= case when not ?2 then BestOtherXreqnumW else ?20 end, "
-		"BestOtherMatchingAmount = case when     ?2 then BestOtherMatchingAmount  else ?21 end, "
-		"BestOtherMatchingAmountW = case when not ?2 then BestOtherMatchingAmountW else ?21 end, "
-		"BestOtherNetRate		= case when     ?2 then BestOtherNetRate  else ?22 end, "
-		"BestOtherNetRateW		= case when not ?2 then BestOtherNetRateW else ?22 end  "
+		"LinkedSeqnum = ?2, "
+		// ?3 = ForWitness
+		"OpenAmount				= case when     ?3 then OpenAmount else ?4 end, "
+		"OpenRateRequired		= case when     ?3 then OpenRateRequired else ?5 end, "
+		"PendingMatchEpoch		= case when     ?3 then PendingMatchEpoch else ?6 end, "
+		"PendingMatchOrder		= case when     ?3 then PendingMatchOrder else ?7 end, "
+		"PendingMatchAmount		= case when     ?3 then PendingMatchAmount else ?8 end, "
+		"PendingMatchRate		= case when     ?3 then PendingMatchRate else ?9 end, "
+		"PendingMatchHoldTime	= case when     ?3 then PendingMatchHoldTime else ?10 end, "
+		"XreqnumW				= case when not ?3 then XreqnumW else ?11 end, "				// note: Xreqnum   only set by Xreqs_insert
+		"BlockTimeW				= case when not ?3 then BlockTimeW else ?12 end, "				// note: BlockTime only set by Xreqs_insert
+		"MatchingAmount			= case when     ?3 then MatchingAmount  else ?13 end, "
+		"MatchingAmountW		= case when not ?3 then MatchingAmountW else ?13 end, "
+		"MatchingRateRequired	= case when     ?3 then MatchingRateRequired  else ?14 end, "
+		"MatchingRateRequiredW	= case when not ?3 then MatchingRateRequiredW else ?14 end, "
+		"RecalcTime				= case when     ?3 then RecalcTime  else ?15 end, "
+		"RecalcTimeW			= case when not ?3 then RecalcTimeW else ?15 end, "
+		"LastMatched			= case when     ?3 then LastMatched  else ?16 end, "
+		"LastMatchedW			= case when not ?3 then LastMatchedW else ?16 end, "
+		"BestAmount				= case when     ?3 then BestAmount  else ?17 end, "
+		"BestAmountW			= case when not ?3 then BestAmountW else ?17 end, "
+		"BestRate				= case when     ?3 then BestRate  else ?18 end, "
+		"BestRateW				= case when not ?3 then BestRateW else ?18 end, "
+		"BestNetRate			= case when     ?3 then BestNetRate  else ?19 end, "
+		"BestNetRateW			= case when not ?3 then BestNetRateW else ?19 end, "
+		"BestOtherSeqnum		= case when     ?3 then BestOtherSeqnum  else ?20 end, "
+		"BestOtherSeqnumW		= case when not ?3 then BestOtherSeqnumW else ?20 end, "
+		"BestOtherXreqnum		= case when     ?3 then BestOtherXreqnum  else ?21 end, "
+		"BestOtherXreqnumW		= case when not ?3 then BestOtherXreqnumW else ?21 end, "
+		"BestOtherMatchingAmount = case when     ?3 then BestOtherMatchingAmount  else ?22 end, "
+		"BestOtherMatchingAmountW = case when not ?3 then BestOtherMatchingAmountW else ?22 end, "
+		"BestOtherNetRate		= case when     ?3 then BestOtherNetRate  else ?23 end, "
+		"BestOtherNetRateW		= case when not ?3 then BestOtherNetRateW else ?23 end  "
 		"where Seqnum = ?1;", -1, &Xreqs_update, NULL)));
 
 	//if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnXreqs::DbConnXreqs dbconn done " << (uintptr_t)this;
@@ -341,97 +342,98 @@ int DbConnXreqs::XreqsInsertWithLock(const Xreq& xreq)
 	CCASSERTZ(pack_unsigned_amount(xreq.matching_amount, matching_amount));
 
 	//Xreqs:
-	// 1: Seqnum, ObjId, Type, IsBuyer, ExpireTime, BaseAsset, QuoteAsset, ForeignAsset, MinAmount, MaxAmount
-	// 11: NetRateRequired, WaitDiscount, BaseCosts, QuoteCosts
-	// 15: AddImmediatelyToBlockchain, AutoAcceptMatches, NoMinimumAfterFirstMatch, MustLiquidateCrossingMinimum, MustLiquidateBelowMinimum
-	// 20: ConsiderationRequired, ConsiderationOffered, Pledge
-	// 23: HoldTime, HoldTimeRequired, MinWaitTime
-	// 26: AcceptTimeRequired, AcceptTimeOffered
-	// 28: PaymentTime, Confirmations
-	// 30: ForeignAddressUnique, ForeignAddress, Destination, PubSigningKey
-	// 34: OpenAmount blob, OpenRateRequired float
-	// 36: PendingMatchEpoch integer, PendingMatchOrder integer, PendingMatchAmount blob, PendingMatchRate numeric, PendingMatchHoldTime integer
-	// 41: Xreqnum , BlockTime , MatchingAmount , MatchingRateRequired , RecalcTime , Recalc , LastMatched , BestAmount , BestRate , BestNetRate , BestOtherSeqnum , BestOtherXreqnum , BestOtherMatchingAmount , BestOtherNetRate
-	// 55: XreqnumW, BlockTimeW, MatchingAmountW, MatchingRateRequiredW, RecalcTimeW, RecalcW, LastMatchedW, BestAmountW, BestRateW, BestNetRateW, BestOtherSeqnumW, BestOtherXreqnumW, BestOtherMatchingAmountW, BestOtherNetRateW
+	// 1: Seqnum, LinkedSeqnum, ObjId, Type, IsBuyer, ExpireTime, BaseAsset, QuoteAsset, ForeignAsset, MinAmount, MaxAmount
+	// 12: NetRateRequired, WaitDiscount, BaseCosts, QuoteCosts
+	// 16: AddImmediatelyToBlockchain, AutoAcceptMatches, NoMinimumAfterFirstMatch, MustLiquidateCrossingMinimum, MustLiquidateBelowMinimum
+	// 21: ConsiderationRequired, ConsiderationOffered, Pledge
+	// 24: HoldTime, HoldTimeRequired, MinWaitTime
+	// 27: AcceptTimeRequired, AcceptTimeOffered
+	// 29: PaymentTime, Confirmations
+	// 31: ForeignAddressUnique, ForeignAddress, Destination, PubSigningKey
+	// 35: OpenAmount blob, OpenRateRequired float
+	// 37: PendingMatchEpoch integer, PendingMatchOrder integer, PendingMatchAmount blob, PendingMatchRate numeric, PendingMatchHoldTime integer
+	// 42: Xreqnum , BlockTime , MatchingAmount , MatchingRateRequired , RecalcTime , Recalc , LastMatched , BestAmount , BestRate , BestNetRate , BestOtherSeqnum , BestOtherXreqnum , BestOtherMatchingAmount , BestOtherNetRate
+	// 56: XreqnumW, BlockTimeW, MatchingAmountW, MatchingRateRequiredW, RecalcTimeW, RecalcW, LastMatchedW, BestAmountW, BestRateW, BestNetRateW, BestOtherSeqnumW, BestOtherXreqnumW, BestOtherMatchingAmountW, BestOtherNetRateW
 	if (dblog(sqlite3_bind_int64(Xreqs_insert, 1, xreq.seqnum))) return -1;
-	if (dblog(sqlite3_bind_blob(Xreqs_insert, 2, &xreq.objid, sizeof(xreq.objid), SQLITE_STATIC))) return -1;
-	if (dblog(sqlite3_bind_int(Xreqs_insert, 3, xreq.type))) return -1;
-	if (dblog(sqlite3_bind_int(Xreqs_insert, 4, xreq.IsBuyer()))) return -1;
-	if (dblog(sqlite3_bind_int64(Xreqs_insert, 5, xreq.expire_time))) return -1;
-	if (dblog(sqlite3_bind_int64(Xreqs_insert, 6, xreq.base_asset))) return -1;
-	if (dblog(sqlite3_bind_int64(Xreqs_insert, 7, xreq.quote_asset))) return -1;
-	if (dblog(sqlite3_bind_text(Xreqs_insert, 8, xreq.foreign_asset.c_str(), -1, SQLITE_STATIC))) return -1;
-	if (dblog(sqlite3_bind_blob(Xreqs_insert, 9, &min_amount, AMOUNT_UNSIGNED_PACKED_BYTES, SQLITE_STATIC))) return -1;
-	if (dblog(sqlite3_bind_blob(Xreqs_insert, 10, &xreq.max_amount, sizeof(xreq.max_amount), SQLITE_STATIC))) return -1;
-	if (dblog(sqlite3_bind_double(Xreqs_insert, 11, xreq.net_rate_required.asFloat()))) return -1;
-	if (dblog(sqlite3_bind_double(Xreqs_insert, 12, xreq.wait_discount.asFloat()))) return -1;
-	if (dblog(sqlite3_bind_double(Xreqs_insert, 13, xreq.base_costs.asFloat()))) return -1;
-	if (dblog(sqlite3_bind_double(Xreqs_insert, 14, xreq.quote_costs.asFloat()))) return -1;
-	if (dblog(sqlite3_bind_int(Xreqs_insert, 15, xreq.flags.add_immediately_to_blockchain))) return -1;
-	if (dblog(sqlite3_bind_int(Xreqs_insert, 16, xreq.flags.auto_accept_matches))) return -1;
-	if (dblog(sqlite3_bind_int(Xreqs_insert, 17, xreq.flags.no_minimum_after_first_match))) return -1;
-	if (dblog(sqlite3_bind_int(Xreqs_insert, 18, xreq.flags.must_liquidate_crossing_minimum))) return -1;
-	if (dblog(sqlite3_bind_int(Xreqs_insert, 19, xreq.flags.must_liquidate_below_minimum))) return -1;
-	if (dblog(sqlite3_bind_int(Xreqs_insert, 20, xreq.consideration_required))) return -1;
-	if (dblog(sqlite3_bind_int(Xreqs_insert, 21, xreq.consideration_offered))) return -1;
-	if (dblog(sqlite3_bind_int(Xreqs_insert, 22, xreq.pledge))) return -1;
-	if (dblog(sqlite3_bind_int(Xreqs_insert, 23, xreq.hold_time))) return -1;
-	if (dblog(sqlite3_bind_int(Xreqs_insert, 24, xreq.hold_time_required))) return -1;
-	if (dblog(sqlite3_bind_int(Xreqs_insert, 25, xreq.min_wait_time))) return -1;
-	if (dblog(sqlite3_bind_int(Xreqs_insert, 26, xreq.accept_time_required))) return -1;
-	if (dblog(sqlite3_bind_int(Xreqs_insert, 27, xreq.accept_time_offered))) return -1;
-	if (dblog(sqlite3_bind_int(Xreqs_insert, 28, xreq.payment_time))) return -1;
-	if (dblog(sqlite3_bind_int(Xreqs_insert, 29, xreq.confirmations))) return -1;
-	if (dblog(sqlite3_bind_int(Xreqs_insert, 30, ProcessTx::CheckTransientDuplicateForeignAddresses(xreq.quote_asset)))) return -1;
-	if (dblog(sqlite3_bind_blob(Xreqs_insert, 31, xreq.foreign_address.c_str(), xreq.foreign_address.length(), SQLITE_STATIC))) return -1;
-	if (dblog(sqlite3_bind_blob(Xreqs_insert, 32, &xreq.destination, sizeof(xreq.destination), SQLITE_STATIC))) return -1;
-	if (dblog(sqlite3_bind_blob(Xreqs_insert, 33, &xreq.signing_public_key, sizeof(xreq.signing_public_key), SQLITE_STATIC))) return -1;
-	if (dblog(sqlite3_bind_blob(Xreqs_insert, 34, &open_amount, AMOUNT_UNSIGNED_PACKED_BYTES, SQLITE_STATIC))) return -1;
-	if (dblog(sqlite3_bind_double(Xreqs_insert, 35, xreq.SignedRate(xreq.open_rate_required).asFloat()))) return -1;
-	if (dblog(sqlite3_bind_int64(Xreqs_insert, 36, xreq.pending_match_epoch))) return -1;
-	if (dblog(sqlite3_bind_int64(Xreqs_insert, 37, xreq.pending_match_order))) return -1;
-	if (dblog(sqlite3_bind_blob(Xreqs_insert, 38, &xreq.pending_match_amount, sizeof(xreq.pending_match_amount), SQLITE_STATIC))) return -1;
-	if (dblog(sqlite3_bind_double(Xreqs_insert, 39, xreq.pending_match_rate.asFloat()))) return -1;
-	if (dblog(sqlite3_bind_int(Xreqs_insert, 40, xreq.pending_match_hold_time))) return -1;
+	if (dblog(sqlite3_bind_int64(Xreqs_insert, 2, xreq.linked_seqnum))) return -1;
+	if (dblog(sqlite3_bind_blob(Xreqs_insert, 3, &xreq.objid, sizeof(xreq.objid), SQLITE_STATIC))) return -1;
+	if (dblog(sqlite3_bind_int(Xreqs_insert, 4, xreq.type))) return -1;
+	if (dblog(sqlite3_bind_int(Xreqs_insert, 5, xreq.IsBuyer()))) return -1;
+	if (dblog(sqlite3_bind_int64(Xreqs_insert, 6, xreq.expire_time))) return -1;
+	if (dblog(sqlite3_bind_int64(Xreqs_insert, 7, xreq.base_asset))) return -1;
+	if (dblog(sqlite3_bind_int64(Xreqs_insert, 8, xreq.quote_asset))) return -1;
+	if (dblog(sqlite3_bind_text(Xreqs_insert, 9, xreq.foreign_asset.c_str(), -1, SQLITE_STATIC))) return -1;
+	if (dblog(sqlite3_bind_blob(Xreqs_insert, 10, &min_amount, AMOUNT_UNSIGNED_PACKED_BYTES, SQLITE_STATIC))) return -1;
+	if (dblog(sqlite3_bind_blob(Xreqs_insert, 11, &xreq.max_amount, sizeof(xreq.max_amount), SQLITE_STATIC))) return -1;
+	if (dblog(sqlite3_bind_double(Xreqs_insert, 12, xreq.net_rate_required.asFloat()))) return -1;
+	if (dblog(sqlite3_bind_double(Xreqs_insert, 13, xreq.wait_discount.asFloat()))) return -1;
+	if (dblog(sqlite3_bind_double(Xreqs_insert, 14, xreq.base_costs.asFloat()))) return -1;
+	if (dblog(sqlite3_bind_double(Xreqs_insert, 15, xreq.quote_costs.asFloat()))) return -1;
+	if (dblog(sqlite3_bind_int(Xreqs_insert, 16, xreq.flags.add_immediately_to_blockchain))) return -1;
+	if (dblog(sqlite3_bind_int(Xreqs_insert, 17, xreq.flags.auto_accept_matches))) return -1;
+	if (dblog(sqlite3_bind_int(Xreqs_insert, 18, xreq.flags.no_minimum_after_first_match))) return -1;
+	if (dblog(sqlite3_bind_int(Xreqs_insert, 19, xreq.flags.must_liquidate_crossing_minimum))) return -1;
+	if (dblog(sqlite3_bind_int(Xreqs_insert, 20, xreq.flags.must_liquidate_below_minimum))) return -1;
+	if (dblog(sqlite3_bind_int(Xreqs_insert, 21, xreq.consideration_required))) return -1;
+	if (dblog(sqlite3_bind_int(Xreqs_insert, 22, xreq.consideration_offered))) return -1;
+	if (dblog(sqlite3_bind_int(Xreqs_insert, 23, xreq.pledge))) return -1;
+	if (dblog(sqlite3_bind_int(Xreqs_insert, 24, xreq.hold_time))) return -1;
+	if (dblog(sqlite3_bind_int(Xreqs_insert, 25, xreq.hold_time_required))) return -1;
+	if (dblog(sqlite3_bind_int(Xreqs_insert, 26, xreq.min_wait_time))) return -1;
+	if (dblog(sqlite3_bind_int(Xreqs_insert, 27, xreq.accept_time_required))) return -1;
+	if (dblog(sqlite3_bind_int(Xreqs_insert, 28, xreq.accept_time_offered))) return -1;
+	if (dblog(sqlite3_bind_int(Xreqs_insert, 29, xreq.payment_time))) return -1;
+	if (dblog(sqlite3_bind_int(Xreqs_insert, 30, xreq.confirmations))) return -1;
+	if (dblog(sqlite3_bind_int(Xreqs_insert, 31, ProcessTx::CheckTransientDuplicateForeignAddresses(xreq.quote_asset)))) return -1;
+	if (dblog(sqlite3_bind_blob(Xreqs_insert, 32, xreq.foreign_address.c_str(), xreq.foreign_address.length(), SQLITE_STATIC))) return -1;
+	if (dblog(sqlite3_bind_blob(Xreqs_insert, 33, &xreq.destination, sizeof(xreq.destination), SQLITE_STATIC))) return -1;
+	if (dblog(sqlite3_bind_blob(Xreqs_insert, 34, &xreq.signing_public_key, sizeof(xreq.signing_public_key), SQLITE_STATIC))) return -1;
+	if (dblog(sqlite3_bind_blob(Xreqs_insert, 35, &open_amount, AMOUNT_UNSIGNED_PACKED_BYTES, SQLITE_STATIC))) return -1;
+	if (dblog(sqlite3_bind_double(Xreqs_insert, 36, xreq.SignedRate(xreq.open_rate_required).asFloat()))) return -1;
+	if (dblog(sqlite3_bind_int64(Xreqs_insert, 37, xreq.pending_match_epoch))) return -1;
+	if (dblog(sqlite3_bind_int64(Xreqs_insert, 38, xreq.pending_match_order))) return -1;
+	if (dblog(sqlite3_bind_blob(Xreqs_insert, 39, &xreq.pending_match_amount, sizeof(xreq.pending_match_amount), SQLITE_STATIC))) return -1;
+	if (dblog(sqlite3_bind_double(Xreqs_insert, 40, xreq.pending_match_rate.asFloat()))) return -1;
+	if (dblog(sqlite3_bind_int(Xreqs_insert, 41, xreq.pending_match_hold_time))) return -1;
 
 	for (unsigned i = 0; i < 2; ++i)
 	{
-		if (dblog(sqlite3_bind_int64(Xreqs_insert, 41 + nwc*i, xreq.xreqnum))) return -1;
-		if (dblog(sqlite3_bind_int64(Xreqs_insert, 42 + nwc*i, xreq.blocktime))) return -1;
-		if (dblog(sqlite3_bind_blob(Xreqs_insert, 43 + nwc*i, &matching_amount, AMOUNT_UNSIGNED_PACKED_BYTES, SQLITE_STATIC))) return -1;
-		if (dblog(sqlite3_bind_double(Xreqs_insert, 44 + nwc*i, xreq.matching_rate_required.asFloat()))) return -1;
-		if (dblog(sqlite3_bind_int64(Xreqs_insert, 45 + nwc*i, xreq.recalc_time))) return -1;
-		if (dblog(sqlite3_bind_int(Xreqs_insert, 46 + nwc*i, xreq.recalc))) return -1;
-		if (dblog(sqlite3_bind_int64(Xreqs_insert, 47 + nwc*i, xreq.last_matched))) return -1;
-		if (dblog(sqlite3_bind_blob(Xreqs_insert, 48 + nwc*i, &xreq.best_amount, sizeof(xreq.best_amount), SQLITE_STATIC))) return -1;
-		if (dblog(sqlite3_bind_double(Xreqs_insert, 49 + nwc*i, xreq.best_rate.asFloat()))) return -1;
-		if (dblog(sqlite3_bind_double(Xreqs_insert, 50 + nwc*i, xreq.best_net_rate.asFloat()))) return -1;
-		if (dblog(sqlite3_bind_int64(Xreqs_insert, 51 + nwc*i, xreq.best_other_seqnum))) return -1;
-		if (dblog(sqlite3_bind_int64(Xreqs_insert, 52 + nwc*i, xreq.best_other_xreqnum))) return -1;
-		if (dblog(sqlite3_bind_blob(Xreqs_insert, 53 + nwc*i, &xreq.best_other_matching_amount, sizeof(xreq.best_other_matching_amount), SQLITE_STATIC))) return -1;
-		if (dblog(sqlite3_bind_double(Xreqs_insert, 54 + nwc*i, xreq.best_other_net_rate.asFloat()))) return -1;
+		if (dblog(sqlite3_bind_int64(Xreqs_insert, 42 + nwc*i, xreq.xreqnum))) return -1;
+		if (dblog(sqlite3_bind_int64(Xreqs_insert, 43 + nwc*i, xreq.blocktime))) return -1;
+		if (dblog(sqlite3_bind_blob(Xreqs_insert, 44 + nwc*i, &matching_amount, AMOUNT_UNSIGNED_PACKED_BYTES, SQLITE_STATIC))) return -1;
+		if (dblog(sqlite3_bind_double(Xreqs_insert, 45 + nwc*i, xreq.matching_rate_required.asFloat()))) return -1;
+		if (dblog(sqlite3_bind_int64(Xreqs_insert, 46 + nwc*i, xreq.recalc_time))) return -1;
+		if (dblog(sqlite3_bind_int(Xreqs_insert, 47 + nwc*i, xreq.recalc))) return -1;
+		if (dblog(sqlite3_bind_int64(Xreqs_insert, 48 + nwc*i, xreq.last_matched))) return -1;
+		if (dblog(sqlite3_bind_blob(Xreqs_insert, 49 + nwc*i, &xreq.best_amount, sizeof(xreq.best_amount), SQLITE_STATIC))) return -1;
+		if (dblog(sqlite3_bind_double(Xreqs_insert, 50 + nwc*i, xreq.best_rate.asFloat()))) return -1;
+		if (dblog(sqlite3_bind_double(Xreqs_insert, 51 + nwc*i, xreq.best_net_rate.asFloat()))) return -1;
+		if (dblog(sqlite3_bind_int64(Xreqs_insert, 52 + nwc*i, xreq.best_other_seqnum))) return -1;
+		if (dblog(sqlite3_bind_int64(Xreqs_insert, 53 + nwc*i, xreq.best_other_xreqnum))) return -1;
+		if (dblog(sqlite3_bind_blob(Xreqs_insert, 54 + nwc*i, &xreq.best_other_matching_amount, sizeof(xreq.best_other_matching_amount), SQLITE_STATIC))) return -1;
+		if (dblog(sqlite3_bind_double(Xreqs_insert, 55 + nwc*i, xreq.best_other_net_rate.asFloat()))) return -1;
 	}
 
 	if (!xreq.flags.has_signing_key)
 	{
-		if (dblog(sqlite3_bind_null(Xreqs_insert, 33))) return -1;
+		if (dblog(sqlite3_bind_null(Xreqs_insert, 34))) return -1;
 	}
 
 	if (!xreq.open_amount)
 	{
-		if (dblog(sqlite3_bind_null(Xreqs_insert, 34))) return -1;
+		if (dblog(sqlite3_bind_null(Xreqs_insert, 35))) return -1;
 	}
 
 	if (!xreq.matching_amount)
 	{
-		if (dblog(sqlite3_bind_null(Xreqs_insert, 43))) return -1;
-		if (dblog(sqlite3_bind_null(Xreqs_insert, 43 + nwc))) return -1;
+		if (dblog(sqlite3_bind_null(Xreqs_insert, 44))) return -1;
+		if (dblog(sqlite3_bind_null(Xreqs_insert, 44 + nwc))) return -1;
 	}
 
 	if (!xreq.best_amount)
 	{
-		if (dblog(sqlite3_bind_null(Xreqs_insert, 48))) return -1;
-		if (dblog(sqlite3_bind_null(Xreqs_insert, 48 + nwc))) return -1;
+		if (dblog(sqlite3_bind_null(Xreqs_insert, 49))) return -1;
+		if (dblog(sqlite3_bind_null(Xreqs_insert, 49 + nwc))) return -1;
 	}
 
 	if (RandTest(RTEST_DB_ERRORS))
@@ -573,46 +575,47 @@ int DbConnXreqs::XreqsUpdate(const Xreq& xreq)
 	CCASSERTZ(pack_unsigned_amount(xreq.matching_amount, matching_amount));
 
 	//Xreqs:
-	// 1: Seqnum, ForWitness
+	// 1: Seqnum, LinkedSeqnum, ForWitness
 	// 3: OpenAmount blob, OpenRateRequired float
 	// 5: PendingMatchEpoch integer, PendingMatchOrder integer, PendingMatchAmount blob, PendingMatchRate numeric, PendingMatchHoldTime integer
 	// 10: Xreqnum, BlockTime, MatchingAmount, MatchingRateRequired, RecalcTime, LastMatched, BestAmount, BestRate, BestNetRate, BestOtherSeqnum, BestOtherXreqnum, BestOtherMatchingAmount, BestOtherNetRate
 	if (dblog(sqlite3_bind_int64(Xreqs_update, 1, xreq.seqnum))) return -1;
-	if (dblog(sqlite3_bind_int(Xreqs_update, 2, xreq.for_witness))) return -1;
-	if (dblog(sqlite3_bind_blob(Xreqs_update, 3, &open_amount, AMOUNT_UNSIGNED_PACKED_BYTES, SQLITE_STATIC))) return -1;
-	if (dblog(sqlite3_bind_double(Xreqs_update, 4, xreq.SignedRate(xreq.open_rate_required).asFloat()))) return -1;
-	if (dblog(sqlite3_bind_int64(Xreqs_update, 5, xreq.pending_match_epoch))) return -1;
-	if (dblog(sqlite3_bind_int64(Xreqs_update, 6, xreq.pending_match_order))) return -1;
-	if (dblog(sqlite3_bind_blob(Xreqs_update, 7, &xreq.pending_match_amount, sizeof(xreq.pending_match_amount), SQLITE_STATIC))) return -1;
-	if (dblog(sqlite3_bind_double(Xreqs_update, 8, xreq.pending_match_rate.asFloat()))) return -1;
-	if (dblog(sqlite3_bind_int(Xreqs_update, 9, xreq.pending_match_hold_time))) return -1;
-	if (dblog(sqlite3_bind_int64(Xreqs_update, 10, xreq.xreqnum))) return -1;
-	if (dblog(sqlite3_bind_int64(Xreqs_update, 11, xreq.blocktime))) return -1;
-	if (dblog(sqlite3_bind_blob(Xreqs_update, 12, &matching_amount, AMOUNT_UNSIGNED_PACKED_BYTES, SQLITE_STATIC))) return -1;
-	if (dblog(sqlite3_bind_double(Xreqs_update, 13, xreq.matching_rate_required.asFloat()))) return -1;
-	if (dblog(sqlite3_bind_int64(Xreqs_update, 14, xreq.recalc_time))) return -1;
-	if (dblog(sqlite3_bind_int64(Xreqs_update, 15, xreq.last_matched))) return -1;
-	if (dblog(sqlite3_bind_blob(Xreqs_update, 16, &xreq.best_amount, sizeof(xreq.best_amount), SQLITE_STATIC))) return -1;
-	if (dblog(sqlite3_bind_double(Xreqs_update, 17, xreq.best_rate.asFloat()))) return -1;
-	if (dblog(sqlite3_bind_double(Xreqs_update, 18, xreq.best_net_rate.asFloat()))) return -1;
-	if (dblog(sqlite3_bind_int64(Xreqs_update, 19, xreq.best_other_seqnum))) return -1;
-	if (dblog(sqlite3_bind_int64(Xreqs_update, 20, xreq.best_other_xreqnum))) return -1;
-	if (dblog(sqlite3_bind_blob(Xreqs_update, 21, &xreq.best_other_matching_amount, sizeof(xreq.best_other_matching_amount), SQLITE_STATIC))) return -1;
-	if (dblog(sqlite3_bind_double(Xreqs_update, 22, xreq.best_other_net_rate.asFloat()))) return -1;
+	if (dblog(sqlite3_bind_int64(Xreqs_update, 2, xreq.linked_seqnum))) return -1;
+	if (dblog(sqlite3_bind_int(Xreqs_update, 3, xreq.for_witness))) return -1;
+	if (dblog(sqlite3_bind_blob(Xreqs_update, 4, &open_amount, AMOUNT_UNSIGNED_PACKED_BYTES, SQLITE_STATIC))) return -1;
+	if (dblog(sqlite3_bind_double(Xreqs_update, 5, xreq.SignedRate(xreq.open_rate_required).asFloat()))) return -1;
+	if (dblog(sqlite3_bind_int64(Xreqs_update, 6, xreq.pending_match_epoch))) return -1;
+	if (dblog(sqlite3_bind_int64(Xreqs_update, 7, xreq.pending_match_order))) return -1;
+	if (dblog(sqlite3_bind_blob(Xreqs_update, 8, &xreq.pending_match_amount, sizeof(xreq.pending_match_amount), SQLITE_STATIC))) return -1;
+	if (dblog(sqlite3_bind_double(Xreqs_update, 9, xreq.pending_match_rate.asFloat()))) return -1;
+	if (dblog(sqlite3_bind_int(Xreqs_update, 10, xreq.pending_match_hold_time))) return -1;
+	if (dblog(sqlite3_bind_int64(Xreqs_update, 11, xreq.xreqnum))) return -1;
+	if (dblog(sqlite3_bind_int64(Xreqs_update, 12, xreq.blocktime))) return -1;
+	if (dblog(sqlite3_bind_blob(Xreqs_update, 13, &matching_amount, AMOUNT_UNSIGNED_PACKED_BYTES, SQLITE_STATIC))) return -1;
+	if (dblog(sqlite3_bind_double(Xreqs_update, 14, xreq.matching_rate_required.asFloat()))) return -1;
+	if (dblog(sqlite3_bind_int64(Xreqs_update, 15, xreq.recalc_time))) return -1;
+	if (dblog(sqlite3_bind_int64(Xreqs_update, 16, xreq.last_matched))) return -1;
+	if (dblog(sqlite3_bind_blob(Xreqs_update, 17, &xreq.best_amount, sizeof(xreq.best_amount), SQLITE_STATIC))) return -1;
+	if (dblog(sqlite3_bind_double(Xreqs_update, 18, xreq.best_rate.asFloat()))) return -1;
+	if (dblog(sqlite3_bind_double(Xreqs_update, 19, xreq.best_net_rate.asFloat()))) return -1;
+	if (dblog(sqlite3_bind_int64(Xreqs_update, 20, xreq.best_other_seqnum))) return -1;
+	if (dblog(sqlite3_bind_int64(Xreqs_update, 21, xreq.best_other_xreqnum))) return -1;
+	if (dblog(sqlite3_bind_blob(Xreqs_update, 22, &xreq.best_other_matching_amount, sizeof(xreq.best_other_matching_amount), SQLITE_STATIC))) return -1;
+	if (dblog(sqlite3_bind_double(Xreqs_update, 23, xreq.best_other_net_rate.asFloat()))) return -1;
 
 	if (!xreq.open_amount)
 	{
-		if (dblog(sqlite3_bind_null(Xreqs_update, 3))) return -1;
+		if (dblog(sqlite3_bind_null(Xreqs_update, 4))) return -1;
 	}
 
 	if (!xreq.matching_amount)
 	{
-		if (dblog(sqlite3_bind_null(Xreqs_update, 12))) return -1;
+		if (dblog(sqlite3_bind_null(Xreqs_update, 13))) return -1;
 	}
 
 	if (!xreq.best_amount)
 	{
-		if (dblog(sqlite3_bind_null(Xreqs_update, 16))) return -1;
+		if (dblog(sqlite3_bind_null(Xreqs_update, 17))) return -1;
 	}
 
 	if (RandTest(RTEST_DB_ERRORS))
@@ -703,26 +706,26 @@ int DbConnXreqs::XreqsSelect(sqlite3_stmt *select, const bool for_witness, Xreq&
 
 int DbConnXreqs::XreqsSelectInternal(sqlite3_stmt *select, const bool for_witness, Xreq& xreq, unsigned cs)
 {
-	auto objid_blob = sqlite3_column_blob(select, cs + 1);
-	auto objid_size = sqlite3_column_bytes(select, cs + 1);
-	auto min_amount_blob = sqlite3_column_blob(select, cs + 8);
-	auto min_amount_size = sqlite3_column_bytes(select, cs + 8);
-	auto max_amount_blob = sqlite3_column_blob(select, cs + 9);
-	auto max_amount_size = sqlite3_column_bytes(select, cs + 9);
-	auto destination_blob = sqlite3_column_blob(select, cs + 31);
-	auto destination_size = sqlite3_column_bytes(select, cs + 31);
-	auto signing_public_key_blob = sqlite3_column_blob(select, cs + 32);
-	auto signing_public_key_size = sqlite3_column_bytes(select, cs + 32);
-	auto open_amount_blob = sqlite3_column_blob(select, cs + 33);
-	auto open_amount_size = sqlite3_column_bytes(select, cs + 33);
-	auto pending_match_amount_blob = sqlite3_column_blob(select, cs + 37);
-	auto pending_match_amount_size = sqlite3_column_bytes(select, cs + 37);
-	auto matching_amount_blob = sqlite3_column_blob(select, cs + 42 + nwc*for_witness);
-	auto matching_amount_size = sqlite3_column_bytes(select, cs + 42 + nwc*for_witness);
-	auto best_amount_blob = sqlite3_column_blob(select, cs + 47 + nwc*for_witness);
-	auto best_amount_size = sqlite3_column_bytes(select, cs + 47 + nwc*for_witness);
-	auto best_other_matching_amount_blob = sqlite3_column_blob(select, cs + 52 + nwc*for_witness);
-	auto best_other_matching_amount_size = sqlite3_column_bytes(select, cs + 52 + nwc*for_witness);
+	auto objid_blob = sqlite3_column_blob(select, cs + 2);
+	auto objid_size = sqlite3_column_bytes(select, cs + 2);
+	auto min_amount_blob = sqlite3_column_blob(select, cs + 9);
+	auto min_amount_size = sqlite3_column_bytes(select, cs + 9);
+	auto max_amount_blob = sqlite3_column_blob(select, cs + 10);
+	auto max_amount_size = sqlite3_column_bytes(select, cs + 10);
+	auto destination_blob = sqlite3_column_blob(select, cs + 32);
+	auto destination_size = sqlite3_column_bytes(select, cs + 32);
+	auto signing_public_key_blob = sqlite3_column_blob(select, cs + 33);
+	auto signing_public_key_size = sqlite3_column_bytes(select, cs + 33);
+	auto open_amount_blob = sqlite3_column_blob(select, cs + 34);
+	auto open_amount_size = sqlite3_column_bytes(select, cs + 34);
+	auto pending_match_amount_blob = sqlite3_column_blob(select, cs + 38);
+	auto pending_match_amount_size = sqlite3_column_bytes(select, cs + 38);
+	auto matching_amount_blob = sqlite3_column_blob(select, cs + 43 + nwc*for_witness);
+	auto matching_amount_size = sqlite3_column_bytes(select, cs + 43 + nwc*for_witness);
+	auto best_amount_blob = sqlite3_column_blob(select, cs + 48 + nwc*for_witness);
+	auto best_amount_size = sqlite3_column_bytes(select, cs + 48 + nwc*for_witness);
+	auto best_other_matching_amount_blob = sqlite3_column_blob(select, cs + 53 + nwc*for_witness);
+	auto best_other_matching_amount_size = sqlite3_column_bytes(select, cs + 53 + nwc*for_witness);
 
 	if (!objid_blob)
 	{
@@ -826,72 +829,73 @@ int DbConnXreqs::XreqsSelectInternal(sqlite3_stmt *select, const bool for_witnes
 	}
 
 	//Xreqs:
-	// 0: Seqnum, ObjId blob, Type, IsBuyer, ExpireTime, BaseAsset, QuoteAsset, ForeignAsset string, MinAmount blob, MaxAmount blob
-	// 10: NetRateRequired float, WaitDiscount float, BaseCosts float, QuoteCosts float
-	// 14: AddImmediatelyToBlockchain, AutoAcceptMatches, NoMinimumAfterFirstMatch, MustLiquidateCrossingMinimum, MustLiquidateBelowMinimum
-	// 19: ConsiderationRequired, ConsiderationOffered, Pledge
-	// 22: HoldTime, HoldTimeRequired, MinWaitTime
-	// 25: AcceptTimeRequired, AcceptTimeOffered
-	// 27: PaymentTime, Confirmations
-	// 29: ForeignAddressUnique boolean, ForeignAddress blob, Destination blob, PubSigningKey blob
-	// 33: OpenAmount blob, OpenRateRequired float
-	// 35: PendingMatchEpoch integer, PendingMatchOrder integer, PendingMatchAmount blob, PendingMatchRate numeric, PendingMatchHoldTime integer
-	// 40: Xreqnum, BlockTime, MatchingAmount blob, MatchingRateRequired float, IsNew, RecalcTime, Recalc, Reset, LastMatched, BestAmount blob, BestRate float, BestNetRate float, BestOtherSeqnum, BestOtherXreqnum, BestOtherMatchingAmount blob, BestOtherNetRate float
+	// 0: Seqnum, LinkedSeqnum, ObjId blob, Type, IsBuyer, ExpireTime, BaseAsset, QuoteAsset, ForeignAsset string, MinAmount blob, MaxAmount blob
+	// 11: NetRateRequired float, WaitDiscount float, BaseCosts float, QuoteCosts float
+	// 15: AddImmediatelyToBlockchain, AutoAcceptMatches, NoMinimumAfterFirstMatch, MustLiquidateCrossingMinimum, MustLiquidateBelowMinimum
+	// 20: ConsiderationRequired, ConsiderationOffered, Pledge
+	// 23: HoldTime, HoldTimeRequired, MinWaitTime
+	// 26: AcceptTimeRequired, AcceptTimeOffered
+	// 28: PaymentTime, Confirmations
+	// 30: ForeignAddressUnique boolean, ForeignAddress blob, Destination blob, PubSigningKey blob
+	// 34: OpenAmount blob, OpenRateRequired float
+	// 36: PendingMatchEpoch integer, PendingMatchOrder integer, PendingMatchAmount blob, PendingMatchRate numeric, PendingMatchHoldTime integer
+	// 41: Xreqnum, BlockTime, MatchingAmount blob, MatchingRateRequired float, IsNew, RecalcTime, Recalc, Reset, LastMatched, BestAmount blob, BestRate float, BestNetRate float, BestOtherSeqnum, BestOtherXreqnum, BestOtherMatchingAmount blob, BestOtherNetRate float
 
 	xreq.seqnum = sqlite3_column_int64(select, cs + 0);
-	//auto objid_blob = sqlite3_column_blob(select, cs + 1);
-	xreq.type = sqlite3_column_int(select, cs + 2);
-	//xreq.isbuyer = sqlite3_column_int64(select, cs + 3);
-	xreq.expire_time = sqlite3_column_int64(select, cs + 4);
-	xreq.base_asset = sqlite3_column_int64(select, cs + 5);
-	xreq.quote_asset = sqlite3_column_int64(select, cs + 6);
-	auto foreign_asset_text = sqlite3_column_text(select, cs + 7);
-	//auto min_amount_blob = sqlite3_column_blob(select, cs + 8);
-	//auto max_amount_blob = sqlite3_column_blob(select, cs + 9);
-	xreq.net_rate_required = sqlite3_column_double(select, cs + 10);
-	xreq.wait_discount = sqlite3_column_double(select, cs + 11);
-	xreq.base_costs = sqlite3_column_double(select, cs + 12);
-	xreq.quote_costs = sqlite3_column_double(select, cs + 13);
-	xreq.flags.add_immediately_to_blockchain = sqlite3_column_int(select, cs + 14);
-	xreq.flags.auto_accept_matches = sqlite3_column_int(select, cs + 15);
-	xreq.flags.no_minimum_after_first_match = sqlite3_column_int(select, cs + 16);
-	xreq.flags.must_liquidate_crossing_minimum = sqlite3_column_int(select, cs + 17);
-	xreq.flags.must_liquidate_below_minimum = sqlite3_column_int(select, cs + 18);
-	xreq.consideration_required = sqlite3_column_int(select, cs + 19);
-	xreq.consideration_offered = sqlite3_column_int(select, cs + 20);
-	xreq.pledge = sqlite3_column_int(select, cs + 21);
-	xreq.hold_time = sqlite3_column_int(select, cs + 22);
-	xreq.hold_time_required = sqlite3_column_int(select, cs + 23);
-	xreq.min_wait_time = sqlite3_column_int(select, cs + 24);
-	xreq.accept_time_required = sqlite3_column_int(select, cs + 25);
-	xreq.accept_time_offered = sqlite3_column_int(select, cs + 26);
-	xreq.payment_time = sqlite3_column_int(select, cs + 27);
-	xreq.confirmations = sqlite3_column_int(select, cs + 28);
-	//ForeignAddressUnique = sqlite3_column_int(select, cs + 29);
-	auto foreign_address_text = sqlite3_column_text(select, cs + 30);
-	//auto destination_blob = sqlite3_column_blob(select, cs + 31);
-	//auto signing_public_key_blob = sqlite3_column_blob(select, cs + 32);
-	//auto open_amount_blob = sqlite3_column_blob(select, cs + 33);
-	xreq.open_rate_required = xreq.SignedRate(sqlite3_column_double(select, cs + 34));
-	xreq.pending_match_epoch = sqlite3_column_int64(select, cs + 35);
-	xreq.pending_match_order = sqlite3_column_int64(select, cs + 36);
-	//xreq.pending_match_amount = sqlite3_column_blob(select, cs + 37);
-	xreq.pending_match_rate = sqlite3_column_double(select, cs + 38);
-	xreq.pending_match_hold_time = sqlite3_column_int(select, cs + 39);
-	xreq.xreqnum = sqlite3_column_int64(select, cs + 40 + nwc*for_witness);
-	xreq.blocktime = sqlite3_column_int64(select, cs + 41 + nwc*for_witness);
-	//auto matching_amount_blob = sqlite3_column_blob(select, cs + 42 + nwc*for_witness);
-	xreq.matching_rate_required = sqlite3_column_double(select, cs + 43 + nwc*for_witness);
-	xreq.recalc_time = sqlite3_column_int64(select, cs + 44 + nwc*for_witness);
-	xreq.recalc = sqlite3_column_int(select, cs + 45 + nwc*for_witness);
-	xreq.last_matched = sqlite3_column_int64(select, cs + 46 + nwc*for_witness);
-	//auto best_amount_blob = sqlite3_column_blob(select, cs + 47 + nwc*for_witness);
-	xreq.best_rate = sqlite3_column_double(select, cs + 48 + nwc*for_witness);
-	xreq.best_net_rate = sqlite3_column_double(select, cs + 49 + nwc*for_witness);
-	xreq.best_other_seqnum = sqlite3_column_int64(select, cs + 50 + nwc*for_witness);
-	xreq.best_other_xreqnum = sqlite3_column_int64(select, cs + 51 + nwc*for_witness);
-	//auto best_other_matching_amount_blob = sqlite3_column_blob(select, cs + 52 + nwc*for_witness);
-	xreq.best_other_net_rate = sqlite3_column_double(select, cs + 53 + nwc*for_witness);
+	xreq.linked_seqnum = sqlite3_column_int64(select, cs + 1);
+	//auto objid_blob = sqlite3_column_blob(select, cs + 2);
+	xreq.type = sqlite3_column_int(select, cs + 3);
+	//xreq.isbuyer = sqlite3_column_int64(select, cs + 4);
+	xreq.expire_time = sqlite3_column_int64(select, cs + 5);
+	xreq.base_asset = sqlite3_column_int64(select, cs + 6);
+	xreq.quote_asset = sqlite3_column_int64(select, cs + 7);
+	auto foreign_asset_text = sqlite3_column_text(select, cs + 8);
+	//auto min_amount_blob = sqlite3_column_blob(select, cs + 9);
+	//auto max_amount_blob = sqlite3_column_blob(select, cs + 10);
+	xreq.net_rate_required = sqlite3_column_double(select, cs + 11);
+	xreq.wait_discount = sqlite3_column_double(select, cs + 12);
+	xreq.base_costs = sqlite3_column_double(select, cs + 13);
+	xreq.quote_costs = sqlite3_column_double(select, cs + 14);
+	xreq.flags.add_immediately_to_blockchain = sqlite3_column_int(select, cs + 15);
+	xreq.flags.auto_accept_matches = sqlite3_column_int(select, cs + 16);
+	xreq.flags.no_minimum_after_first_match = sqlite3_column_int(select, cs + 17);
+	xreq.flags.must_liquidate_crossing_minimum = sqlite3_column_int(select, cs + 18);
+	xreq.flags.must_liquidate_below_minimum = sqlite3_column_int(select, cs + 19);
+	xreq.consideration_required = sqlite3_column_int(select, cs + 20);
+	xreq.consideration_offered = sqlite3_column_int(select, cs + 21);
+	xreq.pledge = sqlite3_column_int(select, cs + 22);
+	xreq.hold_time = sqlite3_column_int(select, cs + 23);
+	xreq.hold_time_required = sqlite3_column_int(select, cs + 24);
+	xreq.min_wait_time = sqlite3_column_int(select, cs + 25);
+	xreq.accept_time_required = sqlite3_column_int(select, cs + 26);
+	xreq.accept_time_offered = sqlite3_column_int(select, cs + 27);
+	xreq.payment_time = sqlite3_column_int(select, cs + 28);
+	xreq.confirmations = sqlite3_column_int(select, cs + 29);
+	//ForeignAddressUnique = sqlite3_column_int(select, cs + 30);
+	auto foreign_address_text = sqlite3_column_text(select, cs + 31);
+	//auto destination_blob = sqlite3_column_blob(select, cs + 32);
+	//auto signing_public_key_blob = sqlite3_column_blob(select, cs + 33);
+	//auto open_amount_blob = sqlite3_column_blob(select, cs + 34);
+	xreq.open_rate_required = xreq.SignedRate(sqlite3_column_double(select, cs + 35));
+	xreq.pending_match_epoch = sqlite3_column_int64(select, cs + 36);
+	xreq.pending_match_order = sqlite3_column_int64(select, cs + 37);
+	//xreq.pending_match_amount = sqlite3_column_blob(select, cs + 38);
+	xreq.pending_match_rate = sqlite3_column_double(select, cs + 39);
+	xreq.pending_match_hold_time = sqlite3_column_int(select, cs + 40);
+	xreq.xreqnum = sqlite3_column_int64(select, cs + 41 + nwc*for_witness);
+	xreq.blocktime = sqlite3_column_int64(select, cs + 42 + nwc*for_witness);
+	//auto matching_amount_blob = sqlite3_column_blob(select, cs + 43 + nwc*for_witness);
+	xreq.matching_rate_required = sqlite3_column_double(select, cs + 44 + nwc*for_witness);
+	xreq.recalc_time = sqlite3_column_int64(select, cs + 45 + nwc*for_witness);
+	xreq.recalc = sqlite3_column_int(select, cs + 46 + nwc*for_witness);
+	xreq.last_matched = sqlite3_column_int64(select, cs + 47 + nwc*for_witness);
+	//auto best_amount_blob = sqlite3_column_blob(select, cs + 48 + nwc*for_witness);
+	xreq.best_rate = sqlite3_column_double(select, cs + 49 + nwc*for_witness);
+	xreq.best_net_rate = sqlite3_column_double(select, cs + 50 + nwc*for_witness);
+	xreq.best_other_seqnum = sqlite3_column_int64(select, cs + 51 + nwc*for_witness);
+	xreq.best_other_xreqnum = sqlite3_column_int64(select, cs + 52 + nwc*for_witness);
+	//auto best_other_matching_amount_blob = sqlite3_column_blob(select, cs + 53 + nwc*for_witness);
+	xreq.best_other_net_rate = sqlite3_column_double(select, cs + 54 + nwc*for_witness);
 
 	if (dblog(sqlite3_extended_errcode(Xreqs_db), DB_STMT_SELECT))
 	{
@@ -1010,7 +1014,7 @@ int DbConnXreqs::XreqsSelectObjIdWithLock(const ccoid_t& objid, bool for_witness
 
 	xreq.Clear();
 
-	// Objid
+	// ObjId
 	if (dblog(sqlite3_bind_blob(Xreqs_select_objid, 1, &objid, sizeof(objid), SQLITE_STATIC))) return -1;
 
 	auto rc = XreqsSelect(Xreqs_select_objid, for_witness, xreq);
@@ -1039,18 +1043,19 @@ int DbConnXreqs::XreqsSelectExpire(const uint64_t expire_time, Xreq& xreq)
 }
 
 // returns 0=found, 1=not found, -1=server error
-int DbConnXreqs::XreqsSelectXreqnum(uint64_t xreqnum, Xreq& xreq)
+int DbConnXreqs::XreqsSelectXreqnum(uint64_t xreqnum, Xreq& xreq, unsigned type)
 {
 	//boost::shared_lock<boost::shared_mutex> lock(Xreqs_db_mutex);	// sql statements must be reset before lock is released
 	lock_guard<mutex> lock(Xreqs_db_mutex);						// sql statements must be reset before lock is released
 	Finally finally(boost::bind(&DbConnXreqs::DoXreqsFinish, this));
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnXreqs::XreqsSelectXreqnum xreqnum " << xreqnum;
+	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnXreqs::XreqsSelectXreqnum xreqnum " << xreqnum << " type " << type;
 
 	xreq.Clear();
 
-	// Xreqnum >=
+	// Xreqnum >=, Type
 	if (dblog(sqlite3_bind_int64(Xreqs_select_xreqnum, 1, xreqnum))) return -1;
+	if (dblog(sqlite3_bind_int(Xreqs_select_xreqnum, 2, type))) return -1;
 
 	auto rc = XreqsSelect(Xreqs_select_xreqnum, false, xreq);
 	if (rc) return rc;
@@ -1600,6 +1605,24 @@ void DbConnXreqs::MatchingInitMinor(const Xreq& major, Xreq& xreq)
 
 	xreq.Clear();
 
+	if (major.type == CC_TYPE_XCX_SIMPLE_BUY || major.type == CC_TYPE_XCX_MINING_BUY)
+	{
+		// simple and mining buy reqs only match to simple sell reqs at this point
+		xreq.type = CC_TYPE_XCX_SIMPLE_SELL;
+		xreq.db_search_max = CC_TYPE_XCX_SIMPLE_SELL;
+	}
+	else if (major.type == CC_TYPE_XCX_NAKED_BUY)
+	{
+		// naked buy req will not match mining sell req
+		xreq.type = CC_TYPE_XCX_NAKED_SELL;
+		xreq.db_search_max = CC_TYPE_XCX_REQ_SELL;
+	}
+	else
+	{
+		xreq.type = 0;
+		xreq.db_search_max = 0;
+	}
+
 	xreq.for_witness = major.for_witness;
 	xreq.base_asset = major.base_asset;
 	xreq.quote_asset = major.quote_asset;
@@ -1608,8 +1631,6 @@ void DbConnXreqs::MatchingInitMinor(const Xreq& major, Xreq& xreq)
 	xreq.xreqnum = (xreq.for_witness ? 0 : 1);
 	xreq.db_search_max_xreqnum = major.db_search_max_xreqnum;
 	xreq.seqnum = INT64_MIN;
-	xreq.type = 0;
-	xreq.db_search_max = 0;
 	xreq.consideration_required = major.consideration_offered;
 	xreq.consideration_offered = major.consideration_required;
 	xreq.pledge = major.pledge;

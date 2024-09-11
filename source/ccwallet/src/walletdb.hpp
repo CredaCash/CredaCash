@@ -32,10 +32,7 @@
 //#define TEST_EXPLAIN_DB_QUERIES	1
 
 //#define RTEST_DB_ERRORS			64
-//!#define RTEST_DELAY_DB_RESET		32
-
-//!#define RTEST_DELAY_DB_RESET		32
-//#define RTEST_DB_ERRORS			64
+//#define RTEST_DELAY_DB_RESET		32
 
 #ifndef TEST_EXPLAIN_DB_QUERIES
 #define TEST_EXPLAIN_DB_QUERIES		0	// don't test
@@ -106,6 +103,7 @@ class DbConn
 	sqlite3_stmt *Exchange_Requests_insert;
 	sqlite3_stmt *Exchange_Requests_status_update;
 	sqlite3_stmt *Exchange_Requests_polling_update;
+	sqlite3_stmt *Exchange_Requests_polling_update_txid;
 	sqlite3_stmt *Exchange_Requests_select;
 	sqlite3_stmt *Exchange_Requests_select_id_descending;
 	sqlite3_stmt *Exchange_Requests_select_txid;
@@ -218,10 +216,10 @@ public:
 
 	int ExchangeRequestInsert(Xmatchreq& req, bool lock_optional = false);
 	int ExchangeRequestUpdateStatus(Xmatchreq& req, bool lock_optional = false);
-	int ExchangeRequestUpdatePolling(uint64_t tx_id, uint64_t poll_time);
+	int ExchangeRequestUpdatePolling(uint64_t id, bool by_txid, uint64_t poll_time);
 	int ExchangeRequestSelectId(uint64_t id, Xmatchreq& req, Transaction *tx = NULL, bool or_greater = false);
 	int ExchangeRequestSelectIdDescending(uint64_t id, Xmatchreq& req, Transaction *tx = NULL);
-	int ExchangeRequestSelectTxId(uint64_t tx_id, Xmatchreq& req, Transaction *tx = NULL);
+	int ExchangeRequestSelectTxId(uint64_t tx_id, uint64_t id, Xmatchreq& req, Transaction *tx = NULL);
 	int ExchangeRequestSelectXreqnum(uint64_t xreqnum, Xmatchreq& req, Transaction *tx = NULL);
 	int ExchangeRequestSelectNextPoll(uint64_t checktime, Xmatchreq& req, Transaction *tx = NULL);
 	int ExchangeRequestsSumPending(uint64_t base_asset, uint64_t quote_asset, const string& foreign_asset, double total_pending[5]);

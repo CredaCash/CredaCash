@@ -20,6 +20,7 @@
 #include <xmatch.hpp>
 #include <xtransaction.hpp>
 #include <xtransaction-xreq.hpp>
+#include <xtransaction-xpay.hpp>
 #include <BlockChainStatus.hpp>
 
 //#define TEST_RANDOM_POLLTIMES	600
@@ -80,9 +81,9 @@ int ExchangeRequest::ReadXmatchreq(DbConn *dbconn, Xmatchreq &xreq, Transaction 
 	return 0;
 }
 
-int ExchangeRequest::UpdatePollTime(DbConn *dbconn, uint64_t tx_id, uint64_t poll_time)
+int ExchangeRequest::UpdatePollTime(DbConn *dbconn, uint64_t id, bool by_txid, uint64_t poll_time)
 {
-	if (TRACE_EXCHANGE) BOOST_LOG_TRIVIAL(debug) << "ExchangeRequest::UpdatePollTime tx_id " << tx_id << " poll_time " << poll_time;
+	if (TRACE_EXCHANGE) BOOST_LOG_TRIVIAL(trace) << "ExchangeRequest::UpdatePollTime id " << id << " by_txid " << by_txid << " poll_time " << poll_time;
 
 	if (RandTest(RTEST_CUZZ)) ccsleep(rand() & 7);
 
@@ -98,7 +99,7 @@ int ExchangeRequest::UpdatePollTime(DbConn *dbconn, uint64_t tx_id, uint64_t pol
 			poll_time = 1;
 	}
 
-	return dbconn->ExchangeRequestUpdatePolling(tx_id, poll_time);
+	return dbconn->ExchangeRequestUpdatePolling(id, by_txid, poll_time);
 }
 
 int ExchangeRequest::PollAddress(DbConn *dbconn, TxQuery& txquery, uint64_t address_id)
@@ -115,7 +116,7 @@ int ExchangeRequest::PollAddress(DbConn *dbconn, TxQuery& txquery, uint64_t addr
 
 int ExchangeRequest::PollXmatchreq(DbConn *dbconn, TxQuery& txquery, Xmatchreq &xreq, const Transaction &tx, BlockChainStatus& blockchain_status)
 {
-	if (TRACE_EXCHANGE) BOOST_LOG_TRIVIAL(debug) << "ExchangeRequest::PollXmatchreq " << xreq.DebugString() << " ; tx " << tx.DebugString();
+	if (TRACE_EXCHANGE) BOOST_LOG_TRIVIAL(trace) << "ExchangeRequest::PollXmatchreq " << xreq.DebugString() << " ; tx " << tx.DebugString();
 
 	blockchain_status.Clear();
 
@@ -135,7 +136,7 @@ int ExchangeRequest::PollXmatchreq(DbConn *dbconn, TxQuery& txquery, Xmatchreq &
 			return -1;
 		}
 
-		if (TRACE_EXCHANGE) BOOST_LOG_TRIVIAL(debug) << "ExchangeRequest::PollXmatchreq querying objid " << buf2hex(&xreq.objid, CC_OID_TRACE_SIZE) << " xreqnum " << xreq.xreqnum << " query_matchnum " << xreq.query_matchnum << " more_count " << more_count;
+		if (TRACE_EXCHANGE) BOOST_LOG_TRIVIAL(trace) << "ExchangeRequest::PollXmatchreq querying objid " << buf2hex(&xreq.objid, CC_OID_TRACE_SIZE) << " xreqnum " << xreq.xreqnum << " query_matchnum " << xreq.query_matchnum << " more_count " << more_count;
 
 		auto rc = txquery.QueryXmatchreq(tx.blockchain, xreq.objid, xreq.xreqnum, xreq.query_matchnum, results);
 		if (rc) return rc;
@@ -167,7 +168,8 @@ int ExchangeRequest::PollXmatchreq(DbConn *dbconn, TxQuery& txquery, Xmatchreq &
 				save_xreq = true;
 			}
 		}
-		else if (xreq.IsOpen() && results.blockchain_status.last_matching_start_block_time >= xreq.expire_time) // this test must not expire an xreq sooner than the ccnode test to call ProcessXreqs::ExpireXreqs
+
+		if (xreq.IsOpen() && xreq.expire_time <= results.blockchain_status.last_matching_start_block_time) // same test as in ProcessXreqs::ExpireXreqs in ccnode
 		{
 			if (TRACE_EXCHANGE) BOOST_LOG_TRIVIAL(debug) << "ExchangeRequest::PollXmatchreq last_matching_start_block_time " << results.blockchain_status.last_matching_start_block_time << " closing expired " << xreq.DebugString();
 
@@ -318,7 +320,7 @@ int ExchangeRequest::PollXmatchreq(DbConn *dbconn, TxQuery& txquery, Xmatchreq &
 	{
 		// TODO: test polling error
 
-		if (TRACE_EXCHANGE) BOOST_LOG_TRIVIAL(debug) << "ExchangeRequest::PollXmatchreq polling address of " << xreq.DebugString();
+		if (TRACE_EXCHANGE) BOOST_LOG_TRIVIAL(trace) << "ExchangeRequest::PollXmatchreq polling address of " << xreq.DebugString();
 
 		auto rc = PollAddress(dbconn, txquery, xreq.address_id);
 		if (rc < 0) return rc;
@@ -328,11 +330,14 @@ int ExchangeRequest::PollXmatchreq(DbConn *dbconn, TxQuery& txquery, Xmatchreq &
 	{
 		if (TRACE_EXCHANGE) BOOST_LOG_TRIVIAL(debug) << "ExchangeRequest::PollXmatchreq ending polling of " << xreq.DebugString();
 
-		auto rc = ExchangeRequest::UpdatePollTime(dbconn, xreq.tx_id, -1);
+		auto rc = ExchangeRequest::UpdatePollTime(dbconn, xreq.id, false, -1);
 		(void)rc;
 
 		if (!xreq.xreqnum)
 		{
+			// xreq expired without being added to the blockchain
+			// mark it as abandoned in wallet in order to release the tx's allocated billets and abandon pending billets
+
 			if (TRACE_EXCHANGE) BOOST_LOG_TRIVIAL(debug) << "ExchangeRequest::PollXmatchreq abandoning " << tx.DebugString();
 
 			try
@@ -341,7 +346,9 @@ int ExchangeRequest::PollXmatchreq(DbConn *dbconn, TxQuery& txquery, Xmatchreq &
 			}
 			catch (const RPC_Exception& e)
 			{
-				BOOST_LOG_TRIVIAL(error) << "ExchangeRequest::PollXmatchreq error abandoning tx code " << e.code << " " << e.what() << "; " << tx.DebugString();
+				// this could happen for example if the xreq has become conflicted
+
+				BOOST_LOG_TRIVIAL(info) << "ExchangeRequest::PollXmatchreq error abandoning tx code " << e.code << " " << e.what() << "; " << tx.DebugString();
 			}
 		}
 	}
@@ -373,9 +380,9 @@ int ExchangeMatch::UpdateTotalMined(DbConn *dbconn, const Xmatch& xmatch)
 	// sanity checks on match with mining_amount > 0
 	// TODO: sanity check mining_amount
 
-	if (xmatch.type != CC_TYPE_XCX_SIMPLE_BUY)
+	if (xmatch.type != CC_TYPE_XCX_SIMPLE_BUY && xmatch.type != CC_TYPE_XCX_MINING_BUY)
 	{
-		BOOST_LOG_TRIVIAL(warning) << "ExchangeRequest::UpdateTotalMined match type " << xmatch.type << " != " << CC_TYPE_XCX_SIMPLE_BUY;
+		BOOST_LOG_TRIVIAL(warning) << "ExchangeRequest::UpdateTotalMined match type " << xmatch.type << " != " << CC_TYPE_XCX_SIMPLE_BUY << " or " << CC_TYPE_XCX_MINING_BUY;
 
 		return 0;
 	}
@@ -388,7 +395,7 @@ int ExchangeMatch::UpdateTotalMined(DbConn *dbconn, const Xmatch& xmatch)
 
 		auto rc = dbconn->ExchangeMatchSelectNum(xmatch.xmatchnum, saved_match, true);
 
-		//BOOST_LOG_TRIVIAL(info) << "ExchangeMatch::UpdateTotalMined ExchangeMatchSelectNum xmatchnum " << xmatch.xmatchnum << " returned " << rc << " ; " << saved_match.DebugString(false);
+		//BOOST_LOG_TRIVIAL(info) << "ExchangeMatch::UpdateTotalMined ExchangeMatchSelectNum xmatchnum " << xmatch.xmatchnum << " returned " << rc << " " << saved_match.DebugString(false);
 
 		if (rc < 0) return rc;
 		if (rc) break;	// match is not yet saved in the wallet
@@ -412,9 +419,9 @@ int ExchangeMatch::UpdateTotalMined(DbConn *dbconn, const Xmatch& xmatch)
 			return 0;
 		}
 
-		if (saved_match.xbuy.type != CC_TYPE_XCX_SIMPLE_BUY)
+		if (saved_match.xbuy.type != CC_TYPE_XCX_SIMPLE_BUY && saved_match.xbuy.type != CC_TYPE_XCX_MINING_BUY)
 		{
-			BOOST_LOG_TRIVIAL(warning) << "ExchangeRequest::UpdateTotalMined xmatchnum " << xmatch.xmatchnum << " buy type " << saved_match.xbuy.type << " != " << CC_TYPE_XCX_SIMPLE_BUY;
+			BOOST_LOG_TRIVIAL(warning) << "ExchangeRequest::UpdateTotalMined xmatchnum " << xmatch.xmatchnum << " buy type " << saved_match.xbuy.type << " != " << CC_TYPE_XCX_SIMPLE_BUY << " or " << CC_TYPE_XCX_MINING_BUY;
 
 			return 0;
 		}
@@ -487,7 +494,7 @@ int Exchange::GetTotalMined(DbConn *dbconn, bigint_t& total_mined)
 
 void ExchangeMatch::UpdatePollTime(Xmatch &xmatch, uint64_t last_matching_completed_time, uint64_t delay)
 {
-	if (TRACE_EXCHANGE) BOOST_LOG_TRIVIAL(trace) << "ExchangeMatch::UpdatePollTime time " << unixtime() << " last_matching_completed_time " << last_matching_completed_time << " delay " << delay << " ; " << xmatch.DebugString();
+	if (TRACE_EXCHANGE) BOOST_LOG_TRIVIAL(trace) << "ExchangeMatch::UpdatePollTime time " << unixtime() << " last_matching_completed_time " << last_matching_completed_time << " delay " << delay << " " << xmatch.DebugString();
 
 	if (RandTest(RTEST_CUZZ)) ccsleep(rand() & 7);
 
@@ -515,23 +522,43 @@ void ExchangeMatch::UpdatePollTime(Xmatch &xmatch, uint64_t last_matching_comple
 
 	xmatch.wallet_polltime = last_matching_completed_time + delay;
 
-	if (TRACE_EXCHANGE) BOOST_LOG_TRIVIAL(debug) << "ExchangeMatch::UpdatePollTime delay " << delay << " time " << unixtime() << " last_matching_completed_time " << last_matching_completed_time << " ; " << xmatch.DebugString();
+	// Attempt to synchronize exchange match polling with the wallet reminders as follows:
+	// If there is at least 6 minutes remaining until the next wallet reminder
+	// and the new poll time is after the wallet reminder, or less than 5 minutes before the wallet reminder,
+	// then set the new poll time to 5 minutes before the wallet reminder
+
+	auto now = unixtime();
+
+	if (xmatch.wallet_reminder_time
+			&& (int64_t)xmatch.wallet_reminder_time - now > 6*60
+			&& (int64_t)xmatch.wallet_reminder_time - (int64_t)xmatch.wallet_polltime < 5*60)
+	{
+		xmatch.wallet_polltime = xmatch.wallet_reminder_time - 5*60;
+
+		CCASSERT((int64_t)xmatch.wallet_polltime > now);
+	}
+
+	if (!xmatch.wallet_polltime)
+		xmatch.wallet_polltime = 1;
+
+	if (TRACE_EXCHANGE) BOOST_LOG_TRIVIAL(trace) << "ExchangeMatch::UpdatePollTime delay " << delay << " now " << now << " last_matching_completed_time " << last_matching_completed_time << " " << xmatch.DebugString();
 }
 
-int ExchangeMatch::PollXmatch(DbConn *dbconn, TxQuery& txquery, const Xmatch &xmatch, BlockChainStatus& blockchain_status)
+int ExchangeMatch::PollXmatch(DbConn *dbconn, TxQuery& txquery, Xmatch &xmatch, BlockChainStatus& blockchain_status)
 {
-	if (TRACE_EXCHANGE) BOOST_LOG_TRIVIAL(debug) << "ExchangeMatch::PollXmatch time " << unixtime() << " ; " << xmatch.DebugString();
+	if (TRACE_EXCHANGE) BOOST_LOG_TRIVIAL(debug) << "ExchangeMatch::PollXmatch time " << unixtime() << " " << xmatch.DebugString();
 
 	blockchain_status.Clear();
 
-	QueryXmatchResults results;
-
-	if (xmatch.IsClosed())
-		results.xmatch = xmatch;
-	else
+	if (xmatch.IsOpen())
 	{
+		QueryXmatchResults results;
+
 		auto rc = txquery.QueryXmatch(g_params.blockchain, xmatch.xmatchnum, results);
 		if (rc) return rc;
+
+		if         (TRACE_XPAYS)  BOOST_LOG_TRIVIAL(info) << "ExchangeMatch::PollXmatch " << xmatch.xmatchnum << " results " << results.xmatch.DebugString();
+		else if (TRACE_EXCHANGE) BOOST_LOG_TRIVIAL(debug) << "ExchangeMatch::PollXmatch " << xmatch.xmatchnum << " results " << results.xmatch.DebugString();
 
 		blockchain_status.Copy(results.blockchain_status);
 
@@ -556,19 +583,42 @@ int ExchangeMatch::PollXmatch(DbConn *dbconn, TxQuery& txquery, const Xmatch &xm
 			return -1;
 		}
 
-		if (results.xmatch.IsOpen() || g_shutdown)
-			return 0;
+		// copy results
+
+		xmatch.status = results.xmatch.status;
+		xmatch.base_amount = results.xmatch.base_amount;
+		xmatch.rate = results.xmatch.rate;
+		xmatch.amount_paid = results.xmatch.amount_paid;
+		xmatch.mining_amount = results.xmatch.mining_amount;
+		xmatch.accept_timestamp = results.xmatch.accept_timestamp;
+		xmatch.final_timestamp = results.xmatch.final_timestamp;
+		xmatch.next_deadline = results.xmatch.next_deadline;
 	}
 
-	results.xmatch.wallet_polltime = 0;	// no need to poll again
+	if (xmatch.IsOpen() || g_shutdown)
+		return 0;
+
+	xmatch.wallet_polltime = 0;	// no need to poll again
+
+	if         (TRACE_XPAYS)  BOOST_LOG_TRIVIAL(info) << "ExchangeMatch::PollXmatch ending polling of " << xmatch.DebugString();
+	else if (TRACE_EXCHANGE) BOOST_LOG_TRIVIAL(debug) << "ExchangeMatch::PollXmatch ending polling of " << xmatch.DebugString();
 
 	// poll addresses to get settlement amounts
 
-	CCASSERT(xmatch.have_xreqs);
+	if (!xmatch.have_xreqs)
+	{
+		auto rc = dbconn->ExchangeRequestSelectXreqnum(xmatch.xbuy.xreqnum, xmatch.xbuy);
+		if (rc) return -1;
+
+		rc = dbconn->ExchangeRequestSelectXreqnum(xmatch.xsell.xreqnum, xmatch.xsell);
+		if (rc) return -1;
+
+		xmatch.have_xreqs = true;
+	}
 
 	if (xmatch.xbuy.address_id)
 	{
-		if (TRACE_EXCHANGE) BOOST_LOG_TRIVIAL(debug) << "ExchangeMatch::PollXmatch address of xbuy " << xmatch.xbuy.DebugString();
+		if (TRACE_EXCHANGE) BOOST_LOG_TRIVIAL(trace) << "ExchangeMatch::PollXmatch address of xbuy " << xmatch.xbuy.DebugString();
 
 		auto rc = ExchangeRequest::PollAddress(dbconn, txquery, xmatch.xbuy.address_id);
 		if (rc < 0) return rc;
@@ -576,7 +626,7 @@ int ExchangeMatch::PollXmatch(DbConn *dbconn, TxQuery& txquery, const Xmatch &xm
 
 	if (xmatch.xsell.address_id)
 	{
-		if (TRACE_EXCHANGE) BOOST_LOG_TRIVIAL(debug) << "ExchangeMatch::PollXmatch address of xsell " << xmatch.xsell.DebugString();
+		if (TRACE_EXCHANGE) BOOST_LOG_TRIVIAL(trace) << "ExchangeMatch::PollXmatch address of xsell " << xmatch.xsell.DebugString();
 
 		auto rc = ExchangeRequest::PollAddress(dbconn, txquery, xmatch.xsell.address_id);
 		if (rc < 0) return rc;
@@ -596,11 +646,11 @@ int ExchangeMatch::PollXmatch(DbConn *dbconn, TxQuery& txquery, const Xmatch &xm
 
 		if (xmatch.xbuy.tx_id)
 		{
-			rc = ExchangeMatch::UpdateTotalMined(dbconn, results.xmatch);
+			rc = ExchangeMatch::UpdateTotalMined(dbconn, xmatch);
 			if (rc) return rc;
 		}
 
-		rc = dbconn->ExchangeMatchInsert(results.xmatch);
+		rc = dbconn->ExchangeMatchInsert(xmatch);
 		if (rc) return rc;
 
 		// commit db writes

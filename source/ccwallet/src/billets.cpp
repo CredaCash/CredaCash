@@ -318,6 +318,7 @@ int Billet::SetStatusCleared(DbConn *dbconn, uint64_t _commitnum)
 	// must be called from inside a BeginWrite
 
 	if (status == BILL_STATUS_ERROR) BOOST_LOG_TRIVIAL(error) << "Billet::SetStatusCleared with BILL_STATUS_ERROR; commitnum " << _commitnum << " " << DebugString();
+	else if (TRACE_BILLETS && status && status != BILL_STATUS_PENDING) BOOST_LOG_TRIVIAL(debug) << "Billet::SetStatusCleared commitnum " << _commitnum << " non-pending " << DebugString();
 	else if (TRACE_BILLETS) BOOST_LOG_TRIVIAL(trace) << "Billet::SetStatusCleared commitnum " << _commitnum << " " << DebugString();
 
 	CCASSERT(status == BILL_STATUS_PENDING || status == BILL_STATUS_ABANDONED || status == BILL_STATUS_VOID || status == BILL_STATUS_ERROR);

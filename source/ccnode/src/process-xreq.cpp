@@ -23,12 +23,16 @@
 
 //!#define TEST_RECALC_ALL		1	// test matching all Xreqs in witness, not just the ones with recalc set
 
-//#define TEST_LONGER_WAIT_DISCOUNT_INTERVAL	1
+//#define TEST_WARN_UNLINKED_PAIR	1
 
 //#define RTEST_CUZZ			2
 
 #ifndef TEST_RECALC_ALL
 #define TEST_RECALC_ALL		0	// don't test
+#endif
+
+#ifndef TEST_WARN_UNLINKED_PAIR
+#define TEST_WARN_UNLINKED_PAIR	0	// don't test
 #endif
 
 #ifndef RTEST_CUZZ
@@ -41,7 +45,7 @@
 //#define XREQ_MAX_PERSISTENT_COUNT		40	// for testing
 //#define XREQ_MIN_NON_PERSISTENT_COUNT	100	// for testing
 
-#define TRACE_PROCESS_XREQ	(g_params.trace_xreq_validation)
+#define TRACE_PROCESS_XREQ	(g_params.trace_xreq_processing)
 
 ProcessXreqs g_process_xreqs;
 
@@ -67,7 +71,25 @@ int ProcessXreqs::AddPendingRequest(DbConn *dbconn, TxPay& tx, const int64_t seq
 	xreq.seqnum = seqnum;
 	memcpy(&xreq.objid, objid, sizeof(ccoid_t));
 
-	return AddRequest(dbconn, xreq);
+	if (xreq.type != CC_TYPE_XCX_MINING_TRADE)
+		return AddRequest(dbconn, xreq);
+
+	Xreq xreq2(xreq);
+
+	xreq.ConvertTradeToBuy();
+	xreq2.ConvertTradeToSell();
+
+	xreq2.seqnum = g_seqnum[XREQSEQ][VALIDSEQ].NextNum();
+
+	xreq.linked_seqnum = xreq2.seqnum;
+
+	auto rc = AddRequest(dbconn, xreq);
+	if (rc)
+		return rc;
+
+	xreq2.linked_seqnum = xreq.seqnum;
+
+	return AddRequest(dbconn, xreq2);
 }
 
 int ProcessXreqs::AddRequest(DbConn *dbconn, Xreq& xreq)
@@ -155,6 +177,8 @@ int ProcessXreqs::ExpireXreqs(DbConn *dbconn, const uint64_t block_time, TxPay& 
 
 		if (TRACE_PROCESS_XREQ) BOOST_LOG_TRIVIAL(debug) << "ProcessXreqs::ExpireXreqs expiring " << xreq.DebugString();
 
+		CCASSERT(xreq.expire_time <= block_time);
+
 		rc = ExpireXreq(dbconn, xreq, txbuf);
 		if (rc) return rc;
 	}
@@ -210,6 +234,17 @@ int ProcessXreqs::PruneXreqs(DbConn *dbconn, const uint64_t new_xreqnum, TxPay& 
 				if (xreq.open_amount == xreq.max_amount && xreq.pending_match_rate.asFloat())
 					continue;
 			}
+
+			rc = ExpireXreq(dbconn, xreq, txbuf);
+			if (rc) return rc;
+
+			if (!xreq.linked_seqnum)
+				continue;
+
+			rc = dbconn->XreqsSelectSeqnum(xreq.linked_seqnum, false, xreq);
+			if (rc < 0) return rc;
+			if (rc)
+				continue;
 
 			rc = ExpireXreq(dbconn, xreq, txbuf);
 			if (rc) return rc;
@@ -421,8 +456,8 @@ static void SetMatch(DbConn *dbconn, const bigint_t& amount, const UniFloat& rat
 
 static bool CheckMatch(DbConn *dbconn, Xreq& buyer, Xreq& seller, uint64_t block_time)
 {
-	// to ensure integrity of mining, only match CC_TYPE_XCX_SIMPLE_BUY with CC_TYPE_XCX_SIMPLE_SELL
-	if (buyer.type == CC_TYPE_XCX_SIMPLE_BUY && seller.type != CC_TYPE_XCX_SIMPLE_SELL)
+	// to ensure integrity of mining, only match CC_TYPE_XCX_SIMPLE_BUY and CC_TYPE_XCX_MINING_BUY with CC_TYPE_XCX_SIMPLE_SELL or CC_TYPE_XCX_MINING_SELL
+	if ((buyer.type == CC_TYPE_XCX_SIMPLE_BUY || buyer.type == CC_TYPE_XCX_MINING_BUY) && seller.type != CC_TYPE_XCX_SIMPLE_SELL && seller.type != CC_TYPE_XCX_MINING_SELL)
 		return false;
 
 	// the database queries should ensure these asserts are true
@@ -681,6 +716,123 @@ bool ProcessXreqs::FindMutualMatches(DbConn *dbconn, const uint64_t passnum, uin
 	return have_matches;
 }
 
+bool ProcessXreqs::AddMiningMatches(DbConn *dbconn, uint64_t next_match_index, const uint64_t block_time, const uint64_t max_xreqnum)
+{
+	if (TRACE_PROCESS_XREQ) BOOST_LOG_TRIVIAL(LOG_SYNC_DEBUG) << "ProcessXreqs::AddMiningMatches matching_epoch " << block_time / XCX_MATCHING_SECS_PER_EPOCH << " block_time " << block_time << " max_xreqnum " << max_xreqnum;
+
+	uint64_t next_xreqnum = 1;
+	bool changed_best = false;
+
+	const bool for_witness = false;
+	const unsigned passnum = 0;
+
+	while (!g_shutdown && next_xreqnum <= max_xreqnum)
+	{
+		Xreq major, minor;
+
+		auto rc = dbconn->XreqsSelectXreqnum(next_xreqnum, major, CC_TYPE_XCX_MINING_BUY);
+		if (rc < 0) throw Db_Exception();
+		if (rc) break;
+
+		if (TRACE_PROCESS_XREQ) BOOST_LOG_TRIVIAL(debug) << "ProcessXreqs::AddMiningMatches found major " << major.DebugString();
+
+		next_xreqnum = major.xreqnum + 1;
+
+		if (major.xreqnum > max_xreqnum)
+			break;
+
+		if (major.expire_time <= block_time)
+			continue;
+
+		if (!major.matching_amount)
+			continue;
+
+		if (!major.linked_seqnum)
+		{
+			if (TEST_WARN_UNLINKED_PAIR) BOOST_LOG_TRIVIAL(warning) << "ProcessXreqs::AddMiningMatches no link for major " << major.DebugString();
+
+			continue;
+		}
+
+		CCASSERT(major.type == CC_TYPE_XCX_MINING_BUY);
+		CCASSERT(major.min_amount == major.max_amount);
+
+		rc = dbconn->XreqsSelectSeqnum(major.linked_seqnum, for_witness, minor);
+		if (rc < 0) throw Db_Exception();
+		if (rc)
+		{
+			// this can happen if the linked xreq has been pruned
+			// clear link so this xreq isn't checked again
+
+			if (TEST_WARN_UNLINKED_PAIR)
+				continue;
+
+			major.linked_seqnum = 0;
+
+			dbconn->XreqsUpdate(major);
+
+			continue;
+		}
+
+		if (TRACE_PROCESS_XREQ) BOOST_LOG_TRIVIAL(debug) << "ProcessXreqs::AddMiningMatches found minor " << minor.DebugString();
+
+		if (minor.xreqnum > max_xreqnum)
+			continue;
+
+		if (minor.expire_time <= block_time)
+			continue;
+
+		if (!minor.matching_amount)
+			continue;
+
+		if (minor.linked_seqnum != major.seqnum)
+		{
+			if (TEST_WARN_UNLINKED_PAIR) BOOST_LOG_TRIVIAL(warning) << "ProcessXreqs::AddMiningMatches link mismatch for major " << major.DebugString() << " ; minor " << minor.DebugString();
+
+			continue;
+		}
+
+		CCASSERT(minor.seqnum == major.linked_seqnum);
+
+		CCASSERT(minor.type == CC_TYPE_XCX_MINING_SELL);
+		CCASSERT(minor.min_amount == minor.max_amount);
+
+		CCASSERT(major.max_amount == minor.max_amount);
+		CCASSERT(major.net_rate_required == minor.net_rate_required);
+
+		auto hold = ComputeMatchHold(major, minor, block_time);
+		if (hold)
+			continue;
+
+		major.recalc = true;
+		major.best_amount = 0UL;
+		minor.best_amount = 0UL;
+
+		auto have_match = CheckMatch(dbconn, major, minor, block_time);
+
+		CCASSERT(have_match);
+
+		CCASSERTZ(minor.pending_match_order);
+		CCASSERT(minor.pending_match_epoch != block_time / XCX_MATCHING_SECS_PER_EPOCH);
+
+		minor.pending_match_order = next_match_index;
+		++next_match_index;
+
+		auto match_amount = major.best_amount;
+		auto match_rate = major.best_rate;
+
+		if (TRACE_PROCESS_XREQ) BOOST_LOG_TRIVIAL(LOG_SYNC_DEBUG) << "ProcessXreqs::AddMiningMatches new match block_time " << block_time << " ; xbuy " << major.DebugString() << " ; xsell " << minor.DebugString();
+		//BOOST_LOG_TRIVIAL(debug) << "AddMiningMatches block_time " << block_time << " found match type " << major.type << " buyer " << major.xreqnum << " seller " << minor.xreqnum << " asset " << major.quote_asset << " amount " << match_amount << " buyer_net_rate_required " << major.net_rate_required << " buyer_net_rate " << major.best_net_rate << " rate " << match_rate << " seller_net_rate " << minor.best_net_rate << " seller_net_rate_required " << minor.net_rate_required;
+
+		UpdateMutualMatch(dbconn, major, minor, match_amount, match_rate, passnum, block_time, hold, for_witness);
+		UpdateMutualMatch(dbconn, minor, major, match_amount, match_rate, passnum, block_time, hold, for_witness);
+
+		changed_best = true;
+	}
+
+	return changed_best;
+}
+
 /*
 
 How Xreq matching works:
@@ -839,6 +991,9 @@ void ProcessXreqs::MatchReqs(DbConn *dbconn, const uint64_t block_time, const ui
 
 		//if (have_matches && RandTest(32)) return g_blockchain.DebugStop("Test abort with have_matches true"); // for testing
 	}
+
+	if (!for_witness)
+		AddMiningMatches(dbconn, next_match_index, block_time, max_xreqnum);
 
 	dbconn->XreqsClearOldPendingMatches(block_time / XCX_MATCHING_SECS_PER_EPOCH, max_xreqnum);
 

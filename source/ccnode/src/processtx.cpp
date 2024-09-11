@@ -194,7 +194,8 @@ int ProcessTx::TxEnqueueValidate(DbConn *dbconn, bool is_block_tx, bool add_to_r
 	auto obj = (CCObject*)smartobj.data();
 	auto type = obj->ObjType();
 
-	if (TRACE_PROCESS_TX) BOOST_LOG_TRIVIAL(debug) << "ProcessTx::TxEnqueueValidate priority " << priority << " type " << type << " oid " << buf2hex(obj->OidPtr(), CC_OID_TRACE_SIZE);
+	if (TRACE_XPAYS && Xtx::TypeIsXpay(type))  BOOST_LOG_TRIVIAL(info) << "ProcessTx::TxEnqueueValidate priority " << priority << " type " << type << " oid " << buf2hex(obj->OidPtr(), CC_OID_TRACE_SIZE);
+	else if (TRACE_PROCESS_TX)                BOOST_LOG_TRIVIAL(debug) << "ProcessTx::TxEnqueueValidate priority " << priority << " type " << type << " oid " << buf2hex(obj->OidPtr(), CC_OID_TRACE_SIZE);
 
 	if (Xtx::TypeIsXreq(type))
 	{
@@ -214,7 +215,8 @@ int ProcessTx::TxEnqueueValidate(DbConn *dbconn, bool is_block_tx, bool add_to_r
 	auto rc = dbconn->ValidObjsGetObj(*obj->OidPtr(), &checkobj);
 	if (!rc)
 	{
-		if (TRACE_PROCESS_TX) BOOST_LOG_TRIVIAL(debug) << "ProcessTx::TxEnqueueValidate already in valid db oid " << buf2hex(obj->OidPtr(), CC_OID_TRACE_SIZE);
+		if (TRACE_XPAYS && Xtx::TypeIsXpay(type))  BOOST_LOG_TRIVIAL(info) << "ProcessTx::TxEnqueueValidate already in valid db oid " << buf2hex(obj->OidPtr(), CC_OID_TRACE_SIZE);
+		else if (TRACE_PROCESS_TX)                BOOST_LOG_TRIVIAL(debug) << "ProcessTx::TxEnqueueValidate already in valid db oid " << buf2hex(obj->OidPtr(), CC_OID_TRACE_SIZE);
 
 		return 1;
 	}
@@ -235,6 +237,7 @@ int ProcessTx::TxEnqueueValidate(DbConn *dbconn, bool is_block_tx, bool add_to_r
 	if (TEST_CUZZ) usleep(rand() & (1024*1024-1));
 
 	rc = dbconn->ProcessQEnqueueValidate(PROCESS_Q_TYPE_TX, smartobj, NULL, 0, PROCESS_Q_STATUS_PENDING, priority, is_block_tx, conn_index, callback_id);
+	if (TRACE_XPAYS && Xtx::TypeIsXpay(type)) BOOST_LOG_TRIVIAL(info) << "ProcessTx::TxEnqueueValidate ProcessQEnqueueValidate returned " << rc << " for priority " << priority << " type " << type << " oid " << buf2hex(obj->OidPtr(), CC_OID_TRACE_SIZE);
 	if (rc < 0)
 		return -1;
 
@@ -263,6 +266,7 @@ static void SetMatchFieldsinXpay(const Xmatch& xmatch, Xpay &xpay)
 	xpay.foreign_address = xmatch.xsell.foreign_address;					// from Exchange_Matching_Reqs table
 	xpay.foreign_confirmations_required = xmatch.xsell.confirmations;		// from Exchange_Match_Reqs table
 	xpay.payment_time = xmatch.xsell.payment_time;							// from Exchange_Match_Reqs table
+	xpay.match_left_to_pay = xmatch.AmountToPay();
 
 	//cerr << "ProcessTx::SetMatchFieldsinXpay xpay " << hex << (uintptr_t)&xpay << dec << " to " << xpay.DebugString() << endl;
 }
@@ -314,7 +318,8 @@ shared_ptr<Xtx> ProcessTx::ExtractXtx(DbConn *dbconn, const TxPay& txbuf, bool f
 
 		SetMatchFieldsinXpay(match, *xpay);
 
-		if (TRACE_PROCESS_TX) BOOST_LOG_TRIVIAL(trace) << "ProcessTx::ExtractXtx set " << xpay->DebugString();
+		if           (TRACE_XPAYS)  BOOST_LOG_TRIVIAL(info) << "ProcessTx::ExtractXtx set " << xpay->DebugString();
+		else if (TRACE_PROCESS_TX) BOOST_LOG_TRIVIAL(trace) << "ProcessTx::ExtractXtx set " << xpay->DebugString();
 		//cerr << "ProcessTx::ExtractXtx set xtx " << hex << (uintptr_t)xtx.get() << " xpay " << (uintptr_t)xpay << dec << " to " << xpay->DebugString() << endl;
 	}
 
@@ -323,7 +328,8 @@ shared_ptr<Xtx> ProcessTx::ExtractXtx(DbConn *dbconn, const TxPay& txbuf, bool f
 
 static int ValidateXpay(DbConn *dbconn, uint64_t prior_blocktime, Xpay& xpay)
 {
-	if (TRACE_PROCESS_TX) BOOST_LOG_TRIVIAL(debug) << "ProcessTx::ValidateXpay prior_blocktime " << prior_blocktime << " " << xpay.DebugString();
+	if           (TRACE_XPAYS)  BOOST_LOG_TRIVIAL(info) << "ProcessTx::ValidateXpay prior_blocktime " << prior_blocktime << " " << xpay.DebugString();
+	else if (TRACE_PROCESS_TX) BOOST_LOG_TRIVIAL(debug) << "ProcessTx::ValidateXpay prior_blocktime " << prior_blocktime << " " << xpay.DebugString();
 
 	if (!xpay.xmatchnum)
 	{
@@ -378,7 +384,8 @@ static int ValidateXpay(DbConn *dbconn, uint64_t prior_blocktime, Xpay& xpay)
 
 	SetMatchFieldsinXpay(match, xpay);
 
-	if (TRACE_PROCESS_TX) BOOST_LOG_TRIVIAL(trace) << "ProcessTx::ValidateXpay set " << xpay.DebugString();
+	if           (TRACE_XPAYS)  BOOST_LOG_TRIVIAL(info) << "ProcessTx::ValidateXpay set " << xpay.DebugString();
+	else if (TRACE_PROCESS_TX) BOOST_LOG_TRIVIAL(trace) << "ProcessTx::ValidateXpay set " << xpay.DebugString();
 
 	if (!xpay.match_timestamp)
 	{
@@ -513,6 +520,13 @@ static int ValidateForeign(DbConn *dbconn, const uint64_t prior_blocktime, bool 
 		return TX_RESULT_FOREIGN_VERIFICATION_FAILED;
 	}
 
+	if (result.amount > xpay.foreign_amount && xpay.foreign_amount < xpay.match_left_to_pay)
+	{
+		BOOST_LOG_TRIVIAL(info) << "ProcessTx::ValidateForeign INVALID claimed amount " << xpay.foreign_amount << " < confirmed amount " << result.amount << " with " << xpay.match_left_to_pay << " remaining to pay";
+
+		return TX_RESULT_FOREIGN_VERIFICATION_FAILED;
+	}
+
 	// desired order is xpay.match_timestamp < result.blocktime < prior_blocktime
 	int64_t past = xpay.match_timestamp - result.blocktime;
 	int64_t future = result.blocktime - prior_blocktime;
@@ -634,9 +648,9 @@ static int ValidateXreq(DbConn *dbconn, const uint64_t prior_blocktime, bool in_
 		return TX_RESULT_INVALID_VALUE;
 	}
 
-	if (xreq.type < CC_TYPE_XCX_NAKED_BUY && xreq.type > CC_TYPE_XCX_SIMPLE_SELL)
+	if (xreq.type < CC_TYPE_XCX_NAKED_BUY && xreq.type > CC_TYPE_XCX_SIMPLE_SELL && xreq.type != CC_TYPE_XCX_MINING_TRADE)
 	{
-		BOOST_LOG_TRIVIAL(info) << "ProcessTx::ValidateXreq INVALID Xreq type " << xreq.type << " < " << CC_TYPE_XCX_NAKED_BUY << " or > " << CC_TYPE_XCX_SIMPLE_SELL;
+		BOOST_LOG_TRIVIAL(info) << "ProcessTx::ValidateXreq INVALID Xreq type " << xreq.type << " < " << CC_TYPE_XCX_NAKED_BUY << " or > " << CC_TYPE_XCX_SIMPLE_SELL << " and != " << CC_TYPE_XCX_MINING_TRADE;
 
 		return TX_RESULT_OPTION_NOT_SUPPORTED;
 	}
@@ -656,7 +670,7 @@ static int ValidateXreq(DbConn *dbconn, const uint64_t prior_blocktime, bool in_
 			return TX_RESULT_INVALID_VALUE;
 		}
 
-		if (xreq.type == CC_TYPE_XCX_SIMPLE_BUY || xreq.type == CC_TYPE_XCX_SIMPLE_SELL)
+		if (xreq.type == CC_TYPE_XCX_SIMPLE_BUY || xreq.type == CC_TYPE_XCX_SIMPLE_SELL || xreq.type == CC_TYPE_XCX_MINING_TRADE)
 		{
 			if (xreq.pledge != XREQ_SIMPLE_PLEDGE)
 			{
@@ -850,10 +864,15 @@ static int ValidateXreq(DbConn *dbconn, const uint64_t prior_blocktime, bool in_
 		return TX_RESULT_EXPIRED;	// expiration checked last
 	}
 
-	if (xreq.IsSeller() || xreq.pledge == 100)
+	if (xreq.IsSeller())
 		tx.amount_carry_out = xreq.max_amount;
-	else if (xreq.pledge)
-		tx.amount_carry_out = xreq.max_amount * bigint_t(xreq.pledge) / bigint_t(100UL);	// pledge amounts always rounded down
+	else
+		tx.amount_carry_out = 0UL;
+
+	if (xreq.IsBuyer() && xreq.pledge == 100)
+		tx.amount_carry_out = tx.amount_carry_out + xreq.max_amount;
+	else if (xreq.IsBuyer() && xreq.pledge)
+		tx.amount_carry_out = tx.amount_carry_out + xreq.max_amount * bigint_t(xreq.pledge) / bigint_t(100UL);	// pledge amounts always rounded down
 
 	if (xreq.type == CC_TYPE_XCX_NAKED_BUY && Xtx::CheckPow(tx.append_data.data(), tx.append_data_length, g_params.xcx_naked_buy_work_difficulty))
 	{
@@ -894,6 +913,24 @@ int ProcessTx::TxValidate(DbConn *dbconn, TxPay& tx, SmartBuf smartobj, uint64_t
 
 	if (tx.tag_type == CC_TYPE_MINT && Implement_CCMint(tx.source_chain))
 		tx.zkkeyid = CC_MINT_ZKKEY_ID;
+
+	switch (tx.tag_type)
+	{
+		case CC_TYPE_MINT:
+		case CC_TYPE_TXPAY:
+		case CC_TYPE_XCX_NAKED_BUY:
+		case CC_TYPE_XCX_NAKED_SELL:
+		case CC_TYPE_XCX_SIMPLE_BUY:
+		case CC_TYPE_XCX_SIMPLE_SELL:
+		case CC_TYPE_XCX_PAYMENT:
+		case CC_TYPE_XCX_MINING_TRADE:
+			break;
+
+		default:
+			BOOST_LOG_TRIVIAL(info) << "ProcessTx::TxValidate INVALID tag_type " << tx.tag_type;
+
+			return TX_RESULT_OPTION_NOT_SUPPORTED;
+	}
 
 	if (tx.tx_type != tx.tag_type)
 	{
@@ -1388,7 +1425,7 @@ void ProcessTx::ThreadProc()
 
 	struct TxPay& tx = *ptx;
 
-	if (TRACE_PROCESS_TX) BOOST_LOG_TRIVIAL(trace) << "ProcessTx::ThreadProc start dbconn " << (uintptr_t)dbconn;
+	BOOST_LOG_TRIVIAL(info) << "ProcessTx::ThreadProc start dbconn " << (uintptr_t)dbconn;
 
 	while (true)
 	{
@@ -1554,7 +1591,7 @@ void ProcessTx::ThreadProc()
 		}
 	}
 
-	if (TRACE_PROCESS_TX) BOOST_LOG_TRIVIAL(trace) << "ProcessTx::ThreadProc end dbconn " << (uintptr_t)dbconn;
+	BOOST_LOG_TRIVIAL(info) << "ProcessTx::ThreadProc end dbconn " << (uintptr_t)dbconn;
 
 	delete ptx;
 	delete dbconn;

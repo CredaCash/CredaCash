@@ -74,7 +74,7 @@ class Witness
 	{
 		CCASSERT(type < NSEQOBJ);
 
-		m_have_new_work[type] = false;
+		m_have_new_work[type] = value;
 	}
 
 	bool HaveWork(unsigned type) const

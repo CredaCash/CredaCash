@@ -24,6 +24,7 @@ string Xpay::DebugString() const
 	//out << "type " << type;
 	out << " xmatchnum " << xmatchnum;
 	out << " match_timestamp " << match_timestamp;
+	out << " match_left_to_pay " << match_left_to_pay;
 	out << " foreign_blockchain " << foreign_blockchain;
 	out << " foreign_amount " << foreign_amount;
 	out << " foreign_amount_fp " << foreign_amount_fp;
@@ -42,7 +43,7 @@ string Xpay::DebugString() const
 //		to ensure no payment can be claimed more than once on the CredaCash blockchain (analogous to no double spends)
 void Xpay::ComputePaymentIdHash(void *hash, unsigned hashsize) const
 {
-	CCASSERT(type == CC_TYPE_XCX_PAYMENT);
+	CCASSERT(TypeIsXpay(type));
 
 	//if (!foreign_blockchain) cerr << "ERROR foreign_blockchain must be set from Xmatch; xpay " << hex << (uintptr_t)this << dec << " values " << DebugString() << endl;
 
@@ -65,7 +66,7 @@ void Xpay::ComputePaymentIdHash(void *hash, unsigned hashsize) const
 void Xpay::DataToWire(const string& fn, void *binbuf, const uint32_t binsize, uint32_t &bufpos)
 {
 	const bool bhex = false;
-	vector<uint8_t> encoded_sval;
+	vector<char> encoded_sval;
 
 	if (!TypeIsXpay(type))
 		return Xtx::DataToWire(fn, binbuf, binsize, bufpos);

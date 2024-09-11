@@ -486,3 +486,32 @@ CCRESULT parse_int_value(const string& fn, const string& key, const string& sval
 
 	return 0;
 }
+
+CCRESULT parse_float_value(const char* json, Json::Value value, amtfloat_t& amountf)
+{
+	amountf = -1e99;
+
+	try
+	{
+		unsigned start = value.getOffsetStart();
+		unsigned end = value.getOffsetLimit();
+
+		if (json[start] == '"')
+			++start;
+
+		if (end > start && json[end - 1] == '"')
+			--end;
+
+		auto str = string(&json[start], end - start);
+
+		//cerr << "parse_float_value '" << str << "'" << endl;
+
+		amountf = (amtfloat_t)(str);
+
+		return 0;
+	}
+	catch (...)
+	{
+		return -1;
+	}
+}

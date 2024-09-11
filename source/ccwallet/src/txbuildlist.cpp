@@ -23,10 +23,12 @@
 TxBuildList g_txbuildlist;
 
 TxBuildEntry::TxBuildEntry()
- :	xtx(new Xtx()),
-	ref_count(1),
-	is_done(false)
-{ }
+{
+	memset((void*)this, 0, (uintptr_t)&ref_id - (uintptr_t)this);
+
+	xtx = new Xtx();
+	ref_count = 1;
+}
 
 TxBuildEntry::~TxBuildEntry()
 {
@@ -40,6 +42,7 @@ string TxBuildEntry::DebugString() const
 	out << "TxBuildEntry";
 	out << " start_time " << start_time;
 	out << " ref_id " << ref_id;
+	out << " mode " << mode;
 	out << " type " << type << " = " << Transaction::TypeString(type);
 	out << " ref_count " << ref_count;
 	out << " is_done " << is_done;
@@ -58,7 +61,8 @@ void TxBuildEntry::SetTxBody(TxParams& txparams, unsigned retry)
 {
 	uint32_t bufpos;
 
-	xtx->expire_time = unixtime() + txparams.clock_diff + xtx->expiration + retry * XTX_TIME_DIVISOR;
+	if (xtx->expiration)
+		xtx->expire_time = unixtime() + txparams.clock_diff + xtx->expiration + retry * XTX_TIME_DIVISOR;
 
 	if (0) // for testing
 	{
@@ -115,9 +119,9 @@ TxBuildEntry* TxBuildList::FindEntry(const string& ref_id, bool remove)
 	return NULL;
 }
 
-int TxBuildList::StartBuild(DbConn *dbconn, TxParams& txparams, const string& ref_id, const unsigned type, const string& encoded_dest, const uint64_t dest_chain, const bigint_t& destination, const bigint_t& amount, const Xtx *xtx, TxBuildEntry **pentry, Transaction& tx)
+int TxBuildList::StartBuild(DbConn *dbconn, TxParams& txparams, const string& ref_id, int mode, const unsigned type, const string& encoded_dest, const uint64_t dest_chain, const bigint_t& destination, const bigint_t& amount, const Xtx *xtx, TxBuildEntry **pentry, Transaction& tx)
 {
-	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(debug) << "TxBuildList::StartBuild ref_id " << ref_id << " encoded_dest " << encoded_dest << " amount " << amount;
+	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(debug) << "TxBuildList::StartBuild ref_id " << ref_id << " mode " << mode << " encoded_dest " << encoded_dest << " amount " << amount;
 
 	lock_guard<mutex> lock(m_mutex);
 
@@ -143,10 +147,13 @@ int TxBuildList::StartBuild(DbConn *dbconn, TxParams& txparams, const string& re
 	{
 		if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "TxBuildList::StartBuild found " << tx.DebugString();
 
-		if (tx.nout < 1 || tx.output_bills[0].blockchain != dest_chain || tx.output_destinations[0].value != destination || tx.output_bills[0].amount != amount) // this amount comparison would need to be fixed for "subfee" option
+		if (!Xtx::TypeHasBareMsg(type))
 		{
-			if (tx.StatusIsNotError() || tx.nout > 0)
-				throw txrpc_tx_mismatch;
+			if (tx.nout < 1 || (dest_chain && tx.output_bills[0].blockchain != dest_chain) || (!Xtx::TypeIsXreq(type) && (tx.output_destinations[0].value != destination || tx.output_bills[0].amount != amount))) // this amount comparison would need to be fixed for "subfee" option
+			{
+				if (tx.StatusIsNotError() || tx.nout > 0)
+					throw txrpc_tx_mismatch;
+			}
 		}
 
 		return 1;
@@ -157,6 +164,7 @@ int TxBuildList::StartBuild(DbConn *dbconn, TxParams& txparams, const string& re
 
 	entry->start_time = unixtime();
 	entry->ref_id = ref_id;
+	entry->mode = mode;
 	entry->type = type;
 	entry->encoded_dest = encoded_dest;
 	entry->dest_chain = dest_chain;
@@ -204,10 +212,13 @@ void TxBuildList::WaitForCompletion(DbConn *dbconn, TxBuildEntry *entry, Transac
 	{
 		if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "TxBuildList::WaitForCompletion read " << tx.DebugString();
 
-		if (tx.nout < 1 || tx.output_bills[0].blockchain != entry->dest_chain || tx.output_destinations[0].value != entry->destination || tx.output_bills[0].amount != entry->amount) // this amount comparison would need to be fixed for "subfee" option
+		if (!Xtx::TypeHasBareMsg(entry->type))
 		{
-			if (tx.StatusIsNotError() || tx.nout > 0)
-				throw txrpc_tx_mismatch;
+			if (tx.nout < 1 || (entry->dest_chain && tx.output_bills[0].blockchain != entry->dest_chain) || (!Xtx::TypeIsXreq(entry->type) && (tx.output_destinations[0].value != entry->destination || tx.output_bills[0].amount != entry->amount))) // this amount comparison would need to be fixed for "subfee" option
+			{
+				if (tx.StatusIsNotError() || tx.nout > 0)
+					throw txrpc_tx_mismatch;
+			}
 		}
 	}
 }

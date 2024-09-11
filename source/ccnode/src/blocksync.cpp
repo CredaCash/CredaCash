@@ -802,11 +802,11 @@ void BlockSyncThread::ThreadProc(boost::function<void()> threadproc)
 {
 	blocksync_dbconn = new DbConn;
 
-	if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(trace) << "BlockSyncThread::ThreadProc start " << (uintptr_t)this << " dbconn " << (uintptr_t)blocksync_dbconn;
+	BOOST_LOG_TRIVIAL(info) << "BlockSyncThread::ThreadProc start " << (uintptr_t)this << " dbconn " << (uintptr_t)blocksync_dbconn;
 
 	threadproc();
 
-	if (TRACE_BLOCKSYNC) BOOST_LOG_TRIVIAL(trace) << "BlockSyncThread::ThreadProc end " << (uintptr_t)this << " dbconn " << (uintptr_t)blocksync_dbconn;
+	BOOST_LOG_TRIVIAL(info) << "BlockSyncThread::ThreadProc end " << (uintptr_t)this << " dbconn " << (uintptr_t)blocksync_dbconn;
 
 	delete blocksync_dbconn;
 }

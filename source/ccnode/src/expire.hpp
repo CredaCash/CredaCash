@@ -21,7 +21,7 @@ protected:
 	int64_t m_max_seqnum;
 	int32_t m_default_expire_age;
 	volatile int32_t m_expire_age;
-	bool m_expire_age_can_change;
+	bool m_is_valid_objs;
 
 	virtual int GetExpires(int64_t& seqnum, SmartBuf *retobj, ccoid_t& oid, uint32_t& next_expires_t0) = 0;
 	virtual int DeleteExpires(int64_t& seqnum, SmartBuf smartobj) = 0;
@@ -33,13 +33,13 @@ protected:
 	void DoExpires();
 
 public:
-	ExpireObj(const char *name, int64_t min_seqnum, int64_t max_seqnum, int32_t expire_age, bool expire_age_can_change)
+	ExpireObj(const char *name, int64_t min_seqnum, int64_t max_seqnum, int32_t expire_age, bool is_valid_objs)
 	 :	m_name(name),
 		m_min_seqnum(min_seqnum),
 		m_max_seqnum(max_seqnum),
 		m_default_expire_age(expire_age),
 		m_expire_age(expire_age),
-		m_expire_age_can_change(expire_age_can_change),
+		m_is_valid_objs(is_valid_objs),
 		m_thread(NULL),
 		m_dbconn(NULL)
 	{ }

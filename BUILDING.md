@@ -16,7 +16,7 @@ Required to fetch the source dependencies:
 
 - curl
 - unzip
-- Python (any version to build CredaCash, however, Python 2.7.x is required to run the CredaCash scripts)
+- Python (v2.7, or v3.8 or higher)
 
 Required to build:
 
@@ -27,10 +27,6 @@ Required to build:
 Required to run:
 
 - Tor v0.3.2 or higher
-
-Required to run the CredaCash scripts:
-
-- Python 2.7.x (64 bit version)
 
 ## Linux
 
@@ -82,17 +78,19 @@ The following instructions are specifically for Debian 10.  They may be adaptabl
 		rm *.bat
 		chmod +x *.sh
 
-4. Check that the command "python" will run python:
+4. Check that the command "python" will run Python:
 
-		which python
+		python --version
 
-	If this command does not report "/usr/bin/python", then run the command:
+	If this command does not report the Python version, then run the command:
+
+		sudo ln /usr/bin/python3 /usr/bin/python
+
+	or, if you are using Python v2.7, run the command:
 
 		sudo ln /usr/bin/python2 /usr/bin/python
 
-	or, if you have python3, then run the command:
-
-		sudo ln /usr/bin/python3 /usr/bin/python
+	and then recheck that "python --version" works.
 
 5. Fetch the dependencies:
 
@@ -136,13 +134,12 @@ If the build is not successful due to incompatibilities with Boost, Boost can be
 		./make_clean.sh
 		./make_release.sh static-boost
 
-### Python2 Requests Module
+### Python Requests Module
 
-CredaCash's Python scripts require the Python requests module. If necessary, the requests module for Python v2.7 can be installed as follows:
+CredaCash's Python scripts require the Python requests module which can be installed as follows:
 
-		curl -L https://bootstrap.pypa.io/pip/2.7/get-pip.py
-		sudo python2 get-pip.py
-		python2 -m pip install requests
+	python -m ensurepip --upgrade
+	python -m pip install requests
 
 ## Windows x64
 
@@ -193,9 +190,20 @@ Windows executables are available at [CredaCash.com](https://CredaCash.com/softw
 
 #### Python
 
-1. In a web browser, go to [https://www.python.org/downloads/release/python-2718/](https://www.python.org/downloads/release/python-2718/)
+1. In a web browser, go to [https://www.python.org/downloads/](https://www.python.org/downloads/)
 
-2. Download and install "Python 2.7.x for Windows x86-64"
+2. Download and install Python for Windows x86-64
+
+3. Check that python is in your path by executing:
+
+		python --version
+
+	This should print the Python version.
+
+4. Install the Python requests module by opening a command window and executing these commands:
+
+		python -m ensurepip --upgrade
+		python -m pip install requests
 
 #### Curl
 
@@ -238,25 +246,19 @@ Windows executables are available at [CredaCash.com](https://CredaCash.com/softw
 
 		set PATH=%PATH%;<directory containing curl.exe>;<directory containing unzip.exe>
 
-6. Check that python is in your path by executing:
-
-		python --version
-
-	This should print the python version.
-
-7. Check that curl.exe is in your path by executing:
+6. Check that curl.exe is in your path by executing:
 
 		curl --version
 
 	This should print the curl version.
 
-8. Check that unzip.exe is in your path by executing:
+7. Check that unzip.exe is in your path by executing:
 
 		unzip -h
 
 	This should print the unzip help text.
 
-9. Fetch the dependencies by executing:
+8. Fetch the dependencies by executing:
 
 		get_depends.bat
  
@@ -309,14 +311,3 @@ Windows executables are available at [CredaCash.com](https://CredaCash.com/softw
 		get_genesis.bat
 
 3. Create or edit the configuration files cnode.conf and ccwallet.conf and set the value of tor-exe to the full path of tor.exe in the directory created above.
-
-### Python2 Requests Module
-
-CredaCash's Python scripts require the Python requests module. If necessary, the requests module for Python v2.7 can be installed as follows:
-
-1. Download https://bootstrap.pypa.io/pip/2.7/get-pip.py
-
-2. From a command prompt, run the following commands:
-
-		python2 get-pip.py
-		python2 -m pip install requests

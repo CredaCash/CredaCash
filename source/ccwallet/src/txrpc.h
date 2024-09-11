@@ -53,7 +53,9 @@ void cc_exchange_requests_pending_totals(CP uint64_t base_asset, CP uint64_t quo
 void cc_exchange_request_info(const string& key, const string& strval, uint64_t intval, RPC_STDPARAMS);
 void cc_exchange_match_info(uint64_t matchnum, RPC_STDPARAMS);
 
-void cc_crosschain_request_create(bool async, CP string& ref_id, CP unsigned xcx_type, CP snarkfront::bigint_t& min_amount, CP snarkfront::bigint_t& max_amount, CP double& rate, CP double& costs, CP uint64_t quote_asset, CP string& foreign_asset, CP string& foreign_address, unsigned expiration, CP double& wait_discount, RPC_STDPARAMS);
+void cc_crosschain_request_create(int mode, CP string& ref_id, CP unsigned xcx_type, CP snarkfront::bigint_t& min_amount, CP snarkfront::bigint_t& max_amount, CP double& rate, CP double& costs, CP uint64_t quote_asset, CP string& foreign_asset, CP string& foreign_address, uint64_t expiration, CP double& wait_discount, RPC_STDPARAMS);
 void cc_crosschain_match_action_list(double minutes, bool override_reminder_times, RPC_STDPARAMS);
 void cc_crosschain_match_mark_paid(uint64_t matchnum, CP string& foreign_txid, double reminder_minutes, double minimum_advance_minutes, RPC_STDPARAMS);
 void cc_crosschain_payment_claim(bool async, CP string& ref_id, uint64_t matchnum, double amount, CP string& foreign_block_id, string& foreign_txid, double reminder_minutes, double minimum_advance_minutes, RPC_STDPARAMS);
+
+void cc_broadcast(CP string& ref_id, CP string& data, RPC_STDPARAMS);

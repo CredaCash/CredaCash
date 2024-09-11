@@ -61,6 +61,9 @@ uint32_t CCObject::TypeToWireTag(unsigned type)
 	case CC_TYPE_XCX_SIMPLE_SELL:
 		return CC_TAG_XCX_SIMPLE_SELL;
 
+	case CC_TYPE_XCX_MINING_TRADE:
+		return CC_TAG_XCX_SIMPLE_TRADE;
+
 	case CC_TYPE_XCX_NAKED_BUY:
 		return CC_TAG_XCX_NAKED_BUY;
 
@@ -97,6 +100,9 @@ unsigned CCObject::ObjType(uint32_t tag)
 	case CC_TAG_XCX_SIMPLE_SELL:
 		return CC_TYPE_XCX_SIMPLE_SELL;
 
+	case CC_TAG_XCX_SIMPLE_TRADE:
+		return CC_TYPE_XCX_MINING_TRADE;
+
 	case CC_TAG_XCX_NAKED_BUY:
 		return CC_TYPE_XCX_NAKED_BUY;
 
@@ -128,6 +134,7 @@ bool CCObject::IsValid() const
 	case CC_TYPE_TXPAY:
 	case CC_TYPE_XCX_SIMPLE_BUY:
 	case CC_TYPE_XCX_SIMPLE_SELL:
+	case CC_TYPE_XCX_MINING_TRADE:
 	case CC_TYPE_XCX_NAKED_BUY:
 	case CC_TYPE_XCX_NAKED_SELL:
 	case CC_TYPE_XCX_PAYMENT:

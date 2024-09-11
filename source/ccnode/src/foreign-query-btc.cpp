@@ -158,7 +158,7 @@ missing_key:
 	return -1;
 }
 
-static int ParseTx(Json::Value& root, const string& block, const string& txid, const string& script, ForeignQueryResult &result)
+static int ParseTx(const char* json, Json::Value& root, const string& block, const string& txid, const string& script, ForeignQueryResult &result)
 {
 	result.Clear();
 
@@ -264,7 +264,16 @@ static int ParseTx(Json::Value& root, const string& block, const string& txid, c
 		if (!value.isNumeric())
 			goto not_numeric;
 
-		auto amount = value.asDouble();
+		amtfloat_t amountf;
+		auto rc = parse_float_value(json, value, amountf);
+		if (rc)
+		{
+			BOOST_LOG_TRIVIAL(info) << "ForeignQueryBtc::ParseTx amount parse error " << value.asString();
+
+			return -1;
+		}
+
+		auto amount = UniFloat((double)amountf);
 
 		if (TRACE_FORN_RPC) BOOST_LOG_TRIVIAL(trace) << "ForeignQueryBtc::ParseTx block " << block << " txid " << txid << " script " << script << " found txout amount " << amount;
 
@@ -442,12 +451,13 @@ int ForeignQueryBtc::QueryPayment(uint64_t blockchain, const string& block, cons
 		if (!pconn)
 			return -1;
 
+		const char* json;
 		Json::Value root;
 
-		auto rc = pconn->SubmitQuery(port, auth, query, &root);
+		auto rc = pconn->SubmitQuery(port, auth, query, &root, &json);
 		if (rc) continue;
 
-		result_code = ParseTx(root, block, txid, script, result);
+		result_code = ParseTx(json, root, block, txid, script, result);
 		if (result_code < 0) continue;
 
 		break;

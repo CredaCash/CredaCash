@@ -31,7 +31,7 @@
 #define MIN_BLOCK_WORK_TIME				(block_min_work_ms*(CCTICKS_PER_SEC/1000))
 #define WITNESS_NO_WORK_TIME_SPACING	(block_max_time*CCTICKS_PER_SEC)
 
-#define WITNESS_RANDOM_TEST_TIME		(test_block_random_ms*(CCTICKS_PER_SEC/1000))
+#define WITNESS_RANDOM_TEST_TIME		int(test_block_random_ms*(CCTICKS_PER_SEC/1000) * ((unixtime()%128)/128.0))
 
 //#define TEST_RANDOM_WITNESS_ORDER		1
 //#define TEST_BUILD_ON_RANDOM			1
@@ -247,9 +247,6 @@ void Witness::Init()
 
 	//cerr << "witness tx seqnum range " << g_seqnum[TXSEQ][VALIDSEQ].seqmin << " to " << g_seqnum[TXSEQ][VALIDSEQ].seqmax << endl;
 
-	m_newblock_next_seqnum[TXSEQ]     = g_seqnum[TXSEQ][VALIDSEQ].seqmin;
-	m_newblock_next_seqnum[XREQSEQ] = g_seqnum[XREQSEQ][VALIDSEQ].seqmin;
-
 	if (IsWitness())
 	{
 		// create static buffer to use when building blocks
@@ -293,7 +290,7 @@ void Witness::DeInit()
 
 void Witness::ThreadProc()
 {
-	if (TRACE_WITNESS) BOOST_LOG_TRIVIAL(trace) << "Witness::ThreadProc start m_dbconn " << (uintptr_t)m_dbconn;
+	BOOST_LOG_TRIVIAL(info) << "Witness::ThreadProc start m_dbconn " << (uintptr_t)m_dbconn;
 
 	SmartBuf last_indelible_block;
 
@@ -394,12 +391,6 @@ void Witness::ThreadProc()
 		//if (witness_index >= 1 && witness_index <= 1)
 		//	continue;	// for testing
 
-		if (TEST_DELAY_SOME_XTXS || TEST_ONLY_EXPIRING_XTXS || TEST_ALMOST_EXPIRING_XTXS)
-		{
-			m_newblock_next_seqnum[TXSEQ]     = g_seqnum[TXSEQ][VALIDSEQ].seqmin;
-			m_newblock_next_seqnum[XREQSEQ] = g_seqnum[XREQSEQ][VALIDSEQ].seqmin;
-		}
-
 		auto failed = AttemptNewBlock();
 
 		if (failed)
@@ -448,7 +439,7 @@ void Witness::ThreadProc()
 
 	//witness_index = -1;	// no longer acting as a witness
 
-	if (TRACE_WITNESS) BOOST_LOG_TRIVIAL(trace) << "Witness::ThreadProc end m_dbconn " << (uintptr_t)m_dbconn;
+	BOOST_LOG_TRIVIAL(info) << "Witness::ThreadProc end m_dbconn " << (uintptr_t)m_dbconn;
 }
 
 uint32_t Witness::NextTurnTicks() const
@@ -882,6 +873,12 @@ void Witness::StartNewBlock()
 	m_block_start_time = ccticks();
 	m_newblock_bufpos = 0;
 
+	for (unsigned i = 1; i < NSEQOBJ; ++i)
+	{
+		ResetWork(i, true);	// assume there are objects in the mempool
+		m_newblock_next_seqnum[i] = g_seqnum[i][VALIDSEQ].seqmin;
+	}
+
 	m_test_ignore_order = false;
 	m_test_try_persistent_double_spend = false;
 	m_test_try_inter_double_spend = false;
@@ -956,7 +953,7 @@ Witness::BuildNewBlockStatus Witness::BuildNewBlock(uint32_t& min_time, uint32_t
 		else
 			break;
 
-		if (TRACE_WITNESS) BOOST_LOG_TRIVIAL(trace) << "Witness::BuildNewBlock checking for txs type " << type;
+		if (TRACE_WITNESS) BOOST_LOG_TRIVIAL(trace) << "Witness::BuildNewBlock level " << priorlevel + 1 << " checking for txs type " << type;
 
 		if (type)
 		{
@@ -964,7 +961,7 @@ Witness::BuildNewBlockStatus Witness::BuildNewBlock(uint32_t& min_time, uint32_t
 
 			ntx = m_dbconn->ValidObjsFindNew(m_newblock_next_seqnum[type], g_seqnum[type][VALIDSEQ].seqmax, TXARRAYSIZE, false, (uint8_t*)&txarray, TXARRAYSIZE);
 
-			if (TRACE_WITNESS) BOOST_LOG_TRIVIAL(trace) << "Witness::BuildNewBlock witness " << witness_index << " fetched " << ntx << " potential tx's type " << type;
+			if (TRACE_WITNESS) BOOST_LOG_TRIVIAL(trace) << "Witness::BuildNewBlock witness " << witness_index << " level " << priorlevel + 1 << " fetched " << ntx << " potential tx's type " << type;
 
 			if (ntx >= TXARRAYSIZE)
 				ResetWork(type, true);		// still more there
@@ -994,10 +991,10 @@ Witness::BuildNewBlockStatus Witness::BuildNewBlock(uint32_t& min_time, uint32_t
 			{
 				build_status = BUILD_NEWBLOCK_STATUS_FULL;
 
-				if (TRACE_WITNESS) BOOST_LOG_TRIVIAL(trace) << "Witness::BuildNewBlock witness " << witness_index << " skipping tx bufp " << (uintptr_t)bufp << " because it doesn't fit ";
+				if (TRACE_WITNESS) BOOST_LOG_TRIVIAL(trace) << "Witness::BuildNewBlock witness " << witness_index << " level " << priorlevel + 1 << " skipping tx bufp " << (uintptr_t)bufp << " because it doesn't fit ";
 			}
 
-			if (TRACE_WITNESS) BOOST_LOG_TRIVIAL(trace) << "Witness::BuildNewBlock witness " << witness_index << " checking tx bufp " << (uintptr_t)bufp << " size " << txsize;
+			if (TRACE_WITNESS) BOOST_LOG_TRIVIAL(trace) << "Witness::BuildNewBlock witness " << witness_index << " level " << priorlevel + 1 << " checking tx bufp " << (uintptr_t)bufp << " size " << txsize;
 
 			auto rc = tx_from_wire(m_txbuf, (char*)txwire, txsize);
 			if (rc)
@@ -1005,14 +1002,14 @@ Witness::BuildNewBlockStatus Witness::BuildNewBlock(uint32_t& min_time, uint32_t
 
 			if (m_txbuf.param_level > last_indelible_level)
 			{
-				BOOST_LOG_TRIVIAL(error) << "Witness::BuildNewBlock tx found with param_level " << m_txbuf.param_level << " > last_indelible_level " << last_indelible_level << " type " << type << " oid " << buf2hex(obj->OidPtr(), CC_OID_TRACE_SIZE);
+				BOOST_LOG_TRIVIAL(error) << "Witness::BuildNewBlock level " << priorlevel + 1 << " tx found with param_level " << m_txbuf.param_level << " > last_indelible_level " << last_indelible_level << " type " << type << " oid " << buf2hex(obj->OidPtr(), CC_OID_TRACE_SIZE);
 
 				g_blockchain.DebugStop("Witness got tx with future param level");
 			}
 
 			if (m_txbuf.param_level + nconfsigs - 1 > priorlevel || m_txbuf.param_level > last_indelible_level)
 			{
-				if (TRACE_WITNESS) BOOST_LOG_TRIVIAL(debug) << "Witness::BuildNewBlock tx found with param_level " << m_txbuf.param_level << " - 1 + nconfsigs " << nconfsigs << " > priorlevel " << priorlevel << "; type " << type << " oid " << buf2hex(obj->OidPtr(), CC_OID_TRACE_SIZE);
+				if (TRACE_WITNESS) BOOST_LOG_TRIVIAL(debug) << "Witness::BuildNewBlock level " << priorlevel + 1 << " tx found with param_level " << m_txbuf.param_level << " - 1 + nconfsigs " << nconfsigs << " > priorlevel " << priorlevel << "; type " << type << " oid " << buf2hex(obj->OidPtr(), CC_OID_TRACE_SIZE);
 
 				// the tx param_level is not valid for this block, so don't include it
 
@@ -1020,16 +1017,9 @@ Witness::BuildNewBlockStatus Witness::BuildNewBlock(uint32_t& min_time, uint32_t
 			}
 
 			if (build_status == BUILD_NEWBLOCK_STATUS_FULL)
-			{
-				// fix the next queue entry so we don't lose any tx's
-				if (type)
-					m_newblock_next_seqnum[type] = txarray[i].seqnum;
+				break;	// don't add any more tx's to this block
 
-				// don't add any more tx's to this block
-				break;
-			}
-
-			//if (Xtx::TypeIsBuyer(m_txbuf.tag_type)) continue;	// for testing, leave buy req's pending
+			//if (Xtx::TypeIsBuyer(m_txbuf.tag_type) && (priorlevel % 4)) continue;	// for testing, leave buy req's pending
 
 			auto xtx = ProcessTx::ExtractXtx(m_dbconn, m_txbuf);
 			if (!xtx && ProcessTx::ExtractXtxFailed(m_txbuf))
@@ -1044,7 +1034,7 @@ Witness::BuildNewBlockStatus Witness::BuildNewBlock(uint32_t& min_time, uint32_t
 
 				auto xreq = Xreq::Cast(xtx);
 
-				if (TRACE_WITNESS) BOOST_LOG_TRIVIAL(trace) << "Witness::BuildNewBlock found " << xreq->DebugString();
+				if (TRACE_WITNESS) BOOST_LOG_TRIVIAL(trace) << "Witness::BuildNewBlock level " << priorlevel + 1 << " found " << xreq->DebugString();
 				//cerr << "xreq.expire_time " << xreq->expire_time << " prior_blocktime " << prior_blocktime << endl;
 
 				if (xreq->expire_time > prior_blocktime + XREQ_MAX_EXPIRE_TIME)
@@ -1093,26 +1083,29 @@ Witness::BuildNewBlockStatus Witness::BuildNewBlock(uint32_t& min_time, uint32_t
 
 				auto xpay = Xpay::Cast(xtx);
 
-				if (TRACE_WITNESS) BOOST_LOG_TRIVIAL(trace) << "Witness::BuildNewBlock found " << xpay->DebugString();
-				//cerr << "Witness::BuildNewBlock found xpay xtx " << hex << (uintptr_t)xtx.get() << " xpay " << (uintptr_t)xpay << dec << " values " << xpay->DebugString() << endl;
+				if        (TRACE_XPAYS)  BOOST_LOG_TRIVIAL(info) << "Witness::BuildNewBlock level " << priorlevel + 1 << " found " << xpay->DebugString();
+				else if (TRACE_WITNESS) BOOST_LOG_TRIVIAL(trace) << "Witness::BuildNewBlock level " << priorlevel + 1 << " found " << xpay->DebugString();
+				//cerr << "Witness::BuildNewBlock level " << priorlevel + 1 << " found xpay xtx " << hex << (uintptr_t)xtx.get() << " xpay " << (uintptr_t)xpay << dec << " values " << xpay->DebugString() << endl;
 				//cerr << "xpay match_timestamp + payment_time " << xpay->match_timestamp + xpay->payment_time << " prior_blocktime " << prior_blocktime << endl;
 
 				if (!xpay->match_timestamp)
 				{
-					BOOST_LOG_TRIVIAL(error) << "Witness::BuildNewBlock missing xpay.match_timestamp; " << xpay->DebugString();
+					BOOST_LOG_TRIVIAL(error) << "Witness::BuildNewBlock level " << priorlevel + 1 << " missing xpay.match_timestamp; " << xpay->DebugString();
 
 					continue;
 				}
 
 				if (!xpay->payment_time)
 				{
-					BOOST_LOG_TRIVIAL(error) << "Witness::BuildNewBlock missing xpay.payment_time; " << xpay->DebugString();
+					BOOST_LOG_TRIVIAL(error) << "Witness::BuildNewBlock level " << priorlevel + 1 << " missing xpay.payment_time; " << xpay->DebugString();
 
 					continue;
 				}
 
 				if (xpay->match_timestamp + xpay->payment_time < prior_blocktime)
 				{
+					BOOST_LOG_TRIVIAL(info) << "Witness::BuildNewBlock level " << priorlevel + 1 << " prior_blocktime " << prior_blocktime << " late " << xpay->DebugString();
+
 					if (!TEST_LATE_XTXS || 1 + xpay->match_timestamp + xpay->payment_time < prior_blocktime)
 						continue;
 
@@ -1129,7 +1122,7 @@ Witness::BuildNewBlockStatus Witness::BuildNewBlock(uint32_t& min_time, uint32_t
 			}
 			else if (type != CC_TYPE_TXPAY && type != CC_TYPE_MINT)
 			{
-				BOOST_LOG_TRIVIAL(error) << "Witness::BuildNewBlock obj type " << type << " bufp " << (uintptr_t)bufp;
+				BOOST_LOG_TRIVIAL(error) << "Witness::BuildNewBlock level " << priorlevel + 1 << " obj type " << type << " bufp " << (uintptr_t)bufp;
 
 				continue;
 			}
@@ -1169,7 +1162,8 @@ Witness::BuildNewBlockStatus Witness::BuildNewBlock(uint32_t& min_time, uint32_t
 
 			if (badserial && !m_test_is_double_spend)
 			{
-				if (TRACE_WITNESS) BOOST_LOG_TRIVIAL(trace) << "Witness::BuildNewBlock witness " << witness_index << " skipping tx bufp " << (uintptr_t)bufp << " with bad serialnum status " << badserial;
+				if (TRACE_XPAYS && Xtx::TypeIsXpay(m_txbuf.tag_type)) BOOST_LOG_TRIVIAL(info) << "Witness::BuildNewBlock witness " << witness_index << " level " << priorlevel + 1 << " skipping tx type " << m_txbuf.tag_type << " with bad serialnum status " << badserial << " bufp " << (uintptr_t)bufp << " oid " << buf2hex(obj->OidPtr(), CC_OID_TRACE_SIZE);
+				else if (TRACE_WITNESS)                              BOOST_LOG_TRIVIAL(trace) << "Witness::BuildNewBlock witness " << witness_index << " level " << priorlevel + 1 << " skipping tx type " << m_txbuf.tag_type << " with bad serialnum status " << badserial << " bufp " << (uintptr_t)bufp << " oid " << buf2hex(obj->OidPtr(), CC_OID_TRACE_SIZE);
 
 				continue;
 			}
@@ -1200,12 +1194,13 @@ Witness::BuildNewBlockStatus Witness::BuildNewBlock(uint32_t& min_time, uint32_t
 
 			if (badinsert && !m_test_is_double_spend)
 			{
-				if (TRACE_WITNESS) BOOST_LOG_TRIVIAL(trace) << "Witness::BuildNewBlock witness " << witness_index << " skipping tx bufp " << (uintptr_t)bufp << " due to TempSerialnumInsert failure " << badinsert;
+				if (TRACE_XPAYS && Xtx::TypeIsXpay(m_txbuf.tag_type)) BOOST_LOG_TRIVIAL(info) << "Witness::BuildNewBlock witness " << witness_index << " level " << priorlevel + 1 << " skipping tx type " << m_txbuf.tag_type << " due to TempSerialnumInsert failure " << badinsert << " bufp " << (uintptr_t)bufp << " oid " << buf2hex(obj->OidPtr(), CC_OID_TRACE_SIZE);
+				else if (TRACE_WITNESS)                              BOOST_LOG_TRIVIAL(trace) << "Witness::BuildNewBlock witness " << witness_index << " level " << priorlevel + 1 << " skipping tx type " << m_txbuf.tag_type << " due to TempSerialnumInsert failure " << badinsert << " bufp " << (uintptr_t)bufp << " oid " << buf2hex(obj->OidPtr(), CC_OID_TRACE_SIZE);
 
 				continue;
 			}
 
-			if (TRACE_WITNESS) BOOST_LOG_TRIVIAL(trace) << "Witness::BuildNewBlock witness " << witness_index << " adding tx bufp " << (uintptr_t)bufp << " size " << newsize;
+			if (TRACE_WITNESS) BOOST_LOG_TRIVIAL(trace) << "Witness::BuildNewBlock witness " << witness_index << " level " << priorlevel + 1 << " adding tx bufp " << (uintptr_t)bufp << " size " << newsize;
 
 			//cerr << "ntx " << ntx << " adding txarray[" << i << "] bufp " << (uintptr_t)bufp << " obj " << (uintptr_t)obj << " body " << (uintptr_t)txbody << " size = " << newsize << endl;
 			//cerr << "ntx " << ntx << " adding txarray[" << i << "] bufp " << (uintptr_t)bufp << " size " << newsize << endl;
@@ -1237,7 +1232,8 @@ Witness::BuildNewBlockStatus Witness::BuildNewBlock(uint32_t& min_time, uint32_t
 
 			//cerr << "Witness txbuf wire tag " << hex << m_txbuf.wire_tag << " obj wire tag " << obj->ObjTag() << " new tag " << newtag << dec << endl;
 
-			if (TRACE_WITNESS) BOOST_LOG_TRIVIAL(trace) << "Witness::BuildNewBlock adding tx param_level " << m_txbuf.param_level << " type " << type << " oid " << buf2hex(obj->OidPtr(), CC_OID_TRACE_SIZE);
+			if (TRACE_XPAYS && Xtx::TypeIsXpay(m_txbuf.tag_type)) BOOST_LOG_TRIVIAL(info) << "Witness::BuildNewBlock level " << priorlevel + 1 << " adding tx param_level " << m_txbuf.param_level << " type " << type << " oid " << buf2hex(obj->OidPtr(), CC_OID_TRACE_SIZE);
+			else if (TRACE_WITNESS)                              BOOST_LOG_TRIVIAL(trace) << "Witness::BuildNewBlock level " << priorlevel + 1 << " adding tx param_level " << m_txbuf.param_level << " type " << type << " oid " << buf2hex(obj->OidPtr(), CC_OID_TRACE_SIZE);
 
 			copy_to_buf(newsize, sizeof(newsize), m_newblock_bufpos, output, bufsize);
 			copy_to_buf(newtag, sizeof(newtag), m_newblock_bufpos, output, bufsize);
@@ -1265,7 +1261,7 @@ Witness::BuildNewBlockStatus Witness::BuildNewBlock(uint32_t& min_time, uint32_t
 
 	if (m_newblock_bufpos > bufsize)
 	{
-		BOOST_LOG_TRIVIAL(error) << "Witness::BuildNewBlock witness " << witness_index << " buffer overflow m_newblock_bufpos " << m_newblock_bufpos << " bufsize " << bufsize;
+		BOOST_LOG_TRIVIAL(error) << "Witness::BuildNewBlock witness " << witness_index << " level " << priorlevel + 1 << " buffer overflow m_newblock_bufpos " << m_newblock_bufpos << " bufsize " << bufsize;
 
 		return BUILD_NEWBLOCK_STATUS_ERROR;
 	}

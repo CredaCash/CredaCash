@@ -19,6 +19,8 @@ extern "C" {
 #endif
 
 void CCRandom(void *data, unsigned nbytes);
+void CCPseudoRandomInit(void *pseed = NULL);
+void CCPseudoRandomDeInit();
 void CCPseudoRandom(void *data, unsigned nbytes);
 void PseudoRandomLetters(void *data, unsigned nbytes);
 

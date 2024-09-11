@@ -13,6 +13,7 @@
 #include "rpc_errors.hpp"
 #include "walletdb.hpp"
 #include "totals.hpp"
+#include "transactions.hpp"
 
 #include <CCparams.h>
 #include <CCobjdefs.h>
@@ -38,6 +39,8 @@
 #endif
 
 using namespace snarkfront;
+
+volatile bool g_disable_malloc_logging = false;
 
 /*
 	notable bitcoin 17.0 commands that could be added:
@@ -90,34 +93,15 @@ static void parse_amount(const string& json, Json::Value value, bool allow_zero,
 {
 	amtfloat_t amountf, amountf2;
 
-	try
-	{
-
-		unsigned start = value.getOffsetStart();
-		unsigned end = value.getOffsetLimit();
-
-		//cerr << "/" << json << "/" << endl;
-		//cerr << start << " " << end << " " << json.length() << endl;
-		//cerr << "/" << json.substr(start, end - start) << "/" << endl;
-
-		if (json[start] == '"')
-			++start;
-
-		if (end > start && json[end - 1] == '"')
-			--end;
-
-		amountf = (amtfloat_t)(json.substr(start, end - start));
-	}
-	catch (...)
-	{
+	auto rc = parse_float_value(json.data(), value, amountf);
+	if (rc)
 		throw RPC_Exception(RPC_MISC_ERROR, not_num_err);
-	}
 
 	if (amountf < 0 || (amountf == 0 && !allow_zero))
 		throw RPC_Exception(RPC_TYPE_ERROR, invalid_amount_err);
 
 	const uint64_t asset = 0;
-	auto rc = amount_from_float(asset, amountf, amount);
+	rc = amount_from_float(asset, amountf, amount);
 	if (rc)
 		throw RPC_Exception(RPC_TYPE_ERROR, invalid_amount_err);
 
@@ -226,12 +210,17 @@ static void crosschain_parse(bool is_query, const string& json, Json::Value& par
 		 xcx_type = CC_TYPE_XCX_SIMPLE_BUY;
 	else if (cmd == "ss" || cmd == "simple_sell")
 		xcx_type = CC_TYPE_XCX_SIMPLE_SELL;
+	else if (cmd == "mt" || cmd == "mining_trade" || cmd == "st" || cmd == "simple_trade")
+		xcx_type = CC_TYPE_XCX_MINING_TRADE;
 	else if (cmd == "nb" || cmd == "naked_buy")
 		 xcx_type = CC_TYPE_XCX_NAKED_BUY;
 	else if (cmd == "ns" || cmd == "naked_sell")
 		xcx_type = CC_TYPE_XCX_NAKED_SELL;
 	else
-		throw RPC_Exception(RPC_INVALID_PARAMETER, "request must be \\\"simple_buy\\\", \\\"simple_sell\\\", \\\"naked_buy\\\", or \\\"naked_sell\\\"");
+		throw RPC_Exception(RPC_INVALID_PARAMETER, "request must be \\\"simple_buy\\\", \\\"simple_sell\\\", \\\"naked_buy\\\", \\\"naked_sell\\\", or \\\"mining_trade\\\"");
+
+	if (is_query && xcx_type == CC_TYPE_XCX_MINING_TRADE)
+		throw RPC_Exception(RPC_INVALID_PARAMETER, "mining_trade type is not valid in a query operation");
 
 	parse_amount(json, params[poffset + 1], true, min_amount);
 	parse_amount(json, params[poffset + 2], true, max_amount);
@@ -250,6 +239,9 @@ static void crosschain_parse(bool is_query, const string& json, Json::Value& par
 		if (min_amount > max_max || max_amount > max_max)
 			throw RPC_Exception(RPC_INVALID_PARAMETER, "min_amount and max_amount must be <= " STRINGIFY(XCX_REQ_MAX));
 
+		if (xcx_type == CC_TYPE_XCX_MINING_TRADE && min_amount != max_amount)
+			throw RPC_Exception(RPC_INVALID_PARAMETER, "min_amount must equal max_amount for trade request");
+
 		if (!is_power_of_10(min_amount) || !is_power_of_10(max_amount))
 			throw RPC_Exception(RPC_INVALID_PARAMETER, "min_amount and max_amount must be 1, 2, 3, 5 or 7 multiplied by a power of 10");
 	}
@@ -262,13 +254,16 @@ static void crosschain_parse(bool is_query, const string& json, Json::Value& par
 
 	rate = params[poffset + 3].asDouble();
 
-	if (rate < 0 || (poffset && !rate))
+	if (rate < 0)
 		throw RPC_Exception(RPC_INVALID_PARAMETER, "exchange rate must be positive");
 
 	if (!params[poffset + 4].isNumeric())
 		throw RPC_Exception(RPC_MISC_ERROR, not_num_err);
 
 	auto nomcosts = params[poffset + 4].asDouble();
+
+	if (xcx_type == CC_TYPE_XCX_MINING_TRADE && nomcosts)
+		throw RPC_Exception(RPC_INVALID_PARAMETER, "costs must be zero for trade request");
 
 	costs = adjust_exchange_costs(nomcosts);
 
@@ -280,6 +275,9 @@ static void crosschain_parse(bool is_query, const string& json, Json::Value& par
 	foreign_asset = params[poffset + 5].asString();
 
 	crosschain_parse_foreign_asset(foreign_asset, quote_asset);
+
+	if (xcx_type == CC_TYPE_XCX_MINING_TRADE && quote_asset != XREQ_BLOCKCHAIN_BCH)
+		throw RPC_Exception(RPC_INVALID_PARAMETER, "cryptoasset must be bch for a trade request");
 
 	if (costs != nomcosts && IsInteractive())
 	{
@@ -339,6 +337,8 @@ static void try_one_rpc(const string& json, const string& method, Json::Value& p
 		"cc.crosschain_query_pending_matches \\\"simple_buy|simple_sell|naked_buy|naked_sell\\\" min_amount max_amount rate costs cryptoasset ( count offset ) - query crosschain exchange pending matches\\n"
 		"cc.crosschain_request_create reference_id \\\"simple_buy|simple_sell|naked_buy|naked_sell\\\" min_amount max_amount rate costs cryptoasset ( unique_foreign_address expiration wait_discount ) - create a CredaCash exchange request\\n"
 		"cc.crosschain_request_create_async reference_id \\\"simple_buy|simple_sell|naked_buy|naked_sell\\\" min_amount max_amount rate costs cryptoasset ( unique_foreign_address expiration wait_discount )\\n"
+		"cc.crosschain_request_create_local reference_id \\\"simple_buy|simple_sell|naked_buy|naked_sell\\\" min_amount max_amount rate costs cryptoasset ( unique_foreign_address expiration wait_discount )\\n"
+		"cc.broadcast reference_id data\\n"
 		"cc.exchange_requests_pending_totals cryptoasset - get this wallet's total amount of pending exchange requests for the cryptoasset\\n"
 		"cc.exchange_query_mining_info - query crosschain exchange mining information\\n"
 		//"cc.exchange_request_info key id - return info on a crosschain request; key must = \"reqnum\"\\n"
@@ -1347,8 +1347,11 @@ static void try_one_rpc(const string& json, const string& method, Json::Value& p
 
 		cc_exchange_query_requests(xcx_type, min_amount, max_amount, rate, 0, costs, 0, quote_asset, foreign_asset, maxret, offset, flags, STDARGS);
 	}
-	else if (method == "cc.crosschain_request_create" || method == "cc.crosschain_request_create_async")
+	else if (method == "cc.crosschain_request_create" || method == "cc.crosschain_request_create_async" || method == "cc.crosschain_request_create_local")
 	{
+		int mode = (method.find("_async") != string::npos) * Transaction::TX_MODE_ASYNC
+				 + (method.find("_local") != string::npos) * Transaction::TX_MODE_PREPARE;
+
 		if (params.size() < 7 || params.size() > 10)
 			throw RPC_Exception(RPC_MISC_ERROR, method + " reference_id \\\"simple_buy|simple_sell|naked_buy|naked_sell\\\" min_amount max_amount rate costs cryptoasset ( unique_foreign_address expiration wait_discount )");
 
@@ -1361,7 +1364,7 @@ static void try_one_rpc(const string& json, const string& method, Json::Value& p
 		crosschain_parse(false, json, params, 1, xcx_type, min_amount, max_amount, rate, costs, quote_asset, foreign_asset);
 
 		string foreign_address;
-		unsigned expiration = 0;
+		uint64_t expiration = 0;
 		double wait_discount = 1;
 
 		if (params.size() > 7)
@@ -1373,7 +1376,7 @@ static void try_one_rpc(const string& json, const string& method, Json::Value& p
 		}
 
 		if (Xtx::TypeIsSeller(xcx_type) && !foreign_address.length())
-			throw RPC_Exception(RPC_INVALID_PARAMETER, "foreign payment address must be included in a sell request");
+			throw RPC_Exception(RPC_INVALID_PARAMETER, "foreign payment address must be included in a sell or trade request");
 
 		if (foreign_address.length() > XTX_MAX_ITEM_SIZE + 1)
 			throw RPC_Exception(RPC_INVALID_PARAMETER, "foreign payment address length must be <= " + to_string(XTX_MAX_ITEM_SIZE + 1));
@@ -1383,12 +1386,14 @@ static void try_one_rpc(const string& json, const string& method, Json::Value& p
 			if (!params[8].isIntegral() || !params[8].isConvertibleTo(Json::uintValue))
 				throw RPC_Exception(RPC_MISC_ERROR, not_int_err);
 
-			expiration = params[8].asUInt();
+			expiration = params[8].asUInt64();
 
-			if (expiration && expiration < XREQ_SIMPLE_HOLD_TIME + XREQ_MIN_POSTHOLD_TIME)
-				throw RPC_Exception(RPC_INVALID_PARAMETER, "expiration must be >= " + to_string(XREQ_SIMPLE_HOLD_TIME + XREQ_MIN_POSTHOLD_TIME) + " seconds");
+			unsigned min_exp = XREQ_SIMPLE_HOLD_TIME + XREQ_MIN_POSTHOLD_TIME + 20;
 
-			if (expiration > XREQ_MAX_EXPIRE_TIME)
+			if ((expiration && expiration < min_exp) || (expiration > 365*24*60*60 && (uint64_t)unixtime() + min_exp > expiration))
+				throw RPC_Exception(RPC_INVALID_PARAMETER, "expiration must be >= " + to_string(min_exp) + " seconds");
+
+			if (expiration > XREQ_MAX_EXPIRE_TIME && expiration <= 365*24*60*60)
 				throw RPC_Exception(RPC_INVALID_PARAMETER, "expiration must be <= " + to_string(XREQ_MAX_EXPIRE_TIME));
 		}
 
@@ -1406,9 +1411,19 @@ static void try_one_rpc(const string& json, const string& method, Json::Value& p
 				throw RPC_Exception(RPC_INVALID_PARAMETER, "wait discount must be <= 1");
 		}
 
+		if (xcx_type == CC_TYPE_XCX_MINING_TRADE && wait_discount != 1)
+			throw RPC_Exception(RPC_INVALID_PARAMETER, "wait discount must be 1 for a trade request");
+
 		wait_discount = 1 - pow(1 - wait_discount, XREQ_WAIT_DISCOUNT_INTERVAL / 60.0);	// TODO: test this
 
-		cc_crosschain_request_create(method.find("_async") != string::npos, params[0].asString(), xcx_type, min_amount, max_amount, rate, costs, quote_asset, foreign_asset, foreign_address, expiration, wait_discount, STDARGS);
+		cc_crosschain_request_create(mode, params[0].asString(), xcx_type, min_amount, max_amount, rate, costs, quote_asset, foreign_asset, foreign_address, expiration, wait_discount, STDARGS);
+	}
+	else if (method == "cc.broadcast")
+	{
+		if (params.size() != 2)
+			throw RPC_Exception(RPC_MISC_ERROR, method + " reference_id data");
+
+		cc_broadcast(params[0].asString(), params[1].asString(), STDARGS);
 	}
 	else if (method == "cc.exchange_requests_pending_totals")
 	{
@@ -1541,6 +1556,18 @@ static void try_one_rpc(const string& json, const string& method, Json::Value& p
 			throw RPC_Exception(RPC_MISC_ERROR, not_num_err);
 
 		cc_crosschain_payment_claim(method.find("_async") != string::npos, params[0].asString(), params[1].asUInt64(), amount, foreign_block_id, foreign_txid, params.size() > 5 ? params[5].asDouble() : 10, params.size() > 6 ? params[6].asDouble() : 2, STDARGS);
+	}
+	else if (method == "cc.malloc_log")
+	{
+		bool blog = false;
+
+		if (params.size() > 0 && params[0].isNumeric())
+			blog = params[0].asDouble();
+
+		if (blog)
+			cc_malloc_logging(true);
+		else
+			g_disable_malloc_logging = true;
 	}
 	#if TEST_INCLUDE_QUICK_TEST
 	else if (method == "test")

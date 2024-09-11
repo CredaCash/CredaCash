@@ -22,7 +22,7 @@ public:
 	 :	ForeignConnection(manager, io_service, connfac)
 	{ }
 
-	int SubmitQuery(unsigned port, const string& auth, const string& query, Json::Value *root, bool debug = false);
+	int SubmitQuery(unsigned port, const string& auth, const string& query, Json::Value *root, const char* *content = NULL, bool debug = false);
 };
 
 class ForeignRpcClient : public TorService

@@ -51,6 +51,7 @@ string Xreq::DebugString() const
 	out << "Xreq";
 	out << " xreqnum " << xreqnum;
 	out << " seqnum " << seqnum;
+	out << " linked_seqnum " << linked_seqnum;
 	out << " db_search_max_xreqnum " << db_search_max_xreqnum;
 	out << " type " << type << " = " << TypeString();
 
@@ -71,8 +72,8 @@ string Xreq::DebugString() const
 	out << " wait_discount " << wait_discount;
 	out << " base_costs " << base_costs;
 	out << " quote_costs " << quote_costs;
-	//out << " destination " << destination;
-	//out << " foreign_address " << foreign_address;
+	out << " destination " << destination;
+	out << " foreign_address " << foreign_address;
 
 	out << " add_immediately_to_blockchain " << flags.add_immediately_to_blockchain;
 	out << " auto_accept_matches " << flags.auto_accept_matches;
@@ -119,7 +120,7 @@ string Xreq::DebugString() const
 	return out.str();
 }
 
-Xreq::Xreq(const unsigned type_, const unsigned expiration_, const bigint_t& min_amount_, const bigint_t& max_amount_, const UniFloat& req_rate_, const UniFloat& quote_costs_, const uint64_t quote_asset_, const string& foreign_asset_, const string& foreign_address_, const bool for_testnet_)
+Xreq::Xreq(const unsigned type_, const uint64_t expiration_, const bigint_t& min_amount_, const bigint_t& max_amount_, const UniFloat& req_rate_, const UniFloat& quote_costs_, const uint64_t quote_asset_, const string& foreign_asset_, const string& foreign_address_, const bool for_testnet_)
  :	Xtx(type_, expiration_),
 	foreign_asset(foreign_asset_),
 	foreign_address(foreign_address_)
@@ -217,6 +218,38 @@ bool Xreq::CheckForeignAddress() const
 	}
 
 	return false;
+}
+
+void Xreq::ConvertTradeToBuy()
+{
+	CCASSERT(type == CC_TYPE_XCX_MINING_TRADE);
+
+	type = CC_TYPE_XCX_MINING_BUY;
+
+	foreign_address.clear();
+}
+
+void Xreq::ConvertTradeToSell()
+{
+	CCASSERT(type == CC_TYPE_XCX_MINING_TRADE);
+
+	type = CC_TYPE_XCX_MINING_SELL;
+
+	seqnum = 0;
+	xreqnum = 0;
+
+	ConvertTradeObjIdToSellObjId(objid);
+}
+
+void Xreq::ConvertTradeObjIdToSellObjId(unsigned tx_type, unsigned xreq_type, ccoid_t& objid)
+{
+	if (tx_type == CC_TYPE_XCX_MINING_TRADE && xreq_type == CC_TYPE_XCX_MINING_SELL)
+		ConvertTradeObjIdToSellObjId(objid);
+}
+
+void Xreq::ConvertTradeObjIdToSellObjId(ccoid_t& objid)
+{
+	objid[0] ^= 1;	// make a unique objid
 }
 
 /*
@@ -329,10 +362,13 @@ void Xreq::DataToWire(const string& fn, void *binbuf, const uint32_t binsize, ui
 {
 	const bool bhex = false;
 	const unsigned amount_bytes = (amount_bits + 7) / 8;
-	vector<uint8_t> encoded_sval;
+	vector<char> encoded_sval;
 
 	if (!TypeIsXreq(type))
 		return Xtx::DataToWire(fn, binbuf, binsize, bufpos);
+
+	if (type == CC_TYPE_XCX_MINING_BUY || type == CC_TYPE_XCX_MINING_SELL)
+		throw range_error("type not serializable");
 
 	if (!expire_time)
 		throw range_error("expire_time is 0");
@@ -350,14 +386,24 @@ void Xreq::DataToWire(const string& fn, void *binbuf, const uint32_t binsize, ui
 	auto amount_fp = tx_amount_encode(min_amount, false, amount_bits, exponent_bits);
 	copy_to_buf(amount_fp, amount_bytes, bufpos, binbuf, binsize, bhex);
 
-	amount_fp = tx_amount_encode(max_amount, false, amount_bits, exponent_bits);
-	copy_to_buf(amount_fp, amount_bytes, bufpos, binbuf, binsize, bhex);
+	if (type != CC_TYPE_XCX_MINING_TRADE)
+	{
+		amount_fp = tx_amount_encode(max_amount, false, amount_bits, exponent_bits);
+		copy_to_buf(amount_fp, amount_bytes, bufpos, binbuf, binsize, bhex);
+	}
+	else if (max_amount != min_amount)
+		throw range_error("max_amount must = min_amount for a trade request");
 
 	auto rate_fp = UniFloat::WireEncode(net_rate_required);
 	copy_to_buf(rate_fp, UNIFLOAT_WIRE_BYTES, bufpos, binbuf, binsize, bhex);
 
-	rate_fp = UniFloat::WireEncode(wait_discount);
-	copy_to_buf(rate_fp, UNIFLOAT_WIRE_BYTES, bufpos, binbuf, binsize, bhex);
+	if (type != CC_TYPE_XCX_MINING_TRADE)
+	{
+		rate_fp = UniFloat::WireEncode(wait_discount);
+		copy_to_buf(rate_fp, UNIFLOAT_WIRE_BYTES, bufpos, binbuf, binsize, bhex);
+	}
+	else if (wait_discount != 1)
+		throw range_error("wait_discount must be 1 for a trade request");
 
 	if (base_asset != 0)
 		throw range_error("base_asset must be 0");
@@ -369,10 +415,15 @@ void Xreq::DataToWire(const string& fn, void *binbuf, const uint32_t binsize, ui
 		throw range_error("quote_asset exceeds limit");
 	copy_to_buf(quote_asset, XCX_BLOCKCHAIN_WIRE_BYTES, bufpos, binbuf, binsize, bhex);
 
-	rate_fp = UniFloat::WireEncode(quote_costs);
-	copy_to_buf(rate_fp, UNIFLOAT_WIRE_BYTES, bufpos, binbuf, binsize, bhex);
+	if (type != CC_TYPE_XCX_MINING_TRADE)
+	{
+		rate_fp = UniFloat::WireEncode(quote_costs);
+		copy_to_buf(rate_fp, UNIFLOAT_WIRE_BYTES, bufpos, binbuf, binsize, bhex);
+	}
+	else if (quote_costs != 0)
+		throw range_error("quote_costs must be 0 for a trade request");
 
-	if (type >= CC_TYPE_XCX_NAKED_BUY && type <= CC_TYPE_XCX_SIMPLE_SELL && !TEST_XREQ)
+	if (((type >= CC_TYPE_XCX_NAKED_BUY && type <= CC_TYPE_XCX_SIMPLE_SELL) || type == CC_TYPE_XCX_MINING_TRADE) && !TEST_XREQ)
 	{
 		if (consideration_required)
 			throw range_error("consideration_required non-zero");
@@ -451,7 +502,10 @@ void Xreq::DataToWire(const string& fn, void *binbuf, const uint32_t binsize, ui
 
 	if (min_wait_time > 255)
 		throw range_error("min_wait_time exceeds limit");
-	copy_to_buf(min_wait_time, 1, bufpos, binbuf, binsize, bhex);
+	if (type != CC_TYPE_XCX_MINING_TRADE)
+		copy_to_buf(min_wait_time, 1, bufpos, binbuf, binsize, bhex);
+	else if (min_wait_time != XREQ_SIMPLE_WAIT_TIME)
+		throw range_error("min_wait_time invalid for trade request");
 
 	unsigned packed_flags = 0;
 
@@ -534,6 +588,9 @@ void Xreq::DataFromWire(const string& fn, const void *binbuf, const uint32_t bin
 	if (!TypeIsXreq(type))
 		return Xtx::DataFromWire(fn, binbuf, binsize, bufpos);
 
+	if (type == CC_TYPE_XCX_MINING_BUY || type == CC_TYPE_XCX_MINING_SELL)
+		throw range_error("type not serializable");
+
 	copy_from_buf(encoded, CC_BLOCKTIME_WIRE_BYTES, bufpos, binbuf, binsize, bhex);
 	expire_time = Xtx::Decode_Time(encoded);
 
@@ -544,14 +601,24 @@ void Xreq::DataFromWire(const string& fn, const void *binbuf, const uint32_t bin
 	copy_from_buf(encoded, amount_bytes, bufpos, binbuf, binsize, bhex);
 	tx_amount_decode(encoded, min_amount, false, amount_bits, exponent_bits);
 
-	copy_from_buf(encoded, amount_bytes, bufpos, binbuf, binsize, bhex);
-	tx_amount_decode(encoded, max_amount, false, amount_bits, exponent_bits);
+	if (type != CC_TYPE_XCX_MINING_TRADE)
+	{
+		copy_from_buf(encoded, amount_bytes, bufpos, binbuf, binsize, bhex);
+		tx_amount_decode(encoded, max_amount, false, amount_bits, exponent_bits);
+	}
+	else
+		max_amount = min_amount;
 
 	copy_from_buf(encoded, UNIFLOAT_WIRE_BYTES, bufpos, binbuf, binsize, bhex);
 	net_rate_required = UniFloat::WireDecode(encoded);
 
-	copy_from_buf(encoded, UNIFLOAT_WIRE_BYTES, bufpos, binbuf, binsize, bhex);
-	wait_discount = UniFloat::WireDecode(encoded);
+	if (type != CC_TYPE_XCX_MINING_TRADE)
+	{
+		copy_from_buf(encoded, UNIFLOAT_WIRE_BYTES, bufpos, binbuf, binsize, bhex);
+		wait_discount = UniFloat::WireDecode(encoded);
+	}
+	else
+		wait_discount = 1;
 
 	base_asset = 0;
 
@@ -559,10 +626,15 @@ void Xreq::DataFromWire(const string& fn, const void *binbuf, const uint32_t bin
 
 	copy_from_buf(quote_asset, XCX_BLOCKCHAIN_WIRE_BYTES, bufpos, binbuf, binsize, bhex);
 
-	copy_from_buf(encoded, UNIFLOAT_WIRE_BYTES, bufpos, binbuf, binsize, bhex);
-	quote_costs = UniFloat::WireDecode(encoded);
+	if (type != CC_TYPE_XCX_MINING_TRADE)
+	{
+		copy_from_buf(encoded, UNIFLOAT_WIRE_BYTES, bufpos, binbuf, binsize, bhex);
+		quote_costs = UniFloat::WireDecode(encoded);
+	}
+	else
+		quote_costs = 0;
 
-	if (type >= CC_TYPE_XCX_NAKED_BUY && type <= CC_TYPE_XCX_SIMPLE_SELL && !TEST_XREQ)
+	if (((type >= CC_TYPE_XCX_NAKED_BUY && type <= CC_TYPE_XCX_SIMPLE_SELL) || type == CC_TYPE_XCX_MINING_TRADE) && !TEST_XREQ)
 	{
 		consideration_required = 0;
 		consideration_offered = 0;
@@ -604,7 +676,10 @@ void Xreq::DataFromWire(const string& fn, const void *binbuf, const uint32_t bin
 		confirmations += 1;
 	}
 
-	copy_from_buf(min_wait_time, 1, bufpos, binbuf, binsize, bhex);
+	if (type != CC_TYPE_XCX_MINING_TRADE)
+		copy_from_buf(min_wait_time, 1, bufpos, binbuf, binsize, bhex);
+	else
+		min_wait_time = XREQ_SIMPLE_WAIT_TIME;
 
 	copy_from_buf(encoded, 1, bufpos, binbuf, binsize, bhex);
 

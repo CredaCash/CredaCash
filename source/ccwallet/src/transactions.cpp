@@ -67,10 +67,11 @@ When another wallet spends a bill in this wallet:
 //!#define TEST_NO_ROUND_UP				1
 //!#define TEST_FEWER_RETRIES			1
 //!#define TEST_FAIL_ALL_TXS			1	// all tx's fail (except mints), so balance should never change--useful for testing that the donation is handled correctly on error
-//!#define RTEST_TX_ERRORS				16	// when this is enabled, it's helpful to set tx-polling-addresses=50 and TEST_RANDOM_POLLING = 5 to 20
+//!#define RTEST_TX_ERRORS				32	// when this is enabled, it's helpful to set tx-polling-addresses=50 and TEST_RANDOM_POLLING = 5 to 20
+//!#define RTEST_CREATE_LOOP_BREAK		64	// test early break in StartCreateTxPay inner loop
 //!#define RTEST_RELEASE_ERROR_TXID		2	// discard txid after an error
 //!#define RTEST_ALLOW_DOUBLE_SPENDS	2
-//!#define RTEST_CUZZ					16
+//!#define RTEST_CUZZ					64
 //#define TEST_BIG_DIVISION				1
 
 #ifndef TEST_NO_ROUND_UP
@@ -87,6 +88,10 @@ When another wallet spends a bill in this wallet:
 
 #ifndef TEST_FAIL_ALL_TXS
 #define TEST_FAIL_ALL_TXS			0	// don't test
+#endif
+
+#ifndef RTEST_CREATE_LOOP_BREAK
+#define RTEST_CREATE_LOOP_BREAK		0	// don't test
 #endif
 
 #ifndef RTEST_RELEASE_ERROR_TXID
@@ -111,10 +116,13 @@ When another wallet spends a bill in this wallet:
 //#define WALLET_TX_MININ	1
 #define WALLET_TX_MAXIN		4
 
+#define ASYNC_XPAY_NICE		7	// TODO: make this a config setting
+
 static const string cc_txid_prefix = "CCTX_";
 static const string cc_tx_internal_prefix = "CCTX_Internal_";
 
 #define TRACE_TRANSACTIONS	(g_params.trace_transactions)
+#define TRACE_BILLETS		(g_params.trace_billets)
 
 static mutex billet_allocate_mutex;
 static atomic<unsigned> tx_thread_count(0);
@@ -136,10 +144,11 @@ Transaction::Transaction()
 
 void Transaction::Clear()
 {
-	memset((void*)this, 0, (uintptr_t)&txbody - (uintptr_t)this);
+	memset((void*)this, 0, (uintptr_t)&ref_id - (uintptr_t)this);
 
-	txbody.clear();
 	ref_id.clear();
+	txbody.clear();
+	wire_data.clear();
 
 	we_sent[0] = -1;
 	we_sent[1] = -1;
@@ -162,11 +171,12 @@ void Transaction::Clear()
 
 void Transaction::Copy(const Transaction& other)
 {
-	memcpy((void*)this, &other, (uintptr_t)(&this->txbody) - (uintptr_t)this);
+	memcpy((void*)this, &other, (uintptr_t)(&this->ref_id) - (uintptr_t)this);
 
-	txbody = other.txbody;
-	xtx = other.xtx;
 	ref_id = other.ref_id;
+	txbody = other.txbody;
+	wire_data = other.wire_data;
+	xtx = other.xtx;
 
 	for (unsigned i = 0; i < TX_MAXOUT; ++i)
 	{
@@ -198,8 +208,8 @@ string Transaction::StatusString(unsigned status)
 		"INVALID"
 	};
 
-	if (status > BILL_STATUS_INVALID)
-		status = BILL_STATUS_INVALID;
+	if (status > TX_STATUS_INVALID)
+		status = TX_STATUS_INVALID;
 
 	return statusstr[status];
 }
@@ -214,6 +224,7 @@ string Transaction::DebugString() const
 	out << " status " << status << " = " << StatusString();
 	out << " build_type " << build_type;
 	out << " build_state " << build_state;
+	out << " build_mode " << build_mode;
 	out << " parent_id " << parent_id;
 	out << " blockchain " << blockchain;
 	out << " param_level " << param_level;
@@ -222,10 +233,11 @@ string Transaction::DebugString() const
 	out << " donation " << donation;
 	out << " nout " << nout;
 	out << " nin " << nin;
-	out << " txbody " << txbody.size();
 	out << " ref_id " << ref_id;
 	if (!ref_id.length())
 		out << "(none)";
+	out << " txbody " << txbody.size();
+	out << " wire_data " << wire_data.size();
 	out << " txid " << GetBtcTxid();
 	if (have_objid)
 		out << " objid " << buf2hex(&objid, CC_OID_TRACE_SIZE);
@@ -572,7 +584,14 @@ void Transaction::FinishCreateTx(TxPay& ts, TxParams& txparams, TxBuildEntry *en
 	}
 
 	if (build_type == TX_BUILD_CANCEL_TX)
+	{
+		if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(debug) << "Transaction::FinishCreateTx setting status abandoned " << DebugString();
+
+		// For now, the tx status is TX_STATUS_ABANDONED.
+		// The status will change to TX_STATUS_CONFLICTED if/when the tx's input bills are spent in a future transaction.
+
 		status = TX_STATUS_ABANDONED;
+	}
 	else
 		status = TX_STATUS_PENDING;
 
@@ -592,7 +611,7 @@ int Transaction::SaveOutgoingTx(DbConn *dbconn)
 {
 	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(debug) << "Transaction::SaveOutgoingTx " << DebugString();
 
-	if (RandTest(RTEST_CUZZ)) ccsleep(rand() & 7);
+	if (RandTest(RTEST_CUZZ)) ccsleep(rand() & 3);
 
 	CCASSERT(type);
 
@@ -699,7 +718,11 @@ int Transaction::SaveOutgoingTx(DbConn *dbconn)
 			CCASSERT(bill.create_tx == tx_id);
 
 		if (build_type == TX_BUILD_CANCEL_TX)
+		{
+			if (TRACE_BILLETS) BOOST_LOG_TRIVIAL(debug) << "Transaction::SaveOutgoingTx setting status abandoned for tx_id " << tx_id << " " << bill.DebugString();
+
 			bill.status = BILL_STATUS_ABANDONED;
+		}
 		else
 			bill.status = BILL_STATUS_PENDING;
 
@@ -713,10 +736,32 @@ int Transaction::SaveOutgoingTx(DbConn *dbconn)
 	{
 		CCASSERT(xtx);
 
-		Xmatchreq xreq(*Xreq::Cast(xtx), tx_id);
+		const Xreq& xreq(*Xreq::Cast(xtx));
 
-		rc = dbconn->ExchangeRequestInsert(xreq);
-		if (rc) return -1;
+		if (xreq.type != CC_TYPE_XCX_MINING_TRADE)
+		{
+			Xmatchreq mreq(xreq, tx_id);
+
+			rc = dbconn->ExchangeRequestInsert(mreq);
+			if (rc) return -1;
+		}
+		else
+		{
+			Xreq xreq1(xreq);
+			Xreq xreq2(xreq);
+
+			xreq1.ConvertTradeToBuy();
+			xreq2.ConvertTradeToSell();
+
+			Xmatchreq mreq1(xreq1, tx_id);
+			Xmatchreq mreq2(xreq2, tx_id);
+
+			rc = dbconn->ExchangeRequestInsert(mreq1);
+			if (rc) return -1;
+
+			rc = dbconn->ExchangeRequestInsert(mreq2);
+			if (rc) return -1;
+		}
 	}
 
 	// commit db writes
@@ -1399,7 +1444,7 @@ int Transaction::CreateTxMint(DbConn *dbconn, TxQuery& txquery) // throws RPC_Ex
 
 	uint64_t next_commitnum;
 
-	rc = TrySubmitTx(txquery, ts, next_commitnum, "mint_tx", false);
+	rc = TrySubmitTx(txquery, &ts, 0, next_commitnum, "mint_tx", false);
 
 	SetObjId(dbconn);
 
@@ -1549,7 +1594,7 @@ void Transaction::SetPendingBalances(DbConn *dbconn, uint64_t blockchain, const 
 	uint64_t asset = 0;
 	unsigned delaytime = 0;	// TBD: this will get more complicated if billets have various delaytimes
 
-	if (RandTest(RTEST_CUZZ)) ccsleep(rand() & 7);
+	if (RandTest(RTEST_CUZZ)) ccsleep(rand() & 3);
 
 	auto rc = dbconn->BeginWrite();
 	if (rc)
@@ -1658,7 +1703,7 @@ void Transaction::ReleaseBillets(DbConn *dbconn, int start, int count)
 	if (count < 1)
 		return;
 
-	if (RandTest(RTEST_CUZZ)) ccsleep(rand() & 7);
+	if (RandTest(RTEST_CUZZ)) ccsleep(rand() & 3);
 
 	auto rc = dbconn->BeginWrite();
 	if (rc)
@@ -1925,7 +1970,7 @@ int Transaction::ComputeChange(TxParams& txparams, const bigint_t& carry_in, con
 
 	int rc = !!remainder || !!needed;
 
-	BOOST_LOG_TRIVIAL(debug) << "Transaction::ComputeChange build_type " << build_type << " nin " << nin << " send amount " << SubTxAmount() << " remainder " << remainder << " shortfall " << needed << " returning " << rc;
+	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(debug) << "Transaction::ComputeChange build_type " << build_type << " nin " << nin << " send amount " << SubTxAmount() << " remainder " << remainder << " shortfall " << needed << " returning " << rc;
 
 	return rc;
 }
@@ -2011,6 +2056,13 @@ int Transaction::FillOutTx(DbConn *dbconn, TxQuery& txquery, TxParams& txparams,
 	{
 		Billet& bill = input_bills[i];
 		TxIn& txin = ts.inputs[i];
+
+		if (!bill.id)
+		{
+			BOOST_LOG_TRIVIAL(error) << "Transaction::FillOutTx input " << i << " null id";
+
+			throw txrpc_wallet_error;
+		}
 
 		if (bill.blockchain != dest_chain)
 		{
@@ -2106,9 +2158,14 @@ void Transaction::SetAddresses(DbConn *dbconn, uint64_t dest_chain, Secret &dest
 	}
 }
 
-int Transaction::CreateTxPay(DbConn *dbconn, TxQuery& txquery, bool async, string& ref_id, unsigned type, const string& encoded_dest, uint64_t dest_chain, const bigint_t& destination, const bigint_t& amount, const string& comment, const string& comment_to, const bool subfee, Xtx *xtx) // throws RPC_Exception
+static void SetDone(TxBuildEntry *entry)
 {
-	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(debug) << "Transaction::CreateTxPay async " << async << " ref_id " << ref_id << " type " << TypeString(type) << " dest_chain " << dest_chain << " destination " << buf2hex(&destination, sizeof(destination)) << " amount " << amount << " subfee " << subfee << " comment " << comment << " comment_to " << comment_to;
+	g_txbuildlist.SetDone(entry);
+}
+
+int Transaction::CreateTxPay(DbConn *dbconn, TxQuery& txquery, int mode, string& ref_id, unsigned type, const string& encoded_dest, uint64_t dest_chain, const bigint_t& destination, const bigint_t& amount, const string& comment, const string& comment_to, const bool subfee, Xtx *xtx) // throws RPC_Exception
+{
+	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(debug) << "Transaction::CreateTxPay mode " << mode << " ref_id " << ref_id << " type " << TypeString(type) << " dest_chain " << dest_chain << " destination " << buf2hex(&destination, sizeof(destination)) << " amount " << amount << " subfee " << subfee << " comment " << comment << " comment_to " << comment_to;
 
 	/*
 		For privacy, all tx's are 1 to 4 in -> 2 out
@@ -2221,13 +2278,15 @@ int Transaction::CreateTxPay(DbConn *dbconn, TxQuery& txquery, bool async, strin
 
 	Finally finally(boost::bind(&Transaction::CreateTxPayThreadCleanup, &thread_dbconn, &thread_txquery, &entry, false));
 
-	rc = g_txbuildlist.StartBuild(dbconn, txparams, ref_id, type, encoded_dest, dest_chain, destination, amount, xtx, &entry, *this);
+	rc = g_txbuildlist.StartBuild(dbconn, txparams, ref_id, mode, type, encoded_dest, dest_chain, destination, amount, xtx, &entry, *this);
 	if (rc)
 	{
 		if (entry)
 		{
-			if (async)
+			if (mode == TX_MODE_ASYNC)
 				return 1;
+			else if (mode)
+				throw RPC_Exception(RPC_INVALID_PARAMETER, "reference id already exists");
 
 			if (IsInteractive())
 			{
@@ -2253,6 +2312,8 @@ int Transaction::CreateTxPay(DbConn *dbconn, TxQuery& txquery, bool async, strin
 
 	CCASSERT(entry);
 
+	Finally finally2(boost::bind(&SetDone, entry));
+
 	if (type == CC_TYPE_TXPAY && IsInteractive())
 	{
 		string amts;
@@ -2268,7 +2329,7 @@ int Transaction::CreateTxPay(DbConn *dbconn, TxQuery& txquery, bool async, strin
 	if (g_shutdown)
 		throw txrpc_shutdown_error;
 
-	if (!async)
+	if (mode != TX_MODE_ASYNC)
 	{
 		try
 		{
@@ -2301,6 +2362,10 @@ int Transaction::CreateTxPay(DbConn *dbconn, TxQuery& txquery, bool async, strin
 		}
 
 		finally.Clear();
+		finally2.Clear();
+
+		t->detach();
+		delete t;
 
 		return 1;
 	}
@@ -2356,9 +2421,14 @@ void Transaction::CreateTxPayThread(DbConn *dbconn, TxQuery* txquery, TxParams t
 	++tx_thread_count;
 
 	Finally finally(boost::bind(&Transaction::CreateTxPayThreadCleanup, &dbconn, &txquery, &entry, true));
+	Finally finally2(boost::bind(&SetDone, entry));
+	Finally finally3(boost::bind(&CCProof_Free));
 
 	try
 	{
+		if (ASYNC_XPAY_NICE && Xtx::TypeIsXpay(entry->type))
+			set_nice(ASYNC_XPAY_NICE);
+
 		Transaction tx;
 
 		tx.DoCreateTxPay(dbconn, *txquery, txparams, entry, secret);
@@ -2375,25 +2445,41 @@ void Transaction::CreateTxPayThread(DbConn *dbconn, TxQuery* txquery, TxParams t
 
 void Transaction::SaveErrorTx(DbConn *dbconn, const string& ref_id, unsigned type)
 {
-	if (!ref_id.length())
-		return;
+	// make sure there is a saved transaction with ref_id that has an error status
 
-	// make sure some transaction is saved so ref_id will show an error
+	if (!ref_id.length())
+	{
+		BOOST_LOG_TRIVIAL(warning) << "Transaction::SaveErrorTx no ref_id";
+
+		return;
+	}
+
+	BOOST_LOG_TRIVIAL(info) << "Transaction::SaveErrorTx ref_id " << ref_id;
 
 	Transaction tx;
 
 	auto rc = dbconn->TransactionSelectRefId(ref_id.c_str(), tx);
-	if (!rc) return;
+	if (!rc)
+	{
+		if (tx.status != TX_STATUS_ERROR)
+		{
+			tx.status = TX_STATUS_ERROR;
 
-	BOOST_LOG_TRIVIAL(info) << "Transaction::SaveErrorTx ref_id " << ref_id;
+			rc = dbconn->TransactionInsert(tx, true);
+			if (!rc)
+				BOOST_LOG_TRIVIAL(error) << "Transaction::SaveErrorTx ref_id " << ref_id << " error updating transaction " << tx.DebugString();
+		}
+	}
+	else
+	{
+		tx.Clear();
 
-	tx.Clear();
+		tx.ref_id = ref_id;
+		tx.type = type;
+		tx.status = TX_STATUS_ERROR;
 
-	tx.ref_id = ref_id;
-	tx.type = type;
-	tx.status = TX_STATUS_ERROR;
-
-	tx.SaveOutgoingTx(dbconn);
+		tx.SaveOutgoingTx(dbconn);
+	}
 }
 
 int Transaction::DoCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& txparams, TxBuildEntry *entry, Secret& secret) // throws RPC_Exception
@@ -2454,8 +2540,6 @@ int Transaction::DoCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& txpar
 		CleanupSubTxs(dbconn, entry->dest_chain, secret, tx_list);
 	}
 
-	g_txbuildlist.SetDone(entry);
-
 	finally.Clear();
 
 	*this = tx_list[0];
@@ -2484,7 +2568,7 @@ void Transaction::CleanupSubTxs(DbConn *dbconn, uint64_t dest_chain, const Secre
 	for (auto tx = tx_list.begin(); tx != tx_list.end(); ++tx)
 		need_intermediate_txs |= tx->SubTxIsActive(true);
 
-	if (RandTest(RTEST_CUZZ)) ccsleep(rand() & 7);
+	if (RandTest(RTEST_CUZZ)) ccsleep(rand() & 3);
 
 	auto rc = dbconn->BeginWrite();
 	if (rc)
@@ -2668,6 +2752,30 @@ void Transaction::CleanupSubTx(DbConn *dbconn, const Secret& destination, bool n
 	Clear();
 }
 
+uint64_t Transaction::GetExpireTime(TxParams& txparams, TxBuildEntry *entry)
+{
+	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "Transaction::GetExpireTime " << entry->DebugString();
+
+	uint64_t expire_time = 0;
+
+	if (entry->xtx && entry->xtx->expire_time)
+	{
+		expire_time = entry->xtx->expire_time - txparams.clock_diff;
+
+		if (Xtx::TypeIsXreq(entry->type))
+		{
+			auto xreq = Xreq::Cast(entry->xtx);
+			expire_time -= xreq->hold_time + XREQ_MIN_POSTHOLD_TIME;
+
+			if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(debug) << "Transaction::GetExpireTime " << xreq->DebugString();
+		}
+	}
+
+	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(debug) << "Transaction::GetExpireTime returning " << expire_time << "; " << entry->DebugString();
+
+	return expire_time;
+}
+
 // create a tx with no inputs or outputs
 
 int Transaction::TryCreateBareTx(DbConn *dbconn, TxQuery& txquery, TxParams& txparams, TxBuildEntry *entry, Secret &destination, const uint64_t timeout, bigint_t& tx_round_up, deque<Transaction>& tx_list) // throws RPC_Exception
@@ -2685,6 +2793,7 @@ int Transaction::TryCreateBareTx(DbConn *dbconn, TxQuery& txquery, TxParams& txp
 	tx->blockchain = txparams.blockchain;
 	tx->build_type = TX_BUILD_FINAL;
 	tx->build_state = TX_BUILD_READY;
+	tx->build_mode = (build_mode_t)entry->mode;
 
 	if (IsInteractive())
 	{
@@ -2750,9 +2859,11 @@ int Transaction::TryCreateBareTx(DbConn *dbconn, TxQuery& txquery, TxParams& txp
 
 	// Submit tx to network
 
+	auto expire_time = GetExpireTime(txparams, entry);
+
 	uint64_t next_commitnum;
 
-	auto rc = tx->TrySubmitTx(txquery, ts, next_commitnum, entry->ref_id);
+	auto rc = tx->TrySubmitTx(txquery, &ts, expire_time, next_commitnum, entry->ref_id);
 
 	ThrowSubmitTxException(rc);	// clean up will take care of SetStatus(TX_STATUS_ERROR)
 
@@ -2775,7 +2886,46 @@ int Transaction::TryCreateBareTx(DbConn *dbconn, TxQuery& txquery, TxParams& txp
 
 	if (Xtx::TypeIsXreq(tx->type))
 	{
-		rc = ExchangeRequest::UpdatePollTime(dbconn, tx->id, Xreq::Cast(entry->xtx)->hold_time + 2*XCX_MATCHING_SECS_PER_EPOCH + 2*g_params.exchange_poll_time);
+		rc = ExchangeRequest::UpdatePollTime(dbconn, tx->id, true, Xreq::Cast(entry->xtx)->hold_time + 2*XCX_MATCHING_SECS_PER_EPOCH + 2*g_params.exchange_poll_time);
+		(void)rc;
+	}
+
+	return 0;
+}
+
+int Transaction::SendPreparedTx(DbConn *dbconn, TxQuery& txquery, TxParams& txparams)
+{
+	if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(debug) << "Transaction::SendPreparedTx " << DebugString();
+
+	if (IsInteractive())
+	{
+		lock_guard<mutex> lock(g_cerr_lock);
+		check_cerr_newline();
+		cerr << "Sending previously prepared " << TypeString() << " transaction...\n" << endl;
+	}
+
+	build_mode = TX_MODE_BROADCAST;
+	build_state = TX_BUILD_SAVED;
+
+	uint64_t next_commitnum;
+
+	auto rc = TrySubmitTx(txquery, NULL, 0, next_commitnum, ref_id);
+
+	if (IsInteractive())
+	{
+		lock_guard<mutex> lock(g_cerr_lock);
+		check_cerr_newline();
+		if (rc)
+			cerr << "Previously prepared " << TypeString() << " was submitted to the network, but no acknowledgement was received.\n" << endl;
+		else
+			cerr << "Previously prepared " << TypeString() << " submitted to network.\n" << endl;
+	}
+
+	if (Xtx::TypeIsXreq(type))
+	{
+		// TODO: restore Xreq and use actual xtx->hold_time
+		//rc = ExchangeRequest::UpdatePollTime(dbconn, id, true, Xreq::Cast(entry->xtx)->hold_time + 2*XCX_MATCHING_SECS_PER_EPOCH + 2*g_params.exchange_poll_time);
+		rc = ExchangeRequest::UpdatePollTime(dbconn, id, true, XREQ_SIMPLE_HOLD_TIME + 2*XCX_MATCHING_SECS_PER_EPOCH + 2*g_params.exchange_poll_time);
 		(void)rc;
 	}
 
@@ -2969,6 +3119,13 @@ int Transaction::StartCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& tx
 				if (last_req_amount >= req_amount)
 					break;		// already requested and didn't get it, so need another input bill
 
+				if (tx->nin > 1 && RandTest(RTEST_CREATE_LOOP_BREAK))
+				{
+					BOOST_LOG_TRIVIAL(info) << "Transaction::StartCreateTxPay testing early loop break for subtx " << ntx << " nin " << tx->nin;
+
+					break;
+				}
+
 				if (next_amount && last_round_up_extra && req_amount > last_round_up_extra && total_paid + last_round_up_extra >= total_to_pay && !TEST_NO_ROUND_UP)
 				{
 					// amount required for this subtx is more than simply rounding up the last subtx, so do the latter instead
@@ -2997,10 +3154,12 @@ int Transaction::StartCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& tx
 				CCASSERT(total_plus > total_minus);
 				auto total_required = total_plus - total_minus;
 
+				CCASSERT(tx->nin);
+
 				uint64_t billet_count = 0;
 
 				auto rc = LocateBillet(dbconn, txparams.blockchain, req_amount, min_amount, total_required, tx->input_bills[tx->nin-1], billet_count);
-				if (rc && tx->nin)
+				if (rc)
 					--tx->nin;
 				if (rc > 0)
 					return WaitNewBillet(total_required, billet_count, timeout, test_fail);
@@ -3054,16 +3213,35 @@ int Transaction::StartCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& tx
 				last_req_amount = req_amount;
 			}
 
-			auto new_amount = tx->input_bills[tx->nin-1].amount;
+			CCASSERT(tx->nin);
 
-			subtx_total = subtx_total + new_amount;
+			if (tx->input_bills[tx->nin-1].id)
+			{
+				auto new_amount = tx->input_bills[tx->nin-1].amount;
 
-			if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(debug) << "Transaction::StartCreateTxPay new input " << new_amount << " total inputs " << subtx_total << " donation " << tx->donation << " output amount " << tx->SubTxAmount() << " needs_more " << needs_more;
+				subtx_total = subtx_total + new_amount;
+
+				if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(debug) << "Transaction::StartCreateTxPay new input " << new_amount << " total inputs " << subtx_total << " donation " << tx->donation << " output amount " << tx->SubTxAmount() << " needs_more " << needs_more;
+			}
+			else
+			{
+				if (needs_more)
+				{
+					BOOST_LOG_TRIVIAL(error) << "Transaction::StartCreateTxPay no billet found for input bill " << tx->nin-1;
+
+					throw txrpc_wallet_error;
+				}
+
+				--tx->nin;
+
+				CCASSERT(tx->nin);
+			}
 
 			if (!needs_more && !need_intermediate_txs)
 			{
 				tx->build_type = TX_BUILD_FINAL;
 				tx->build_state = TX_BUILD_READY;
+				tx->build_mode = (build_mode_t)entry->mode;
 
 				break;
 			}
@@ -3103,6 +3281,12 @@ int Transaction::StartCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& tx
 
 				break;
 			}
+			else if (!needs_more)
+			{
+				if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "Transaction::StartCreateTxPay unexpected condition needs_more " << needs_more << " need_intermediate_txs " << need_intermediate_txs << " nin " << tx->nin;
+
+				throw txrpc_wallet_error;
+			}
 		}
 
 		total_paid = total_paid + tx->SubTxAmount() + carry_out;
@@ -3141,6 +3325,13 @@ int Transaction::FinishCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& t
 				Billet& bill = tx->input_bills[i];
 
 				if (TRACE_TRANSACTIONS) BOOST_LOG_TRIVIAL(trace) << "Transaction::FinishCreateTxPay computing balances input " << bill.DebugString();
+
+				if (!bill.id)
+				{
+					BOOST_LOG_TRIVIAL(error) << "Transaction::FinishCreateTxPay input " << i << " null id";
+
+					throw txrpc_wallet_error;
+				}
 
 				CCASSERT(bill.blockchain == entry->dest_chain);
 				CCASSERTZ(bill.asset);
@@ -3188,7 +3379,7 @@ int Transaction::FinishCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& t
 	//	and when tx the is submitted, the serialnum lookup will come out of the cache
 	// But this query will slow down the creation of transactions when using a remote transaction server
 
-	if (RandTest(RTEST_CUZZ)) ccsleep(rand() & 7);
+	if (RandTest(RTEST_CUZZ)) ccsleep(rand() & 3);
 
 	if (RandTest(RTEST_ALLOW_DOUBLE_SPENDS))
 	{
@@ -3222,7 +3413,7 @@ int Transaction::FinishCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& t
 		}
 	}
 
-	if (RandTest(RTEST_CUZZ)) ccsleep(rand() & 7);
+	if (RandTest(RTEST_CUZZ)) ccsleep(rand() & 3);
 
 	vector<TxPay> tx_structs(active_subtx_count);
 
@@ -3336,11 +3527,16 @@ int Transaction::FinishCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& t
 
 			// Submit tx to network
 
+			uint64_t expire_time = 0;
+
+			if (!need_intermediate_txs)
+				expire_time = GetExpireTime(txparams, entry);
+
 			billet_count = Billet::GetBilletAvailableCount();
 
 			uint64_t next_commitnum;
 
-			rc = tx->TrySubmitTx(txquery, ts, next_commitnum, entry->ref_id, test_fail, si, active_subtx_count, need_intermediate_txs);
+			rc = tx->TrySubmitTx(txquery, &ts, expire_time, next_commitnum, entry->ref_id, test_fail, si, active_subtx_count, need_intermediate_txs);
 
 			tx->SetObjId(dbconn);
 
@@ -3415,7 +3611,7 @@ int Transaction::FinishCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& t
 
 			if (Xtx::TypeIsXreq(tx->type))
 			{
-				rc = ExchangeRequest::UpdatePollTime(dbconn, tx->id, Xreq::Cast(entry->xtx)->hold_time + g_params.exchange_poll_time/2);
+				rc = ExchangeRequest::UpdatePollTime(dbconn, tx->id, true, Xreq::Cast(entry->xtx)->hold_time + g_params.exchange_poll_time/2);
 				(void)rc;
 			}
 		}
@@ -3449,7 +3645,7 @@ int Transaction::FinishCreateTxPay(DbConn *dbconn, TxQuery& txquery, TxParams& t
 	RPC_WALLET_SIMULATED_ERROR = simulated error -> submit failed
 */
 
-int Transaction::TrySubmitTx(TxQuery& txquery, TxPay& ts, uint64_t &next_commitnum, const string& report_ref_id, int test_fail, unsigned si, unsigned active_subtx_count, bool need_intermediate_txs)
+int Transaction::TrySubmitTx(TxQuery& txquery, TxPay *ts, uint64_t expire_time, uint64_t &next_commitnum, const string& report_ref_id, int test_fail, unsigned si, unsigned active_subtx_count, bool need_intermediate_txs)
 {
 	//return RPC_WALLET_SIMULATED_ERROR; // for testing
 
@@ -3470,27 +3666,32 @@ int Transaction::TrySubmitTx(TxQuery& txquery, TxPay& ts, uint64_t &next_commitn
 		if (txquery.ReadBufDebug(20))
 			strcpy(txquery.ReadBufDebug(20), "(simulated error)");
 
-		if (!rc && type == CC_TYPE_TXPAY) rc = 1;							// avoid testing tx that will need to be abandoned
-		if (rc < 0 && type == CC_TYPE_TXPAY) txquery.m_possibly_sent = 0;	// avoid testing tx that will need to be abandoned
+		if (!rc && type == CC_TYPE_TXPAY) rc = 1;						// avoid testing tx that will need to be abandoned
+		if (rc && type == CC_TYPE_TXPAY) txquery.m_possibly_sent = 0;	// avoid testing tx that will need to be abandoned
 
 		cerr << "simulating SubmitTx rc " << rc << " WasPossiblySent " << txquery.WasPossiblySent() << endl;
 
 		if (!rc)
-			BOOST_LOG_TRIVIAL(warning) << "Transaction::TrySubmitTx simulating a tx (that will need to be abandoned) that was not submitted but return code was ok for ref id " << report_ref_id << " subtx " << si << " of " << active_subtx_count << " need_intermediate_txs " << need_intermediate_txs;
-		else if (rc > 0)
-			BOOST_LOG_TRIVIAL(warning) << "Transaction::TrySubmitTx simulating a tx for which submit failed for ref id " << report_ref_id << " subtx " << si << " of " << active_subtx_count << " need_intermediate_txs " << need_intermediate_txs;
+			BOOST_LOG_TRIVIAL(warning) << "Transaction::TrySubmitTx build_mode " << build_mode << " simulating a tx (that will need to be abandoned) that was not submitted but return code was ok for ref id " << report_ref_id << " subtx " << si << " of " << active_subtx_count << " need_intermediate_txs " << need_intermediate_txs;
 		else if (txquery.WasPossiblySent())
-			BOOST_LOG_TRIVIAL(warning) << "Transaction::TrySubmitTx simulating a tx (that will need to be abandoned) that was not submitted but return code was ambiguous for ref id " << report_ref_id << " subtx " << si << " of " << active_subtx_count << " need_intermediate_txs " << need_intermediate_txs;
+			BOOST_LOG_TRIVIAL(warning) << "Transaction::TrySubmitTx build_mode " << build_mode << " simulating a tx (that will need to be abandoned) that was not submitted but return code was unknown for ref id " << report_ref_id << " subtx " << si << " of " << active_subtx_count << " need_intermediate_txs " << need_intermediate_txs;
+		else if (rc > 0)
+			BOOST_LOG_TRIVIAL(warning) << "Transaction::TrySubmitTx build_mode " << build_mode << " simulating a tx for which submit failed for ref id " << report_ref_id << " subtx " << si << " of " << active_subtx_count << " need_intermediate_txs " << need_intermediate_txs;
 		else
-			BOOST_LOG_TRIVIAL(warning) << "Transaction::TrySubmitTx simulating a tx that was not submitted and return code indicated failure for ref id " << report_ref_id << " subtx " << si << " of " << active_subtx_count << " need_intermediate_txs " << need_intermediate_txs;
+			BOOST_LOG_TRIVIAL(warning) << "Transaction::TrySubmitTx build_mode " << build_mode << " simulating a tx that was not submitted and return code indicated failure for ref id " << report_ref_id << " subtx " << si << " of " << active_subtx_count << " need_intermediate_txs " << need_intermediate_txs;
 	}
 	else
 	{
 		auto t0 = ccticks();
 
-		rc = txquery.SubmitTx(ts, next_commitnum);
+		if (build_mode == TX_MODE_PREPARE)
+			rc = txquery.PrepareTx(*ts, expire_time, wire_data);
+		else if (build_mode == TX_MODE_BROADCAST)
+			rc = txquery.SubmitPreparedTx(next_commitnum, wire_data);
+		else
+			rc = txquery.SubmitTx(*ts, expire_time, next_commitnum);
 
-		BOOST_LOG_TRIVIAL(info) << "Transaction::TrySubmitTx type " << type << " elapsed ticks " << ccticks_elapsed(t0, ccticks());
+		BOOST_LOG_TRIVIAL(info) << "Transaction::TrySubmitTx build_mode " << build_mode << " type " << type << " elapsed ticks " << ccticks_elapsed(t0, ccticks());
 	}
 
 	if (!rc && RandTest(RTEST_TX_ERRORS) && 0)
@@ -3498,25 +3699,29 @@ int Transaction::TrySubmitTx(TxQuery& txquery, TxPay& ts, uint64_t &next_commitn
 		// this should never happen in practice, and when simulated, will result in an warning in the log when the tx clears
 		// if this tx is to a self destination, manual polling will be required to clear the tx
 
-		BOOST_LOG_TRIVIAL(warning) << "Transaction::TrySubmitTx simulating SubmitTx that appeared to fail but actually succeeded (and may require manual polling) for ref id " << report_ref_id << " subtx " << si << " of " << active_subtx_count << " need_intermediate_txs " << need_intermediate_txs;
+		BOOST_LOG_TRIVIAL(warning) << "Transaction::TrySubmitTx build_mode " << build_mode << " simulating SubmitTx that appeared to fail but actually succeeded (and may require manual polling) for ref id " << report_ref_id << " subtx " << si << " of " << active_subtx_count << " need_intermediate_txs " << need_intermediate_txs;
 
 		rc = -1;
 	}
 
-	objid = ts.objid;
-	have_objid = ts.have_objid;
+	if (build_mode != TX_MODE_BROADCAST)
+	{
+		objid = ts->objid;
+		have_objid = ts->have_objid;
+	}
 
 	/* SubmitTx possible return values:
 
-		0 = submitted
-		1 = submitted with error returned -> submit failed
-		2 = submitted with tx expired error returned -> submit failed
-		-1 = maybe
-			!WasPossiblySent() = not submitted
-			WasPossiblySent() = maybe submitted -> assume submitted
+		 0 = submitted
+		 1 = submitted with error returned
+		 2 = submitted with tx expired error returned
+		-1 = error attempting to submit
+
+		For all return values:
+			WasPossiblySent() true -> maybe submitted -> assume submitted
 	*/
 
-	BOOST_LOG_TRIVIAL(info) << "Transaction::TrySubmitTx result " << rc << " WasPossiblySent " << txquery.WasPossiblySent() << " need_intermediate_txs " << need_intermediate_txs << " ref id " << report_ref_id << " objid " << buf2hex(&ts.objid, CC_OID_TRACE_SIZE);
+	BOOST_LOG_TRIVIAL(info) << "Transaction::TrySubmitTx build_mode " << build_mode << " result " << rc << " WasPossiblySent " << txquery.WasPossiblySent() << " need_intermediate_txs " << need_intermediate_txs << " ref id " << report_ref_id << " objid " << buf2hex(&objid, CC_OID_TRACE_SIZE);
 
 	//if (rc && (si < 2 || need_intermediate_txs))
 	//	return RPC_WALLET_SIMULATED_ERROR;				// for testing--filters out server errors and tx rejected errors
@@ -3528,25 +3733,10 @@ int Transaction::TrySubmitTx(TxQuery& txquery, TxPay& ts, uint64_t &next_commitn
 		return 0;
 	}
 
-	if (rc > 0)
-	{
-		BOOST_LOG_TRIVIAL(warning) << "Transaction::TrySubmitTx ref id " << report_ref_id << " SubmitTx returned error: " << txquery.ReadBufDebug(1, (char*)"(null)");
-
-		build_state = TX_BUILD_SUBMIT_INVALID;
-
-		if (rc == 2)
-			return RPC_TRANSACTION_EXPIRED;
-		else
-			return RPC_VERIFY_REJECTED;
-	}
-
-	if (!g_shutdown)
-		BOOST_LOG_TRIVIAL(warning) << "Transaction::TrySubmitTx ref id " << report_ref_id << " SubmitTx failed";
-
-	if (txquery.WasPossiblySent() && !need_intermediate_txs && type != CC_TYPE_XCX_PAYMENT)
+	if (txquery.WasPossiblySent() && !need_intermediate_txs && !Xtx::TypeIsXpay(type))
 	{
 		if (type == CC_TYPE_TXPAY)
-			BOOST_LOG_TRIVIAL(warning) << "Transaction::TrySubmitTx ref id " << report_ref_id << " SubmitTx sent a transaction but did not get a response from the server. The wallet will consider this transaction to have been sent, but if it is never received by the network, it will need to be abandoned.";
+			BOOST_LOG_TRIVIAL(warning) << "Transaction::TrySubmitTx build_mode " << build_mode << " ref id " << report_ref_id << " SubmitTx sent a transaction but did not get a response from the server. The wallet will consider this transaction to have been sent, but if it is never received by the network, it will need to be abandoned.";
 
 		// for now TX_BUILD_SUBMIT_UNKNOWN is handled the same as TX_BUILD_SUBMIT_OK
 
@@ -3554,6 +3744,32 @@ int Transaction::TrySubmitTx(TxQuery& txquery, TxPay& ts, uint64_t &next_commitn
 
 		return 1;
 	}
+
+	if (rc == 2)
+	{
+		auto dbg_msg = txquery.ReadBufDebug();
+
+		if (dbg_msg && dbg_msg[0])
+			BOOST_LOG_TRIVIAL(warning) << "Transaction::TrySubmitTx build_mode " << build_mode << " ref id " << report_ref_id << " SubmitTx returned timeout error: " << dbg_msg;
+		else
+			BOOST_LOG_TRIVIAL(warning) << "Transaction::TrySubmitTx build_mode " << build_mode << " ref id " << report_ref_id << " SubmitTx timed out";
+
+		build_state = TX_BUILD_SUBMIT_INVALID;
+
+		return RPC_TRANSACTION_EXPIRED;
+	}
+
+	if (rc > 0)
+	{
+		BOOST_LOG_TRIVIAL(warning) << "Transaction::TrySubmitTx build_mode " << build_mode << " ref id " << report_ref_id << " SubmitTx returned error: " << txquery.ReadBufDebug(1, (char*)"(null)");
+
+		build_state = TX_BUILD_SUBMIT_INVALID;
+
+		return RPC_VERIFY_REJECTED;
+	}
+
+	if (!g_shutdown)
+		BOOST_LOG_TRIVIAL(warning) << "Transaction::TrySubmitTx build_mode " << build_mode << " ref id " << report_ref_id << " SubmitTx failed";
 
 	CCASSERT(build_state == TX_BUILD_SAVED);
 
@@ -3807,7 +4023,7 @@ int Transaction::CreateConflictTx(DbConn *dbconn, TxQuery& txquery, const Billet
 
 	uint64_t next_commitnum;
 
-	rc = TrySubmitTx(txquery, ts, next_commitnum, "cancel_tx");
+	rc = TrySubmitTx(txquery, &ts, 0, next_commitnum, "cancel_tx");
 
 	if (rc < 0)
 	{
@@ -4076,6 +4292,8 @@ int Transaction::SetConflicted(DbConn *dbconn, uint64_t tx_id)
 			balance_pending = balance_pending + bill.amount;
 		}
 
+		if (TRACE_BILLETS) BOOST_LOG_TRIVIAL(debug) << "Transaction::SetConflicted setting status abandoned for tx_id " << tx.id << " " << bill.DebugString();
+
 		bill.status = BILL_STATUS_ABANDONED;
 
 		rc = dbconn->BilletInsert(bill);
@@ -4204,6 +4422,8 @@ void Transaction::AbandonTx(DbConn *dbconn, uint64_t tx_id, uint64_t dest_chain)
 
 			balance_pending = balance_pending + bill.amount;
 		}
+
+		if (TRACE_BILLETS) BOOST_LOG_TRIVIAL(debug) << "Transaction::AbandonTx setting status abandoned for tx_id " << tx.id << " " << bill.DebugString();
 
 		bill.status = BILL_STATUS_ABANDONED;
 

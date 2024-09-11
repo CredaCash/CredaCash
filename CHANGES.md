@@ -2,6 +2,36 @@
 ---
 <!--- NOTE: This file is in Markdown format, and is intended to be viewed in a Markdown viewer. -->
 
+## v2.0.01 2024-09-10
+
+### ccnode
+
+#### - Minor Changes
+
+- Version identifier changed to "2.0.1".
+- Added support for exchange mining request types.
+- Fixed problems connecting to the network on some platforms due to issues launching Tor.
+- Fixed rare assert that could cause program to halt, requiring restart.
+
+### ccwallet
+
+#### - Minor Changes
+
+- Version identifier changed to "2.0.1".
+- Added the "mining_trade" exchange request type, which simplifies mining using the crosschain exchange.
+- Improved exchange request generation on slower or heavily-loaded computers.
+- Added the commands "cc.crosschain_request_create_local" and "cc.broadcast", which allows exchange requests to be created locally and then broadcast to the network at a later time.
+- "gettransaction" now accepts wallet internal transaction id's.
+- Fixed memory leak in the asynchronous transaction functions.
+- Fixed rare assert that could cause program to halt, requiring restart.
+
+### Exchange scripts
+
+#### - Major Changes
+
+- Increased robustness.
+- Updated for compatibility with Python v2.7 and v3.8+
+
 ## v2.0 2024-06-12
 
 ### ccnode

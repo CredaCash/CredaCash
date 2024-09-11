@@ -11,6 +11,7 @@
 #include "jsonutil.h"
 #include "CCproof.h"
 #include "xtransaction.hpp"
+#include "xtransaction-xreq.hpp"
 
 #include <CCobjects.hpp>
 #include <unifloat.hpp>
@@ -347,7 +348,8 @@ CCRESULT tx_query_xreqs_create(const string& fn, const unsigned xcx_type, const 
 	const bool bhex = false;
 
 	// seller rounds down to offer a better rate; buyer rounds up to offer a better rate
-	int rounding = (Xtx::TypeIsSeller(xcx_type) ? -1 : 1);
+	int rounding = -Xreq::RateSign(Xtx::TypeIsBuyer(xcx_type));
+	if (!min_rate) rounding = 0;
 	auto rate_fp = UniFloat::WireEncode(min_rate, rounding);
 
 	//cerr << "tx_query_xreqs_create min_rate " << min_rate << " rounding " << rounding << " WireDecode " << UniFloat::WireDecode(rate_fp) << " diff " <<  min_rate - UniFloat::WireDecode(rate_fp).asFloat() << endl;

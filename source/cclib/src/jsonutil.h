@@ -10,7 +10,7 @@
 
 #include "CCapi.h"
 #include "CCbigint.hpp"
-
+#include "amounts.h"
 #include "encodings.h"
 
 #include <CCobjdefs.h>
@@ -54,3 +54,5 @@ const Json::Value * json_find(const Json::Value& root, const char *key);
 
 CCRESULT parse_objid(const string& fn, const string& key, const string& sval, ccoid_t& objid, char *output, const uint32_t outsize);
 CCRESULT parse_int_value(const string& fn, const string& key, const string& sval, unsigned nbits, snarkfront::bigint_t maxval, snarkfront::bigint_t& val, char *output, const uint32_t outsize, bool isexp = false);
+
+CCRESULT parse_float_value(const char* json, Json::Value value, amtfloat_t& amountf);

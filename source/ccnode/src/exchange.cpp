@@ -115,6 +115,7 @@ void Exchange::Restore(DbConn *dbconn)
 	// recreate Xreqs memory table which is used for matching
 
 	uint64_t next_xreqnum = 0;
+	uint64_t expected_mining_sell_xreqnum = 0;
 
 	while (!g_blockchain.HasFatalError() && !g_shutdown)
 	{
@@ -123,7 +124,6 @@ void Exchange::Restore(DbConn *dbconn)
 		auto rc = dbconn->XmatchreqSelectMatching(next_xreqnum, req, true);
 		if (rc < 0)
 			return (void)g_blockchain.SetFatalError("Exchange::Restore error retrieving Xmatchreq's");
-
 		if (rc)
 			break;
 
@@ -188,6 +188,21 @@ void Exchange::Restore(DbConn *dbconn)
 		xreq.open_rate_required = xreq.MatchRateRequired(xreq.open_amount);
 
 		xreq.recalc_time = XREQ_RECALC_NEXT;
+
+		xreq.seqnum = g_seqnum[XREQSEQ][VALIDSEQ].NextNum();
+
+		// a linked pair of mining buy and sell reqs always have sequential xreqnums.
+		// one of the pair might be missing tho if it has been pruned, so only
+		// link both ways if the buy and sell have sequential xreqnums.
+
+		if (xreq.type == CC_TYPE_XCX_MINING_SELL && xreq.xreqnum == expected_mining_sell_xreqnum)
+			xreq.linked_seqnum = xreq.seqnum - 1;
+
+		if (xreq.type == CC_TYPE_XCX_MINING_BUY)
+		{
+			xreq.linked_seqnum = xreq.seqnum + 1;
+			expected_mining_sell_xreqnum = xreq.xreqnum + 1;
+		}
 
 		//if (TRACE_EXCHANGE) BOOST_LOG_TRIVIAL(debug) << "Exchange::Restore read " << req.DebugString();
 		if (TRACE_EXCHANGE) BOOST_LOG_TRIVIAL(debug) << "Exchange::Restore restoring " << xreq.DebugString();

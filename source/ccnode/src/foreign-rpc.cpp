@@ -85,7 +85,7 @@ int ForeignRpc::TryQuery(unsigned port, const string& query)
 	return 0;
 }
 
-int ForeignRpc::SubmitQuery(unsigned port, const string& auth, const string& query, Json::Value *root, bool debug)
+int ForeignRpc::SubmitQuery(unsigned port, const string& auth, const string& query, Json::Value *root, const char* *content, bool debug)
 {
 	if (TRACE_FORN_RPC) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " ForeignRpc::SubmitQuery port " << port << " query " << query;
 
@@ -123,11 +123,11 @@ int ForeignRpc::SubmitQuery(unsigned port, const string& auth, const string& que
 		else if (TRACE_FORN_RPC) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " ForeignRpc::SubmitQuery reply " << &m_pread[m_content_start];
 		//if (m_nred > 20000) BOOST_LOG_TRIVIAL(warning) << Name() << " Conn " << m_conn_index << " ForeignRpc::SubmitQuery large reply " << m_nred << " bytes; content: " << &m_pread[m_content_start]; // for debugging
 
+		if (content)
+			*content = &m_pread[m_content_start];
+
 		if (!(m_pread[m_content_start] == '{' || (m_pread[m_content_start] == '[' && m_pread[m_content_start+1] == '{')))
 		{
-			if (root)
-				*root = Json::Value(m_pread[m_content_start]);
-
 			result_code = 1;
 
 			break;
@@ -194,7 +194,7 @@ int ForeignRpc::SubmitQuery(unsigned port, const string& auth, const string& que
 void ForeignRpcClient::ConfigPostset()
 {
 	for (unsigned i = 1; i <= XREQ_BLOCKCHAIN_MAX; ++i)
-		base64_encode(base64sym, rpc_username[i] + ":" + rpc_password[i], rpc_auth[i]);
+		base64_encode_string(base64sym, rpc_username[i] + ":" + rpc_password[i], rpc_auth[i]);
 }
 
 void ForeignRpcClient::DumpExtraConfigBottom() const
@@ -276,9 +276,9 @@ void ForeignRpcClient::WaitForShutdown()
 
 void ForeignRpcThread::ThreadProc(boost::function<void()> threadproc)
 {
-	if (TRACE_FORN_CONN) BOOST_LOG_TRIVIAL(trace) << "ForeignRpcThread::ThreadProc start " << (uintptr_t)this;
+	BOOST_LOG_TRIVIAL(info) << "ForeignRpcThread::ThreadProc start " << (uintptr_t)this;
 
 	threadproc();
 
-	if (TRACE_FORN_CONN) BOOST_LOG_TRIVIAL(trace) << "ForeignRpcThread::ThreadProc end " << (uintptr_t)this;
+	BOOST_LOG_TRIVIAL(info) << "ForeignRpcThread::ThreadProc end " << (uintptr_t)this;
 }

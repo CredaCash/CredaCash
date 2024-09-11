@@ -80,6 +80,24 @@ print
 
 rev(base, conv)
 
+# json-friendly ascii extended
+base = 222
+conv = {}
+outs = name(base)
+c = ' '
+for i in range(base):
+	conv[c] = i
+	outs += sv(c)
+	if ord(c) < 255:
+		c = chr(ord(c) + 1)
+	if c == '"' or c == '\\':
+		c = chr(ord(c) + 1)
+	outs += ','
+print outs[:-1] + '};'
+print
+
+rev(base, conv)
+
 # acsii
 base = 95
 conv = {}
@@ -89,6 +107,23 @@ for i in range(base):
 	conv[c] = i
 	outs += sv(c)
 	c = chr(ord(c) + 1)
+	outs += ','
+print outs[:-1] + '};'
+print
+
+rev(base, conv)
+
+# json-friendly ascii
+base = 93
+conv = {}
+outs = name(base)
+c = ' '
+for i in range(base):
+	conv[c] = i
+	outs += sv(c)
+	c = chr(ord(c) + 1)
+	if c == '"' or c == '\\':
+		c = chr(ord(c) + 1)
 	outs += ','
 print outs[:-1] + '};'
 print

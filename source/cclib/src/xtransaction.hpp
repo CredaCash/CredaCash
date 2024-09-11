@@ -80,12 +80,16 @@ public:
 		Xtx::Copy(other);
 	}
 
-	Xtx(const unsigned type_ = 0, const unsigned expiration_ = 0)
+	Xtx(const unsigned type_ = 0, const uint64_t expiration_ = 0)
 	{
 		Xtx::Clear();
 
 		type = type_;
-		expiration = expiration_;
+
+		if (expiration_ > 365*24*60*60)
+			expire_time = expiration_;
+		else
+			expiration = expiration_;
 	}
 
 #if TEST_XREQ
@@ -97,7 +101,12 @@ public:
 
 	static bool TypeIsXtx(unsigned type)
 	{
-		return type >= CC_TYPE_XCX_NAKED_BUY && type <= CC_TYPE_XCX_PAYMENT;
+		return type >= CC_TYPE_XCX_NAKED_BUY && type <= CC_TYPE_XCX_MINING_SELL;
+	}
+
+	static bool TypeIsCrosschain(unsigned type)
+	{
+		return type >= CC_TYPE_XCX_NAKED_BUY && type <= CC_TYPE_XCX_MINING_SELL;
 	}
 
 	static bool TypeIsXpay(unsigned type)
@@ -107,12 +116,7 @@ public:
 
 	static bool TypeIsXreq(unsigned type)
 	{
-		return type >= CC_TYPE_XCX_NAKED_BUY && type <= CC_TYPE_XCX_REQ_SELL;
-	}
-
-	static bool TypeIsCrosschain(unsigned type)
-	{
-		return type >= CC_TYPE_XCX_NAKED_BUY && type <= CC_TYPE_XCX_PAYMENT;
+		return (type >= CC_TYPE_XCX_NAKED_BUY && type <= CC_TYPE_XCX_REQ_SELL) || (type >= CC_TYPE_XCX_MINING_TRADE && type <= CC_TYPE_XCX_MINING_SELL);
 	}
 
 	static bool TypeHasBareMsg(unsigned type)
@@ -127,17 +131,17 @@ public:
 
 	static bool TypeIsBuyer(unsigned type)
 	{
-		return  type == CC_TYPE_XCX_REQ_BUY ||  type == CC_TYPE_XCX_SIMPLE_BUY || type == CC_TYPE_XCX_NAKED_BUY;
+		return type == CC_TYPE_XCX_REQ_BUY || type == CC_TYPE_XCX_SIMPLE_BUY || type == CC_TYPE_XCX_NAKED_BUY || type == CC_TYPE_XCX_MINING_BUY || type == CC_TYPE_XCX_MINING_TRADE;		// a mining trade req is both a buy and a sell req
 	}
 
 	static bool TypeIsSeller(unsigned type)
 	{
-		return type == CC_TYPE_XCX_REQ_SELL || type == CC_TYPE_XCX_SIMPLE_SELL || type == CC_TYPE_XCX_NAKED_SELL;
+		return type == CC_TYPE_XCX_REQ_SELL || type == CC_TYPE_XCX_SIMPLE_SELL || type == CC_TYPE_XCX_NAKED_SELL || type == CC_TYPE_XCX_MINING_SELL || type == CC_TYPE_XCX_MINING_TRADE;	// a mining trade req is both a buy and a sell req
 	}
 
 	static bool TypeIsSimple(unsigned type)
 	{
-		return type == CC_TYPE_XCX_SIMPLE_BUY || type == CC_TYPE_XCX_SIMPLE_SELL;
+		return type == CC_TYPE_XCX_SIMPLE_BUY || type == CC_TYPE_XCX_SIMPLE_SELL || type == CC_TYPE_XCX_MINING_BUY || type == CC_TYPE_XCX_MINING_SELL || type == CC_TYPE_XCX_MINING_TRADE;
 	}
 
 	bool IsNaked() const

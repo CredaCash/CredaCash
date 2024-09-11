@@ -51,20 +51,46 @@ void CCRandom(void *data, unsigned nbytes)
 #endif
 }
 
+thread_local static mt19937_64 *prnd = NULL;
+
 #if defined(__cplusplus)
 extern "C"
 #endif
-void CCPseudoRandom(void *data, unsigned nbytes)
+void CCPseudoRandomDeInit()
 {
-	thread_local static mt19937_64 *prnd = NULL;
+	if (prnd)
+	{
+		delete prnd;
 
-	if (!prnd)
+		prnd = NULL;
+	}
+}
+
+#if defined(__cplusplus)
+extern "C"
+#endif
+void CCPseudoRandomInit(void *pseed)
+{
+	CCPseudoRandomDeInit();
+
+	if (pseed)
+		prnd = new mt19937_64(*(mt19937_64::result_type*)pseed);
+	else
 	{
 		mt19937_64::result_type seed;
 		CCRandom(&seed, sizeof(seed));
 
 		prnd = new mt19937_64(seed);
 	}
+}
+
+#if defined(__cplusplus)
+extern "C"
+#endif
+void CCPseudoRandom(void *data, unsigned nbytes)
+{
+	if (!prnd)
+		CCPseudoRandomInit();
 
 	unsigned i = 0;
 

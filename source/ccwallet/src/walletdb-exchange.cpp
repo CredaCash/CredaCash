@@ -14,6 +14,7 @@
 #include "transactions.hpp"
 
 #include <xtransaction.hpp>
+#include <xtransaction-xreq.hpp>
 #include <xmatch.hpp>
 #include <dblog.h>
 
@@ -28,6 +29,7 @@ int DbConn::ExchangeRequestInsert(Xmatchreq& req, bool lock_optional)
 	Finally finally(boost::bind(&DbConn::DoDbFinish, this));
 
 	if (TRACE_DB_WRITE) BOOST_LOG_TRIVIAL(trace) << "DbConn::ExchangeRequestInsert " << req.DebugString();
+	//BOOST_LOG_TRIVIAL(info) << "DbConn::ExchangeRequestInsert " << req.DebugString();
 
 	CCASSERTZ(req.id);
 	CCASSERT (req.tx_id || req.xreqnum);
@@ -85,7 +87,7 @@ int DbConn::ExchangeRequestInsert(Xmatchreq& req, bool lock_optional)
 	if (dblog(sqlite3_bind_int(Exchange_Requests_insert, 33, req.payment_time))) return -1;
 	if (dblog(sqlite3_bind_int(Exchange_Requests_insert, 34, req.confirmations))) return -1;
 
-	if (Xtx::TypeIsSeller(req.type))
+	if (req.foreign_address.length())
 	{
 		if (dblog(sqlite3_bind_blob(Exchange_Requests_insert, 35, req.foreign_address.c_str(), req.foreign_address.length(), SQLITE_STATIC))) return -1;
 	}
@@ -129,7 +131,7 @@ int DbConn::ExchangeRequestInsert(Xmatchreq& req, bool lock_optional)
 
 	if (dbresult(rc) == SQLITE_CONSTRAINT)
 	{
-		BOOST_LOG_TRIVIAL(warning) << "DbConn::ExchangeRequestInsert constraint violation " << req.DebugString();
+		BOOST_LOG_TRIVIAL(info) << "DbConn::ExchangeRequestInsert constraint violation " << req.DebugString();
 
 		return 1;
 	}
@@ -161,6 +163,7 @@ int DbConn::ExchangeRequestUpdateStatus(Xmatchreq& req, bool lock_optional)
 	Finally finally(boost::bind(&DbConn::DoDbFinish, this));
 
 	if (TRACE_DB_WRITE) BOOST_LOG_TRIVIAL(trace) << "DbConn::ExchangeRequestUpdateStatus " << req.DebugString();
+	//BOOST_LOG_TRIVIAL(info) << "DbConn::ExchangeRequestUpdateStatus " << req.DebugString();
 
 	CCASSERT(req.id);
 
@@ -187,6 +190,13 @@ int DbConn::ExchangeRequestUpdateStatus(Xmatchreq& req, bool lock_optional)
 
 	auto rc = sqlite3_step(Exchange_Requests_status_update);
 
+	if (dbresult(rc) == SQLITE_CONSTRAINT)
+	{
+		BOOST_LOG_TRIVIAL(info) << "DbConn::ExchangeRequestUpdateStatus constraint violation " << req.DebugString();
+
+		return 1;
+	}
+
 	if (dblog(rc, DB_STMT_STEP)) return -1;
 
 	auto changes = sqlite3_changes(Wallet_db);
@@ -196,18 +206,20 @@ int DbConn::ExchangeRequestUpdateStatus(Xmatchreq& req, bool lock_optional)
 	return 0;
 }
 
-int DbConn::ExchangeRequestUpdatePolling(uint64_t tx_id, uint64_t poll_time)
+int DbConn::ExchangeRequestUpdatePolling(uint64_t id, bool by_txid, uint64_t poll_time)
 {
 	//lock_guard<boost::shared_mutex> lock(db_mutex);
 	Finally finally(boost::bind(&DbConn::DoDbFinish, this));
 
-	if (TRACE_DB_WRITE) BOOST_LOG_TRIVIAL(trace) << "DbConn::ExchangeRequestUpdatePolling tx_id " << tx_id << " poll_time " << poll_time;
+	if (TRACE_DB_WRITE) BOOST_LOG_TRIVIAL(trace) << "DbConn::ExchangeRequestUpdatePolling id " << id << " by_txid " << by_txid << " poll_time " << poll_time;
 
-	CCASSERT(tx_id);
+	CCASSERT(id);
 
-	// TxId integer, PollTime integer
-	if (dblog(sqlite3_bind_int64(Exchange_Requests_polling_update, 1, tx_id))) return -1;
-	if (dblog(sqlite3_bind_int64(Exchange_Requests_polling_update, 2, poll_time))) return -1;
+	auto select = (by_txid ? Exchange_Requests_polling_update_txid : Exchange_Requests_polling_update);
+
+	// XId/TxId integer, PollTime integer
+	if (dblog(sqlite3_bind_int64(select, 1, id))) return -1;
+	if (dblog(sqlite3_bind_int64(select, 2, poll_time))) return -1;
 
 	if (RandTest(RTEST_DB_ERRORS))
 	{
@@ -216,13 +228,13 @@ int DbConn::ExchangeRequestUpdatePolling(uint64_t tx_id, uint64_t poll_time)
 		return -1;
 	}
 
-	auto rc = sqlite3_step(Exchange_Requests_polling_update);
+	auto rc = sqlite3_step(select);
 
 	if (dblog(rc, DB_STMT_STEP)) return -1;
 
 	auto changes = sqlite3_changes(Wallet_db);
 
-	if (TRACE_DB_WRITE) BOOST_LOG_TRIVIAL(debug) << "DbConn::ExchangeRequestUpdatePolling changes " << changes << " after update tx_id " << tx_id << " poll_time " << poll_time;
+	if (TRACE_DB_WRITE) BOOST_LOG_TRIVIAL(debug) << "DbConn::ExchangeRequestUpdatePolling changes " << changes << " after update id " << id << " by_txid " << by_txid << " poll_time " << poll_time;
 
 	return 0;
 }
@@ -386,6 +398,8 @@ int DbConn::ExchangeRequestSelectInternal(sqlite3_stmt *select, Xmatchreq& req, 
 		if (rc) goto err;
 
 		memcpy(&req.objid, &tx->objid, sizeof(req.objid));
+
+		Xreq::ConvertTradeObjIdToSellObjId(tx->type, req.type, req.objid);
 	}
 
 	if (dblog(sqlite3_extended_errcode(Wallet_db), DB_STMT_SELECT)) goto err;	// check if error retrieving results
@@ -497,20 +511,21 @@ int DbConn::ExchangeRequestSelectIdDescending(uint64_t id, Xmatchreq& req, Trans
 	return ExchangeRequestSelect(Exchange_Requests_select_id_descending, req, tx);
 }
 
-int DbConn::ExchangeRequestSelectTxId(uint64_t tx_id, Xmatchreq& req, Transaction *tx)
+int DbConn::ExchangeRequestSelectTxId(uint64_t tx_id, uint64_t id, Xmatchreq& req, Transaction *tx)
 {
 	//boost::shared_lock<boost::shared_mutex> lock(db_mutex);
 	Finally finally(boost::bind(&DbConn::DoDbFinish, this));
 
-	if (TRACE_DB_READ) BOOST_LOG_TRIVIAL(trace) << "DbConn::ExchangeRequestSelectTxId tx_id " << tx_id;
+	if (TRACE_DB_READ) BOOST_LOG_TRIVIAL(trace) << "DbConn::ExchangeRequestSelectTxId tx_id " << tx_id << " id " << id;
 
 	CCASSERT(tx_id);
 
 	req.Clear();
 	if (tx) tx->Clear();
 
-	// TxId
+	// TxId, >Id
 	if (dblog(sqlite3_bind_int64(Exchange_Requests_select_txid, 1, tx_id))) return -1;
+	if (dblog(sqlite3_bind_int64(Exchange_Requests_select_txid, 2, id))) return -1;
 
 	return ExchangeRequestSelect(Exchange_Requests_select_txid, req, tx, false, 0, tx_id);
 }
@@ -612,11 +627,11 @@ int DbConn::ExchangeRequestsSumPending(uint64_t base_asset, uint64_t quote_asset
 
 		auto amount = Xtx::asFullFloat(base_asset, open_amount);
 
-		total_pending[1 - isbuyer] += (double)amount;							// CredaCash total_pending[0] = buyer may get; total_pending[1] = tied up in unmatched sell reqs
+		total_pending[1 - isbuyer] += (double)amount;						// CredaCash total_pending[0] = buyer may get; total_pending[1] = tied up in unmatched sell reqs
 		total_pending[3 - isbuyer] += (double)(amount * net_rate_required);	// Foreign   total_pending[2] = buyer may pay; total_pending[3] = seller may get
 
 		if (isbuyer)
-			total_pending[4] += (double)(amount * pledge / 100.0);				// CredaCash total_pending[4] = tied up in unmatched buy reqs
+			total_pending[4] += (double)(amount * pledge / 100.0);			// CredaCash total_pending[4] = tied up in unmatched buy reqs
 
 		if (TRACE_DB_READ) BOOST_LOG_TRIVIAL(debug) << "DbConn::ExchangeRequestsSumPending found isbuyer " << isbuyer << " net_rate_required " << net_rate_required << " open_amount " << amount << " pledge " << pledge << " totals " << total_pending[0] << " " << total_pending[1] << " " << total_pending[2] << " " << total_pending[3] << " " << total_pending[4];
 	}
@@ -769,7 +784,7 @@ int DbConn::ExchangeMatchInsert(const Xmatch& match, bool lock_optional)
 
 	if (dbresult(rc) == SQLITE_CONSTRAINT)
 	{
-		BOOST_LOG_TRIVIAL(warning) << "DbConn::ExchangeMatchInsert constraint violation " << match.DebugString();
+		BOOST_LOG_TRIVIAL(info) << "DbConn::ExchangeMatchInsert constraint violation " << match.DebugString();
 
 		return 1;
 	}

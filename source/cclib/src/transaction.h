@@ -53,6 +53,6 @@ void tx_commit_tree_hash_leaf(const snarkfront::bigint_t& commitment, const uint
 void tx_commit_tree_hash_node(const snarkfront::bigint_t& val1, const snarkfront::bigint_t& val2, snarkfront::bigint_t& hash, bool skip_final_knapsack);
 
 CCRESULT tx_reset_work(const string& fn, uint64_t timestamp, char *binbuf, const uint32_t binsize);
-CCRESULT tx_check_timestamp(uint64_t timestamp, unsigned allowance);
+CCRESULT tx_check_timestamp(uint64_t timestamp, unsigned past_allowance, unsigned future_allowance);
 CCRESULT tx_set_work(const string& fn, unsigned proof_start, unsigned proof_count, uint64_t iter_count, uint64_t proof_difficulty, char *binbuf, const uint32_t binsize);
 CCRESULT tx_set_work_internal(char *binbuf, const void *txhash, unsigned proof_start, unsigned proof_count, uint64_t iter_count, uint64_t proof_difficulty);

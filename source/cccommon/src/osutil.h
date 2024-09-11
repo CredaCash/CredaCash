@@ -11,6 +11,6 @@
 void set_handlers();
 void finish_handlers();
 void start_shutdown();
-void wait_for_shutdown(unsigned millisec = -1);
-void ccsleep(int sec);
+bool wait_for_shutdown(unsigned millisec = -1);
+bool ccsleep(int sec);
 void set_nice(int nice);

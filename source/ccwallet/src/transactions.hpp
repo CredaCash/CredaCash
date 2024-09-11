@@ -42,6 +42,14 @@ class QueryAddressResult;
 class Transaction
 {
 public:
+	enum build_mode_t
+	{
+		TX_MODE_NORMAL = 0,
+		TX_MODE_ASYNC,
+		TX_MODE_PREPARE,	// don't send
+		TX_MODE_BROADCAST	// send prepared tx
+	};
+
 	enum build_type_t
 	{
 		TX_BUILD_TYPE_NULL = 0,
@@ -71,6 +79,7 @@ public:
 	Xtx		 *xtx;
 	build_type_t build_type;	// not saved in db
 	build_state_t build_state;	// not saved in db
+	build_mode_t build_mode;		// not saved in db
 	unsigned type;
 	unsigned status;
 	unsigned nout;
@@ -82,8 +91,9 @@ public:
 	snarkfront::bigint_t split;	// not saved in db
 	array<snarkfront::bigint_t, TX_MAXOUT> adj_amounts;			// computed = net transaction amount reported by gettransaction
 	array<snarkfront::bigint_t, TX_MAXOUT> adj_donations;		// computed = portion of donation allocated this each txout
-	vector<uint8_t> txbody;	// the constructor memset's to zero all class members above this one
-	string ref_id;
+	string ref_id;	// the constructor memset's to zero all class members above this one
+	vector<char> txbody;
+	vector<char> wire_data;
 	array<Billet, TX_MAXOUT> output_bills;
 	array<Secret, TX_MAXOUT> output_destinations;
 	array<Account, TX_MAXOUT> output_accounts;
@@ -118,6 +128,8 @@ private:
 	int FillOutTx(DbConn *dbconn, TxQuery& txquery, TxParams& txparams, uint64_t dest_chain, TxPay& ts);
 	void SetAddresses(DbConn *dbconn, uint64_t dest_chain, Secret &destination, TxPay& ts);
 
+	static uint64_t GetExpireTime(TxParams& txparams, TxBuildEntry *entry);
+
 	bool SubTxIsActive(bool need_intermediate_txs) const;
 
 	static void CreateTxPayThread(DbConn *dbconn, TxQuery* txquery, TxParams txparams, TxBuildEntry *entry, Secret secret);
@@ -138,7 +150,7 @@ private:
 	static void ComputeSplitTx(deque<Transaction>& tx_list, TxParams& txparams, const snarkfront::bigint_t& total_required, snarkfront::bigint_t& total_change);
 	int FinishSplitTx(TxParams& txparams, build_type_t build_type, const snarkfront::bigint_t& output);
 
-	int TrySubmitTx(TxQuery& txquery, TxPay& ts, uint64_t &next_commitnum, const string& report_ref_id, int test_fail = -1, unsigned si = 1, unsigned active_subtx_count = 1, bool need_intermediate_txs = false);
+	int TrySubmitTx(TxQuery& txquery, TxPay *ts, uint64_t expire_time, uint64_t &next_commitnum, const string& report_ref_id, int test_fail = -1, unsigned si = 1, unsigned active_subtx_count = 1, bool need_intermediate_txs = false);
 	static void ThrowSubmitTxException(int rc);
 
 public:
@@ -226,11 +238,13 @@ public:
 	void SetAdjustedAmounts(bool incwatch, bigint_t amount_carry_in = 0UL, bigint_t amount_carry_out = 0UL);
 
 	int CreateTxMint(DbConn *dbconn, TxQuery& txquery);
-	int CreateTxPay(DbConn *dbconn, TxQuery& txquery, bool async, string& ref_id, unsigned type, const string& encoded_dest, uint64_t dest_chain, const snarkfront::bigint_t& destination, const snarkfront::bigint_t& amount, const string& comment, const string& comment_to, const bool subfee, Xtx *xtx = NULL);
+	int CreateTxPay(DbConn *dbconn, TxQuery& txquery, int mode, string& ref_id, unsigned type, const string& encoded_dest, uint64_t dest_chain, const snarkfront::bigint_t& destination, const snarkfront::bigint_t& amount, const string& comment, const string& comment_to, const bool subfee, Xtx *xtx = NULL);
 
 	int CreateConflictTx(DbConn *dbconn, TxQuery& txquery, const Billet& input);
 
 	int CreateTxFromAddressQueryResult(DbConn *dbconn, TxQuery& txquery, const Secret& destination, const Secret& address, QueryAddressResult &result, bool duplicate_txid);
+
+	int SendPreparedTx(DbConn *dbconn, TxQuery& txquery, TxParams& txparams);
 
 	int UpdateStatus(DbConn *dbconn, uint64_t bill_id, uint64_t commitnum);
 	static int SetConflicted(DbConn *dbconn, uint64_t tx_id);

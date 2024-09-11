@@ -61,7 +61,7 @@ const RPC_Exception txrpc_tx_rejected(RPC_VERIFY_REJECTED, "Transaction not allo
 
 const RPC_Exception txrpc_tx_timeout(RPC_TRANSACTION_TIMEOUT, "Time limit expired while building transaction");
 const RPC_Exception txrpc_tx_mismatch(RPC_TRANSACTION_MISMATCH, "Transaction destination or amount does not match prior transaction with same reference id");
-const RPC_Exception txrpc_tx_expired(RPC_TRANSACTION_EXPIRED, "Transaction is expired");
+const RPC_Exception txrpc_tx_expired(RPC_TRANSACTION_EXPIRED, "Transaction expired");
 
 const RPC_Exception txrpc_match_not_found(RPC_INVALID_ADDRESS_OR_KEY, "Match number not found");
 
@@ -1050,7 +1050,7 @@ static void _btc_list_received(Transaction& tx, unsigned index, uint64_t btc_blo
 	rstream << ",\"vout\":0";
 }
 
-static void _btc_list_xtx(DbConn *dbconn, Transaction& tx, bool incwatch, ostringstream& rstream)
+static uint64_t _btc_list_xtx(DbConn *dbconn, Transaction& tx, uint64_t last_xid, bool incwatch, ostringstream& rstream)
 {
 	//rstream << ",\"dump\":\"" << tx.DebugString() << "\"";
 
@@ -1074,9 +1074,9 @@ static void _btc_list_xtx(DbConn *dbconn, Transaction& tx, bool incwatch, ostrin
 
 	Xmatchreq xreq;
 
-	auto rc = dbconn->ExchangeRequestSelectTxId(tx.id, xreq);
+	auto rc = dbconn->ExchangeRequestSelectTxId(tx.id, last_xid, xreq);
 	if (rc < 0) throw txrpc_wallet_db_error;
-	if (rc) return;
+	if (rc) return 0;
 
 	//rstream << ",\"dump\":\"" << xreq.DebugString() << "\"";
 
@@ -1089,6 +1089,8 @@ static void _btc_list_xtx(DbConn *dbconn, Transaction& tx, bool incwatch, ostrin
 
 	amount_to_string(xreq.base_asset, pledge, amount);
 	rstream << ",\"cc.pledge\":-" << amount;
+
+	return xreq.id;
 }
 
 void btc_gettransaction(CP string& txid, bool incwatch, RPC_STDPARAMS)			// implemented
@@ -1110,9 +1112,6 @@ void btc_gettransaction(CP string& txid, bool incwatch, RPC_STDPARAMS)			// impl
 	if (rc > 0) throw txrpc_txid_not_found;
 	if (rc) throw txrpc_invalid_txid_error;
 
-	if (id)
-		throw RPC_Exception(RPC_INVALID_PARAMETER, "Method does not accept a wallet internal transaction id");
-
 	Billet bill;
 
 	if (!id)
@@ -1132,8 +1131,19 @@ void btc_gettransaction(CP string& txid, bool incwatch, RPC_STDPARAMS)			// impl
 	if (rc > 0) throw txrpc_txid_not_found;
 	if (rc) throw txrpc_wallet_db_error;
 
+	if (!tx.nout)
+	{
+		rstream << "{";
+
+		_btc_list_tx(dbconn, tx, -1, btc_block, incwatch, rstream);
+
+		rstream << "}";
+
+		return;
+	}
+
 	unsigned index;
-	for (index = 0; index < tx.nout; ++index)
+	for (index = 0; index < tx.nout && bill.id; ++index)
 	{
 		if (tx.output_bills[index].id == bill.id)
 			break;
@@ -1164,7 +1174,6 @@ void btc_gettransaction(CP string& txid, bool incwatch, RPC_STDPARAMS)			// impl
 	}
 
 	CCASSERT(index < tx.nout);
-	CCASSERT(tx.output_bills[index].id == bill.id);
 
 	/*
     CAmount nCredit = wtx.GetCredit(filter);
@@ -1601,7 +1610,7 @@ void btc_listtransactions(CP string& acct, int count, int from, bool incwatch, R
 			{
 				rstream << (needs_comma ? ",{" : "{");
 				needs_comma = true;
-				_btc_list_xtx(dbconn, tx, incwatch, rstream);
+				_btc_list_xtx(dbconn, tx, 0, incwatch, rstream);
 				rstream << ",";
 				_btc_list_tx(dbconn, tx, 0, btc_block, incwatch, rstream);
 				rstream << "}";

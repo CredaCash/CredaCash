@@ -4,6 +4,10 @@
 
 ## Release History
 
+### 2024-09-10 v2.0.1
+
+Updated exchange scripts to increase robustness and support Python v3.
+
 ### 2024-06-12 v2.0
 
 Integrated peer-to-peer crosschain exchange supporting CredaCash, Bitcoin (BTC), and Bitcoin Cash (BCH). CredaCash currency mining based on the use of the exchange.

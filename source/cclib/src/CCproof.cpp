@@ -1961,7 +1961,26 @@ static void compute_tx(TxPayZK& zk)
 	}
 }
 
-thread_local static TxPayZK *pzk;	// memory leak
+thread_local static TxPayZK *pzk;
+
+CCPROOF_API CCProof_Free()
+{
+	// clean up thread local storage
+
+	CCPseudoRandomDeInit();
+
+	TL<R1C<ZKPAIRING::Fr>>::singleton(true);		// delete
+	TL<PowersOf2<ZKPAIRING::Fr>>::singleton(true);	// delete
+
+	if (pzk)
+	{
+		delete pzk;
+
+		pzk = NULL;
+	}
+
+	return 0;
+}
 
 // returns keyindex
 unsigned CCProof_Compute(TxPay& tx, unsigned keyindex = -1, bool verify = false, ostringstream *benchmark_text = NULL)

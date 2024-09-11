@@ -13,8 +13,8 @@
 #include "apputil.h"
 #include "osutil.h"
 
-static const wchar_t space_char = 0xFFFF;
-static const wstring space = L"\xFFFF";
+static const wchar_t space_char = 0x0003;
+static const wstring space = L"\x0003";
 
 static void tor_hidden_service_config(bool external_tor, wostringstream& params, wstring& service_port_list, const TorService& service)
 {
@@ -230,9 +230,7 @@ void tor_start(const wstring& process_dir, const wstring& tor_exe, const wstring
 
 		while (true)
 		{
-			ccsleep(20);
-
-			if (g_shutdown)
+			if (ccsleep(20))
 				break;
 
 			auto rc = waitpid(pid, NULL, WNOHANG);

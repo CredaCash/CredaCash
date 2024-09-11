@@ -20,7 +20,7 @@ public:
 	static int BeginAndReadXmatchreq(DbConn *dbconn, Xmatchreq &xreq, Transaction *tx, uint64_t id, bool or_greater = false);
 	static int ReadXmatchreq(DbConn *dbconn, Xmatchreq &xreq, Transaction *tx, uint64_t id, bool or_greater = false);
 
-	static int UpdatePollTime(DbConn *dbconn, uint64_t tx_id, uint64_t poll_time = 0);
+	static int UpdatePollTime(DbConn *dbconn, uint64_t id, bool by_txid, uint64_t poll_time = 0);
 
 	static int PollAddress(DbConn *dbconn, TxQuery& txquery, uint64_t address_id);
 
@@ -34,7 +34,7 @@ public:
 
 	static void UpdatePollTime(Xmatch &xmatch, uint64_t last_matching_completed_time, uint64_t delay = 0);
 
-	static int PollXmatch(DbConn *dbconn, TxQuery& txquery, const Xmatch &xmatch, BlockChainStatus& blockchain_status);
+	static int PollXmatch(DbConn *dbconn, TxQuery& txquery, Xmatch &xmatch, BlockChainStatus& blockchain_status);
 };
 
 class Exchange

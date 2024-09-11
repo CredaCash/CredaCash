@@ -164,7 +164,7 @@ static void do_show_config()
 	cout << "   trace host directory queries = " << yesno(g_params.trace_host_dir) << endl;
 	cout << "   trace witness = " << yesno(g_params.trace_witness) << endl;
 	cout << "   trace tx validation = " << yesno(g_params.trace_tx_validation) << endl;
-	cout << "   trace exchange request validation = " << yesno(g_params.trace_xreq_validation) << endl;
+	cout << "   trace exchange request processing = " << yesno(g_params.trace_xreq_processing) << endl;
 	cout << "   trace block validation = " << yesno(g_params.trace_block_validation) << endl;
 	cout << "   trace serialnum check = " << yesno(g_params.trace_serialnum_check) << endl;
 	cout << "   trace commitments = " << yesno(g_params.trace_commitments) << endl;
@@ -385,7 +385,7 @@ static int process_options(int argc, char **argv)
 		("trace-host-dir", po::value<bool>(&g_params.trace_host_dir)->default_value(1), "Trace host directory queries")
 		("trace-witness", po::value<bool>(&g_params.trace_witness)->default_value(1), "Trace witness")
 		("trace-tx-validation", po::value<bool>(&g_params.trace_tx_validation)->default_value(1), "Trace transaction validation")
-		("trace-xreq-validation", po::value<bool>(&g_params.trace_xreq_validation)->default_value(1), "Trace exchange request validation")
+		("trace-xreq-processing", po::value<bool>(&g_params.trace_xreq_processing)->default_value(1), "Trace exchange request processing")
 		("trace-block-validation", po::value<bool>(&g_params.trace_block_validation)->default_value(1), "Trace block validation")
 		("trace-serialnum-check", po::value<bool>(&g_params.trace_serialnum_check)->default_value(1), "Trace serial number check")
 		("trace-commitments", po::value<bool>(&g_params.trace_commitments)->default_value(0), "Trace commitments")
@@ -503,7 +503,7 @@ static int process_options(int argc, char **argv)
 
 	g_params.tx_work_difficulty = (uint64_t)1 << 41; //@@! larger number is easier
 	g_params.xcx_naked_buy_work_difficulty = g_params.tx_work_difficulty >> 8; //@@!
-	g_params.xcx_pay_work_difficulty = g_params.tx_work_difficulty >> 3; //@@!
+	g_params.xcx_pay_work_difficulty = (uint64_t)3 << 37; //@@!
 	if (IsTestnet(g_params.blockchain))
 		g_params.xcx_naked_buy_work_difficulty <<= 4; //@@!
 

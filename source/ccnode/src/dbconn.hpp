@@ -527,7 +527,7 @@ public:
 	int XreqsSelectSeqnum(const int64_t seqnum, bool for_witness, Xreq& xreq, bool or_greater = false);
 	int XreqsSelectObjId(const ccoid_t& objid, bool for_witness, Xreq& xreq);
 	int XreqsSelectExpire(const uint64_t expire_time, Xreq& xreq);
-	int XreqsSelectXreqnum(uint64_t xreqnum, Xreq& xreq);
+	int XreqsSelectXreqnum(uint64_t xreqnum, Xreq& xreq, unsigned type = 0);
 	int XreqsSelectOpenRateRequired(const Xreq& xreq, bool isbuyer, unsigned maxret, unsigned offset, bool include_pending_matched, Xreq *xreqs, bool *have_more);
 	int XreqsSelectPendingMatchRate(const Xreq& xreq, bool isbuyer, unsigned maxret, unsigned offset, Xreq *xreqs, bool *have_more);
 	int XreqsClearOldPendingMatches(const uint64_t match_epoch, const uint64_t max_xreqnum);

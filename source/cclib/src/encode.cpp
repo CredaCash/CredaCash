@@ -14,39 +14,45 @@
 
 #define LENGTH_DIFF_OFFSET		9
 
-void base64_test(const uint8_t* encode_table, bool no_padding)
+void base64_test(const uint8_t* encode_table, const uint8_t* decode_table, bool no_padding)
 {
-	for (unsigned i = 0; i < 2000; ++i)
+	for (unsigned i = 0; i < 20000; ++i)
 	{
-		unsigned len = (rand() & 31) + 1;
-		string s;
+		unsigned nbytes = (rand() % 40) + 1;
 
-		for (unsigned j = 0; j < len; ++j)
+		vector<char> din, dout;
+		string str, enc;
+
+		for (unsigned j = 0; j < nbytes; ++j)
 		{
-			char c = 0;
+			unsigned c = rand() & 255;
 
-			while (c < 32)
-				c = rand() & 255;
+			din.push_back(c);
 
-			s.push_back(c);
+			str.push_back(g_hex_digits[c >> 4]);
+			str.push_back(g_hex_digits[c & 15]);
 		}
 
-		cerr << s << endl;
+		cerr << str << endl;
 
-		string e;
-		base64_encode(encode_table, s, e, no_padding);
+		base64_encode(encode_table, din.data(), nbytes, enc, no_padding);
 
-		cerr << e << endl;
+		cerr << enc << endl;
+
+		auto rc = base64_decode(decode_table, enc, dout);
+		CCASSERTZ(rc);
+		CCASSERT(dout.size() == nbytes);
+		CCASSERTZ(memcmp(dout.data(), din.data(), nbytes));
 	}
 }
 
-void base64_encode(const uint8_t* table, const string& sval, string& outs, bool no_padding)
+void base64_encode(const uint8_t* table, const void* sval, unsigned slen, string& outs, bool no_padding)
 {
 	CCASSERT(cc_table_mod(table) >= 64);
 
 	outs.clear();
 
-	for (unsigned i = 0; i < sval.length(); i += 3)
+	for (unsigned i = 0; i < slen; i += 3)
 	{
 		unsigned group = 0;
 		int nbits = 0;
@@ -54,10 +60,12 @@ void base64_encode(const uint8_t* table, const string& sval, string& outs, bool 
 		for (unsigned j = 0; j < 3; ++j)
 		{
 			group <<= 8;
-			if (i + j < sval.length())
+			if (i + j < slen)
 			{
-				group |= sval[i + j];
+				group |= *((uint8_t*)sval + i + j);
 				nbits += 8;
+
+				if (TRACE) cerr << "base64_encode i " << i << " j " << j << " byte " << (int)*((uint8_t*)sval + i + j) << " group " << group << " nbits " << nbits << endl;
 			}
 		}
 
@@ -65,11 +73,53 @@ void base64_encode(const uint8_t* table, const string& sval, string& outs, bool 
 		{
 			outs.push_back(cc_stringify_byte(table, (group >> ((3-j) * 6)) & 63));
 			nbits -= 6;
+
+			if (TRACE) cerr << "base64_encode symbol " << outs.back() << " nbits " << nbits << endl;
 		}
 	}
 
 	while (!no_padding && (outs.length() & 3))
 		outs.push_back('=');
+}
+
+int base64_decode(const uint8_t* table, const string& str, vector<char> &data)
+{
+	data.clear();
+
+	auto slen = str.length();
+
+	while (slen && str[slen-1] == '=')
+		--slen;
+
+	unsigned acc = 0;
+	int nbits = 0;
+
+	for (unsigned i = 0; i < slen; ++i)
+	{
+		auto c = str[i];
+
+		auto val = cc_destringify_char(table, c);
+
+		if (val == 255)
+			return -1;
+
+		acc = (acc << 6) | val;
+		nbits += 6;
+
+		if (TRACE) cerr << "base64_decode i " << i << " symbol " << c << " val " << val << " acc " << acc << " nbits " << nbits << endl;
+
+		if (nbits >= 8)
+		{
+			nbits -= 8;
+			data.push_back(acc >> nbits);
+
+			acc &= (1U << nbits) - 1;
+
+			if (TRACE) cerr << "base64_decode byte " << (int)(uint8_t)data.back() << " acc " << acc << " nbits " << nbits << endl;
+		}
+	}
+
+	return 0;
 }
 
 unsigned cc_table_mod(const uint8_t* table)
@@ -92,7 +142,7 @@ unsigned cc_table_expected_strlen(const uint8_t* table, unsigned binlength)
 }
 
 // call this with a *sym table
-uint8_t cc_stringify_byte(const uint8_t* table, unsigned c)
+unsigned cc_stringify_byte(const uint8_t* table, uint8_t c)
 {
 	if (c >= cc_table_mod(table))
 	{
@@ -105,7 +155,7 @@ uint8_t cc_stringify_byte(const uint8_t* table, unsigned c)
 }
 
 // call this with a *bin table
-uint8_t cc_destringify_char(const uint8_t* table, unsigned c)
+unsigned cc_destringify_char(const uint8_t* table, uint8_t c)
 {
 	//cerr << "cc_destringify_char " << c << " " << table[1] << " " << table[2] << endl;
 	//cerr << "cc_destringify_char " << (int)c << " " << (int)table[1] << " " << (int)table[2] << endl;
@@ -224,7 +274,7 @@ CCRESULT cc_destringify(const string& fn, const uint8_t* table, bool normalize, 
 		if (instring.length() < 1)
 			return error_input_end(fn, output, outsize);
 
-		shift = cc_destringify_char(table, (uint8_t)instring[0]);
+		shift = cc_destringify_char(table, instring[0]);
 
 		if (shift == 255)
 			return error_invalid_char(fn, output, outsize);
@@ -256,7 +306,7 @@ CCRESULT cc_destringify(const string& fn, const uint8_t* table, bool normalize, 
 
 	while (sval.size())
 	{
-		auto c = cc_destringify_char(table, (uint8_t)sval.back());
+		auto c = cc_destringify_char(table, sval.back());
 		sval.pop_back();
 
 		if (c == 255)
@@ -292,7 +342,7 @@ typedef uint64_t encint_t;
 // Binary -> symbols can be encoded in blocks of 32 bytes (256 bits) at a time using cc_stringify and cc_destringify
 // call this with a *bin table
 
-CCRESULT cc_alpha_encode(const uint8_t* table, const void* data, const unsigned nchars, vector<uint8_t> &outv, bool bclear)
+CCRESULT cc_alpha_encode(const uint8_t* table, const void* data, const unsigned nchars, vector<char> &outv, bool bclear)
 {
 	CCASSERT(CC_ENC_MAX);
 
@@ -340,7 +390,7 @@ CCRESULT cc_alpha_encode(const uint8_t* table, const void* data, const unsigned 
 		hval = lval + ((c + 1) * denom + mod - 1) / mod - 1;
 		lval = lval + (c * denom + mod - 1) / mod;
 
-		if (TRACE) cerr << "cc_alpha_encode symbol in " << DFMT << (int)c << " lval " << lval << " hval " << hval << " eofm " << eofm << dec << endl;
+		if (TRACE) cerr << "cc_alpha_encode symbol in " << DFMT << c << " lval " << lval << " hval " << hval << " eofm " << eofm << dec << endl;
 
 		range_check(hval);
 
@@ -492,13 +542,13 @@ bool cc_string_uses_symbols(const uint8_t* table, const void* data, const unsign
 	if (cc_table_mod(table) == 256)
 		return true;
 
-	auto sym = (const uint8_t *)data;
-
 	for (unsigned i = 0; i < nchars; ++i)
 	{
-		auto c = cc_destringify_char(table, sym[i]);
+		unsigned sym = *((uint8_t*)data + i);
 
-		//cerr << "symbol " << sym[i] << " = " << (int)sym[i] << " --> binary " << (int)c << endl;
+		auto c = cc_destringify_char(table, sym);
+
+		//cerr << "symbol " << sym << " = " << sym << " --> binary " << (int)c << endl;
 
 		if (c == 255)
 			return false;
@@ -507,7 +557,7 @@ bool cc_string_uses_symbols(const uint8_t* table, const void* data, const unsign
 	return true;
 }
 
-CCRESULT cc_alpha_encode_shortest(const uint8_t* encode_table, const uint8_t* decode_table, const void* data, const unsigned nchars, vector<uint8_t> &outv, bool bclear)
+CCRESULT cc_alpha_encode_shortest(const uint8_t* encode_table, const uint8_t* decode_table, const void* data, const unsigned nchars, vector<char> &outv, bool bclear)
 {
 	if (TRACE) cerr << "cc_alpha_encode_shortest " << string((char*)data, nchars) << endl;
 
@@ -553,12 +603,12 @@ CCRESULT cc_alpha_encode_shortest(const uint8_t* encode_table, const uint8_t* de
 	return 0;
 }
 
-static const uint8_t* best_encode_table[] = {base10bin, base16bin, base32bin, base32zbin, base34bin, base38bin, base58bin, base66bin, base95bin, base256bin};
-static const uint8_t* best_decode_table[] = {base10sym, base16sym, base32sym, base32zsym, base34sym, base38sym, base58sym, base66sym, base95sym, base256sym};
+static const uint8_t* best_encode_table[] = {base10bin, base16bin, base32bin, base32zbin, base34bin, base38bin, base58bin, base66bin, base95bin, base224bin, base256bin};
+static const uint8_t* best_decode_table[] = {base10sym, base16sym, base32sym, base32zsym, base34sym, base38sym, base58sym, base66sym, base95sym, base224bin, base256sym};
 
 // TODO add a best table index to id function with an offset (ie, lowest id's reserved for future use)
 
-CCRESULT cc_alpha_encode_best(const void* data, const unsigned nchars, vector<uint8_t> &outv)
+CCRESULT cc_alpha_encode_best(const void* data, const unsigned nchars, vector<char> &outv)
 {
 	if (TRACE) cerr << "cc_alpha_encode_best " << string((char*)data, nchars) << endl;
 
@@ -683,7 +733,7 @@ static void test_one_alpha(const char* table, const uint8_t* encode_table, const
 	//srand(++seed);
 	//if (TRACE) cerr << "seed " << seed << " mod " << mod << endl;
 
-	vector<uint8_t> rbuf(50), encoded;
+	vector<char> rbuf(50), encoded;
 	string random, decoded;
 
 	bool generate_decoded = RandTest(2);
@@ -793,7 +843,7 @@ static void test_best_alpha(const char* table, const uint8_t* encode_table, cons
 	//if (0+TRACE) cerr << "seed " << seed << " mod " << mod << endl;
 
 	string random, decoded;
-	vector<uint8_t> encoded;
+	vector<char> encoded;
 
 	unsigned len = rand() % 100;
 

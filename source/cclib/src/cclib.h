@@ -39,6 +39,7 @@
 #include <chrono>
 #include <unistd.h>
 
+#include <CCmalloc.h>
 #include <CCutil.h>
 #include <CCticks.hpp>
 #include <CCassert.h>

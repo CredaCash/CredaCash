@@ -36,8 +36,7 @@ enum PowType
 {
 	PowType_None = 0,
 	PowType_Query,
-	PowType_Tx,
-	PowType_Xcx_Pay
+	PowType_Tx
 };
 
 struct QueryAddressResult
@@ -157,8 +156,11 @@ public:
 
 class TxQuery : public TxConnection
 {
-	int TryQuery(PowType powtype, bool is_retry, vector<char> *pquery = NULL);
-	int SubmitQuery(PowType powtype, bool is_retry, Json::Value *root = NULL, vector<char> *pquery = NULL, bool debug = false);
+	int TryQuery(PowType powtype, vector<char> *pquery = NULL);
+	int SubmitQuery(PowType powtype, uint64_t expire_time, bool is_retry, Json::Value *root, vector<char> *pquery = NULL, bool skip_prepare = false, bool debug = false);
+
+	int TxToWire(TxPay& ts);
+	int DoSubmitTx(uint64_t expire_time, uint64_t& next_commitnum, vector<char>& wire, bool skip_prepare, bool debug);
 
 	int ParseParams(Json::Value& root, TxParams& txparams);
 	int ParseBlockChainStatus(Json::Value& root, BlockChainStatus& blockchain_status);
@@ -194,7 +196,11 @@ public:
 	void ClearHost();
 	const string& GetHost();
 
-	int SubmitTx(TxPay& ts, uint64_t& next_commitnum);
+	int PrepareTx(TxPay& ts, uint64_t expire_time, vector<char>& wire);
+	int PrepareQuery(PowType powtype, uint64_t expire_time, bool is_retry, vector<char> *pquery = NULL);
+
+	int SubmitTx(TxPay& ts, uint64_t expire_time, uint64_t& next_commitnum, bool debug = false);
+	int SubmitPreparedTx(uint64_t& next_commitnum, vector<char>& wire, bool debug = false);
 
 	int QueryParams(TxParams& txparams, vector<char> &querybuf);
 	int QueryAddress(uint64_t blockchain, const snarkfront::bigint_t& address, const uint64_t commitstart, QueryAddressResults &results);

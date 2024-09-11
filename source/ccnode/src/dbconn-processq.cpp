@@ -14,7 +14,7 @@
 #include <ccserver/connection_registry.hpp>
 
 #define TRACE_DBCONN	(g_params.trace_validation_q_db)
-#define TRACE_PROCESS	(g_params.trace_block_validation || g_params.trace_tx_validation || g_params.trace_xreq_validation)
+#define TRACE_PROCESS	(g_params.trace_block_validation || g_params.trace_tx_validation || g_params.trace_xreq_processing)
 
 static array<atomic<int>, PROCESS_Q_N>			queued_work;
 static array<mutex, PROCESS_Q_N>				work_queue_mutex;

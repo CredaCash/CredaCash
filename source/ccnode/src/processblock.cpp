@@ -422,9 +422,9 @@ int ProcessBlock::BlockValidate(DbConn *dbconn, SmartBuf smartobj, TxPay& txbuf)
 				if (!rc)
 					break;
 
-				if (txbuf.tag_type != CC_TYPE_XCX_PAYMENT || retry > (IsWitness() ? XCX_PAY_WITNESS_RETRIES : XCX_PAY_RETRIES))
+				if (!Xtx::TypeIsXpay(txbuf.tag_type) || retry > (IsWitness() ? XCX_PAY_WITNESS_RETRIES : XCX_PAY_RETRIES))
 				{
-					BOOST_LOG_TRIVIAL(info) << "ProcessBlock::BlockValidate tx type " << txbuf.tag_type << " invalid";
+					BOOST_LOG_TRIVIAL(info) << "ProcessBlock::BlockValidate tx type " << txbuf.tag_type << " invalid; oid " << buf2hex(obj->OidPtr(), CC_OID_TRACE_SIZE);
 
 					return -1;
 				}
@@ -521,7 +521,7 @@ void ProcessBlock::ThreadProc()
 {
 	static TxPay txbuf;	// not thread safe
 
-	if (TRACE_PROCESS_BLOCK) BOOST_LOG_TRIVIAL(trace) << "ProcessBlock::ThreadProc start dbconn " << (uintptr_t)dbconn;
+	BOOST_LOG_TRIVIAL(info) << "ProcessBlock::ThreadProc start dbconn " << (uintptr_t)dbconn;
 
 	while (true)
 	{
@@ -601,7 +601,7 @@ void ProcessBlock::ThreadProc()
 
 			CCASSERTZ(result);
 
-			BOOST_LOG_TRIVIAL(info) << "ProcessBlock received valid block level " << level << " timestamp " << wire->timestamp.GetValue() << " witness " << (unsigned)wire->witness << " skip " << auxp->skip << " size " << (block->ObjSize() < 1000 ? " " : "") << block->ObjSize() << " oid " << buf2hex(&auxp->oid, CC_OID_TRACE_SIZE) << " prior " << buf2hex(&wire->prior_oid, CC_OID_TRACE_SIZE);
+			BOOST_LOG_TRIVIAL(info) << "ProcessBlock received valid block level " << level << " timestamp " << wire->timestamp.GetValue() << " age " << unixtime() - wire->timestamp.GetValue() << " witness " << (unsigned)wire->witness << " skip " << auxp->skip << " size " << (block->ObjSize() < 1000 ? " " : "") << block->ObjSize() << " oid " << buf2hex(&auxp->oid, CC_OID_TRACE_SIZE) << " prior " << buf2hex(&wire->prior_oid, CC_OID_TRACE_SIZE);
 
 			block->ConsoleAnnounce(" received", wire, auxp);
 
@@ -620,5 +620,5 @@ void ProcessBlock::ThreadProc()
 		}
 	}
 
-	if (TRACE_PROCESS_BLOCK) BOOST_LOG_TRIVIAL(trace) << "ProcessBlock::ThreadProc end dbconn " << (uintptr_t)dbconn;
+	BOOST_LOG_TRIVIAL(info) << "ProcessBlock::ThreadProc end dbconn " << (uintptr_t)dbconn;
 }

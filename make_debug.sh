@@ -7,7 +7,8 @@ then
     exit 1
 fi
 export CREDACASH_BUILD=`pwd`
-export CPPFLAGS="-g -pthread -fPIC -fstack-protector-strong -Wno-misleading-indentation -Wno-deprecated-copy -Wno-deprecated-declarations -Wno-array-parameter $cppx"
+export CPPFLAGS="-Og -g3 -pthread -fPIC -fstack-protector-strong -Wno-misleading-indentation -Wno-deprecated-declarations $cppx"
+export CXXFLAGS="-Wno-deprecated-copy"
 export LDFLAGS="-fstack-protector"
 export LDLIBS="-lpthread -ldl"
 rm -f ccnode.exe ccwallet.exe cctracker.exe cctx64.dll

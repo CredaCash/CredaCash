@@ -116,9 +116,12 @@ void tx_amount_factors_init()
 {
 	static FastSpinLock init_lock(__FILE__, __LINE__);
 
-	lock_guard<FastSpinLock> lock(init_lock);
-
 	static bool binited = false;
+
+	if (binited)
+		return;
+
+	lock_guard<FastSpinLock> lock(init_lock);
 
 	if (binited)
 		return;
@@ -2003,7 +2006,11 @@ static CCRESULT set_proof(const string& fn, TxPay& tx, char *output, const uint3
 	if (Xtx::TypeHasBareMsg(tx.tag_type))
 		return 0;
 
+	auto blog = cc_malloc_logging_not_this_thread(true);
+
 	auto rc = CCProof_GenProof(tx);
+
+	cc_malloc_logging_not_this_thread(blog);
 
 	return proof_error(fn, rc, output, outsize);
 }
@@ -3385,6 +3392,7 @@ static CCRESULT txpay_output_to_wire(const string& fn, const TxPay& tx, const Tx
 	case CC_TYPE_TXPAY:
 	case CC_TYPE_XCX_SIMPLE_BUY:
 	case CC_TYPE_XCX_SIMPLE_SELL:
+	case CC_TYPE_XCX_MINING_TRADE:
 	case CC_TYPE_XCX_NAKED_BUY:
 	case CC_TYPE_XCX_NAKED_SELL:
 
@@ -3663,6 +3671,7 @@ static CCRESULT txpay_body_to_wire(const string& fn, TxPay& tx, unsigned err_che
 	case CC_TYPE_TXPAY:
 	case CC_TYPE_XCX_SIMPLE_BUY:
 	case CC_TYPE_XCX_SIMPLE_SELL:
+	case CC_TYPE_XCX_MINING_TRADE:
 	case CC_TYPE_XCX_NAKED_BUY:
 	case CC_TYPE_XCX_NAKED_SELL:
 
@@ -3867,6 +3876,7 @@ static CCRESULT txpay_body_from_wire(TxPay& tx, uint32_t &bufpos, char *binbuf, 
 	case CC_TYPE_TXPAY:
 	case CC_TYPE_XCX_SIMPLE_BUY:
 	case CC_TYPE_XCX_SIMPLE_SELL:
+	case CC_TYPE_XCX_MINING_TRADE:
 	case CC_TYPE_XCX_NAKED_BUY:
 	case CC_TYPE_XCX_NAKED_SELL:
 
@@ -4220,6 +4230,9 @@ CCRESULT json_work_add(const string& fn, Json::Value& root, char *output, const 
 
 CCRESULT tx_reset_work(const string& fn, uint64_t timestamp, char *binbuf, const uint32_t binsize)
 {
+	CCASSERT(binbuf);
+	CCASSERT(binsize);
+
 	auto pheader = (const CCObject::Header *)binbuf;
 	const unsigned data_offset = sizeof(CCObject::Header) + TX_POW_SIZE;
 
@@ -4242,15 +4255,15 @@ CCRESULT tx_reset_work(const string& fn, uint64_t timestamp, char *binbuf, const
 	return 0;
 }
 
-CCRESULT tx_check_timestamp(uint64_t timestamp, unsigned allowance)
+CCRESULT tx_check_timestamp(uint64_t timestamp, unsigned past_allowance, unsigned future_allowance)
 {
 	uint64_t now = unixtime();
 
 	int64_t age = now - timestamp;
 
-	//cerr << "tx_check_timestamp timestamp " << timestamp << " now " << now << " age " << age << " allowance " << allowance << endl;
+	//cerr << "tx_check_timestamp timestamp " << timestamp << " now " << now << " age " << age << " past_allowance " << past_allowance << endl;
 
-	if (age < -5*60 || age > allowance)
+	if (age > past_allowance || (age < 0 && -age > future_allowance))
 		return -1;
 	else
 		return 0;

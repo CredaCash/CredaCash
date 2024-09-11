@@ -429,7 +429,7 @@ void Connection::HandleStartIncomingConnection(AutoCount pending_op_counter)
 		return;
 	}
 
-	if (m_noclose) BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " Connection::HandleStartIncomingConnection";
+	if (TRACE_CCSERVER &&  m_noclose) BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " Connection::HandleStartIncomingConnection";
 	if (TRACE_CCSERVER && !m_noclose) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " Connection::HandleStartIncomingConnection";
 
 	StartConnection();
@@ -983,7 +983,7 @@ void Connection::HandleStop()
 		boost::system::error_code ec;
 		m_socket.close(ec);
 
-		if (m_noclose) BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " Connection::Stop done";
+		if (TRACE_CCSERVER &&  m_noclose) BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " Connection::Stop done";
 		if (TRACE_CCSERVER && !m_noclose) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " Connection::Stop done";
 
 		FinishConnection();

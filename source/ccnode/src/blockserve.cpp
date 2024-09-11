@@ -301,11 +301,11 @@ void BlockServeThread::ThreadProc(boost::function<void()> threadproc)
 {
 	blockserve_dbconn = new DbConn;
 
-	if (TRACE_BLOCKSERVE) BOOST_LOG_TRIVIAL(trace) << "BlockServeThread::ThreadProc start " << (uintptr_t)this << " dbconn " << (uintptr_t)blockserve_dbconn;
+	BOOST_LOG_TRIVIAL(info) << "BlockServeThread::ThreadProc start " << (uintptr_t)this << " dbconn " << (uintptr_t)blockserve_dbconn;
 
 	threadproc();
 
-	if (TRACE_BLOCKSERVE) BOOST_LOG_TRIVIAL(trace) << "BlockServeThread::ThreadProc end " << (uintptr_t)this << " dbconn " << (uintptr_t)blockserve_dbconn;
+	BOOST_LOG_TRIVIAL(info) << "BlockServeThread::ThreadProc end " << (uintptr_t)this << " dbconn " << (uintptr_t)blockserve_dbconn;
 
 	delete blockserve_dbconn;
 }

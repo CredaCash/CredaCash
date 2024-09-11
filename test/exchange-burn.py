@@ -173,7 +173,7 @@ def wallet_thread(tnum, btc_port, bch_port):
 				type = 's'
 			else:
 				type = 'sn'[random.randrange(2)]
-			req = 'bss'[random.randrange(3)]
+			req = 'bsst'[random.randrange(4)]
 			#if rpc_port < 9999:
 			#	req = 's' # for testing
 			#else:
@@ -187,6 +187,12 @@ def wallet_thread(tnum, btc_port, bch_port):
 			#rate = random.random() * (random.randrange(2) * 10 + 1)
 			rate = random.random() * 0.1
 			costs = max_amount * rate * random.random()
+			if req == 't' and random.randrange(8):
+				type = 'm'
+			if req == 't' and random.randrange(8):
+				costs = 0
+			if req == 't' and random.randrange(8):
+				min_amount = max_amount
 			if not TEST_WIDE_RANGE:
 				costs /= 100.0
 			if TEST_MINING_ONLY or not btc_port or (bch_port and random.randrange(2)):
@@ -203,7 +209,7 @@ def wallet_thread(tnum, btc_port, bch_port):
 				do_rpc(s, rpc_port, 'cc.crosschain_query_requests', (type+req, min_amount, max_amount, rate, costs, asset, count, offset, incl))
 				continue
 			i = len(foreign_address_reuse)
-			if req != 's':
+			if req == 'b' and random.randrange(8) or not random.randrange(8):
 				foreign_address = ''
 			elif i and random.random() < PROB_FOREIGN_ADDR_REUSE:
 				if random.random() < PROB_FOREIGN_ADDR_REUSE:
@@ -229,6 +235,8 @@ def wallet_thread(tnum, btc_port, bch_port):
 			#expiration = int(expiration - time.time() - (expiration % 100)) # for testing
 			#print int(expiration + time.time())
 			wait_discount = random.random()
+			if req == 't' and random.randrange(8):
+				wait_discount = 1
 			# cc.crosschain_request_create reference_id \\\"simple_buy|simple_sell|naked_buy|naked_sell\\\" min_amount max_amount rate costs cryptoasset ( unique_foreign_address expiration wait_discount )
 			txid = do_rpc(s, rpc_port, 'cc.crosschain_request_create', ('', type+req, min_amount, max_amount, rate, costs, asset, foreign_address, expiration, wait_discount))
 			print '%d cc.crosschain_request_create txid %s %s %d %d %f %f %s %s %d %f' % (time.time(), txid, type+req, min_amount, max_amount, rate, costs, asset, foreign_address, expiration, wait_discount)

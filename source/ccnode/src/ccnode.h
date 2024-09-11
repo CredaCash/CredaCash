@@ -9,7 +9,7 @@
 #pragma once
 
 #define CCAPPNAME	"CredaCash node"
-#define CCVERSION	"2.0" //@@!
+#define CCVERSION	"2.0.1" //@@!
 #define CCEXENAME	"ccnode"
 #define CCAPPDIR	"CCNode2-#" //@@!
 
@@ -88,7 +88,7 @@ DECLARE_EXTERN struct global_params_struct
 	bool	trace_host_dir;
 	bool	trace_witness;
 	bool	trace_tx_validation;
-	bool	trace_xreq_validation;
+	bool	trace_xreq_processing;
 	bool	trace_block_validation;
 	bool	trace_serialnum_check;
 	bool	trace_commitments;

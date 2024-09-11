@@ -58,6 +58,8 @@ class BlockChain
 	static bool CreateTxOutputs(DbConn *dbconn, uint64_t asset, bigint_t& total, const bigint_t& dest, uint32_t domain, TxPay& txbuf, bool bindex = true, bool no_encypt = true, uint32_t paynum = 0, bool one_output = true, bool is_mint = false);
 
 	static bool AddXreq(DbConn *dbconn, uint64_t blocktime, Xreq& xreq, const void *wire);
+	static bool AddOneXreq(DbConn *dbconn, uint64_t blocktime, Xreq& xreq);
+
 	static bool ProcessXpayment(DbConn *dbconn, uint64_t blocktime, const Xpay& xpay, bigint_t& donation, TxPay& txbuf);
 	static bool SettleMatch(DbConn *dbconn, Xmatch& match, bigint_t& donation, TxPay& txbuf);
 

@@ -9,7 +9,7 @@
 #pragma once
 
 #define CCAPPNAME	"CredaCash RPC Wallet"
-#define CCVERSION	"2.0" //@@!
+#define CCVERSION	"2.0.1" //@@!
 #define CCEXENAME	"ccwallet"
 #define CCAPPDIR	"CCWallet-#" //@@!
 
@@ -43,6 +43,7 @@ DECLARE_EXTERN struct global_params_struct
 	snarkfront::bigint_t wallet_id;
 
 	bool	interactive;
+	bool	developer_mode;
 
 	wstring process_dir;
 	wstring app_data_dir;
