@@ -175,6 +175,8 @@ def parse_config(conf_file, include_mining=True, ForeignClass=Config):
 	Foreign = ForeignClass(c, conf_file, FOREIGN)
 	if include_mining:
 		Mining = Config(c, conf_file, MINING)
+	else:
+		del c[MINING]
 	Config.del_excluded_keys(c)
 	if len(c) > 0:
 		print('ERROR: unrecognized elements in configuration file %s:' % conf_file, c)
