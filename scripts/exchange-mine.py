@@ -368,19 +368,21 @@ def mine_one(s):
 
 		# Create exchange request
 
+		expiration = mi['mining-request-minimum-expiration-time'] + EXCHANGE_REQUEST_EXPIRATION_SECONDS
+
+		submit_xreq(s, 'trade', amount, match_rate, expiration)	# send trade request
+
+def submit_xreq(s, type, amount, rate, expiration=0):
+	if type[0] == 'b':
+		foreign_address = ''
+	else:
 		foreign_address = do_rpc(s, Foreign, 'getnewaddress')
 		if not foreign_address:
 			print('Error obtaining a BCH address\n', end='')
-			return
+			return None
 		if not foreign_address.startswith('bitcoincash:') and not foreign_address.startswith('bch'):
 			print('Error: unrecognized BCH address %s\n' % foreign_address, end='')
-			return
-
-		expiration = mi['mining-request-minimum-expiration-time'] + EXCHANGE_REQUEST_EXPIRATION_SECONDS
-
-		submit_xreq(s, 'trade', amount, match_rate, foreign_address, expiration)	# send trade request
-
-def submit_xreq(s, type, amount, rate, foreign_address, expiration):
+			return None
 	txid = do_rpc(s, Creda, 'cc.crosschain_request_create', ('', 's'+type[0], amount, amount, rate, 0, 'bch', foreign_address, expiration))
 	if txid:
 		print('Submitted crosschain %s request time %d amount %g rate %g\n' % (type, time.time(), amount, rate), end='')
@@ -505,8 +507,10 @@ def pay_monitor_startup(s):
 	print('Testing exchange autopay script...')
 	amount = mi['wallet-exchange-request-minimum-amount']
 	rate = mi['mining-request-average-match-rate-required']
-	for i in range(9):	# submit 8 sell reqs, to maximize chance that the buy req will find a match
-		if not submit_xreq(s, i, amount, rate):
+	if not submit_xreq(s, 'buy', amount, rate):
+		return False
+	for i in range(8):	# submit 8 sell reqs, to maximize chance that the buy req will find a match
+		if not submit_xreq(s, 'sell', amount, rate):
 			return False
 
 	# wait for match
