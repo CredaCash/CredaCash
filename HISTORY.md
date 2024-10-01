@@ -4,6 +4,10 @@
 
 ## Release History
 
+### 2024-09-30 v2.0.2
+
+Fixed a floating point rounding issue in exchange rate computation.
+
 ### 2024-09-10 v2.0.1
 
 Updated exchange scripts to increase robustness and support Python v3.

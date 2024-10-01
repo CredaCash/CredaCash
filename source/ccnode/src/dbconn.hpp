@@ -502,7 +502,7 @@ class DbConnXreqs : protected DbConnBaseXreqs
 	int XreqsSelect(sqlite3_stmt *select, const bool for_witness, Xreq& xreq);
 	int XreqsSelectInternal(sqlite3_stmt *select, const bool for_witness, Xreq& xreq, unsigned cs = 0);
 
-	int XreqsSelectRateInternal(sqlite3_stmt* select, const Xreq& xreq, bool isbuyer, unsigned maxret, unsigned offset, Xreq *xreqs, bool *have_more);
+	int XreqsSelectRateInternal(sqlite3_stmt* select, const Xreq& xreq, unsigned matching_type, unsigned maxret, unsigned offset, Xreq *xreqs, bool *have_more);
 
 public:
 	DbConnXreqs();
@@ -528,8 +528,8 @@ public:
 	int XreqsSelectObjId(const ccoid_t& objid, bool for_witness, Xreq& xreq);
 	int XreqsSelectExpire(const uint64_t expire_time, Xreq& xreq);
 	int XreqsSelectXreqnum(uint64_t xreqnum, Xreq& xreq, unsigned type = 0);
-	int XreqsSelectOpenRateRequired(const Xreq& xreq, bool isbuyer, unsigned maxret, unsigned offset, bool include_pending_matched, Xreq *xreqs, bool *have_more);
-	int XreqsSelectPendingMatchRate(const Xreq& xreq, bool isbuyer, unsigned maxret, unsigned offset, Xreq *xreqs, bool *have_more);
+	int XreqsSelectOpenRateRequired(const Xreq& xreq, unsigned matching_type, unsigned maxret, unsigned offset, bool include_pending_matched, Xreq *xreqs, bool *have_more);
+	int XreqsSelectPendingMatchRate(const Xreq& xreq, unsigned matching_type, unsigned maxret, unsigned offset, Xreq *xreqs, bool *have_more);
 	int XreqsClearOldPendingMatches(const uint64_t match_epoch, const uint64_t max_xreqnum);
 
 	int XreqsSelectPairBase(const Xreq& xreq, Xreq& xreq_out);
@@ -545,6 +545,8 @@ public:
 
 	static void SearchAdvancePairBase(const Xreq& match, Xreq& xreq);
 	static void SearchAdvancePairQuote(const Xreq& match, Xreq& xreq);
+
+	static void MatchingInitTypeRange(unsigned type, bool for_query, Xreq& xreq);
 
 	static void MatchingInitMajor(const Xreq& pair, Xreq& xreq);
 	static void MatchingInitMinor(const Xreq& major, Xreq& xreq);

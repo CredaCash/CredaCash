@@ -67,7 +67,8 @@ void set_service_configs()
 {
 	TorService::SetPorts(g_tor_services, g_params.base_port + WALLET_RPC_PORT);
 
-	g_params.torproxy_port = g_tor_services[g_tor_services.size()-1]->port + 1;
+	if (!g_params.torproxy_port)
+		g_params.torproxy_port = g_tor_services[g_tor_services.size()-1]->port + 1;
 
 	//cerr << "torproxy_port " << g_params.torproxy_port << endl;
 
@@ -275,6 +276,7 @@ static int process_options(int argc, char **argv)
 		//("control-tor", po::value<bool>(&g_control_service.tor_service)->default_value(0), "Make the node control port available through a Tor hidden service.")
 		//("control-tor-auth", po::value<string>(&g_control_service.tor_auth_string)->default_value("v3"), "Tor hidden service authentication method (none, basic, or v3).")
 		("tor-exe", po::wvalue<wstring>(&g_params.tor_exe), "Path to Tor executable; if set to \"external\", Tor is not launched by this program, and must be launched and managed externally (default: \"" TOR_EXE "\" in same directory as this program).")
+		("tor-port", po::value<int>(&g_params.torproxy_port)->default_value(0), "Tor proxy port (default baseport+" STRINGIFY(TOR_PORT) ").")
 		("tor-config", po::wvalue<wstring>(&g_params.tor_config), "Path to Tor configuration file (default: \"" TOR_CONFIG "\" in same directory as this program).")
 		("tor-control", po::value<bool>(&g_tor_control_service.enabled)->default_value(0), "Allow other programs to control Tor (at port baseport+" STRINGIFY(TOR_CONTROL_PORT) ").")
 		("tor-control-addr", po::value<string>(&g_tor_control_service.address_string)->default_value(LOCALHOST), "Network address for node control service;\n"
@@ -641,7 +643,7 @@ int main(int argc, char **argv)
 	}
 
 	bool need_tor_proxy = g_params.transact_tor;
-	thread tor_thread(tor_start, g_params.process_dir, g_params.tor_exe, g_params.tor_config, g_params.app_data_dir, need_tor_proxy, ref(g_tor_services), g_tor_services.size()-1);
+	thread tor_thread(tor_start, g_params.process_dir, g_params.tor_exe, g_params.torproxy_port, g_params.tor_config, g_params.app_data_dir, need_tor_proxy, ref(g_tor_services), g_tor_services.size()-1);
 
 	int result_code = -99;
 

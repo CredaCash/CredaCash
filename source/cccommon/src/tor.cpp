@@ -41,10 +41,8 @@ static void tor_hidden_service_config(bool external_tor, wostringstream& params,
 	}
 }
 
-void tor_start(const wstring& process_dir, const wstring& tor_exe, const wstring& tor_config, const wstring& app_data_dir, bool need_outgoing, vector<TorService*>& services, unsigned tor_control_service_index)
+void tor_start(const wstring& process_dir, const wstring& tor_exe, const int tor_port, const wstring& tor_config, const wstring& app_data_dir, bool need_outgoing, vector<TorService*>& services, unsigned tor_control_service_index)
 {
-	CCASSERT(services.size());
-
 	bool external_tor = (tor_exe == L"external");
 	bool need_tor = need_outgoing;
 	wostringstream params;
@@ -56,7 +54,7 @@ void tor_start(const wstring& process_dir, const wstring& tor_exe, const wstring
 	if (tor_config.length() && tor_config.compare(L"."))
 		params << space << "-f" << space << "\"" << tor_config << "\"";
 	params << space << "DataDirectory" << space << "\"" << app_data_dir << TOR_SUBDIR << "\"";
-	params << space << "+SOCKSPort" << space << services[services.size()-1]->port + 1;
+	params << space << "+SOCKSPort" << space << tor_port;
 
 	if (tor_control_service_index < services.size() && services[tor_control_service_index]->enabled)
 	{

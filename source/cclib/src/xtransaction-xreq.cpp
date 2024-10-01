@@ -335,7 +335,6 @@ UniFloat Xreq::MatchRateRequired(const UniFloat& base_amount, int rounding) cons
 	// Seller: rate_required = (net_rate_required * (base_amount + base_costs) + quote_costs) / base_amount
 	//  Buyer: rate_required = (net_rate_required * (base_amount - base_costs) - quote_costs) / base_amount
 
-
 	auto sign = RateSign(IsBuyer());
 
 	//cout << "MatchRateRequired seqnum " << seqnum << " IsBuyer " << IsBuyer() << " net_rate_required " << net_rate_required << " base_amount " << base_amount << " sign " << sign << " base_costs " << base_costs << " quote_costs " << quote_costs << endl;
@@ -352,6 +351,14 @@ UniFloat Xreq::MatchRateRequired(const UniFloat& base_amount, int rounding) cons
 	result = UniFloat::Add(result, UniFloat::ApplySign(sign, quote_costs), rounding);
 
 	result = UniFloat::Divide(result, base_amount, rounding);
+
+	// constrain results so rate comparisons work
+	if ((sign < 0 && result > net_rate_required) || (sign > 0 && result < net_rate_required))
+	{
+		if (TRACE_RATES) cout << "Xreq::MatchRateRequired changing " << result << " to " << net_rate_required << " for is_buyer " << IsBuyer() << " amount " << base_amount << " quote_costs " << quote_costs << endl;
+
+		result = net_rate_required;
+	}
 
 	if (TRACE_RATES) cout << "Xreq::MatchRateRequired amount " << base_amount << " returning " << result << " thread " << cc_thread_id() << " ; " << DebugString() << endl;
 

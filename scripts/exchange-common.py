@@ -7,6 +7,16 @@ Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
 
 '''
 
+CREDACASH = 'CredaCash'
+FOREIGN = 'Foreign'
+BITCOIND = 'Bitcoind'
+ELECTRUM = 'Electrum'
+ELECTRON = 'Electron Cash'
+MINING = 'Mining'
+
+TIMEOUT = 'TIMEOUT'
+TEST_ROUNDING = False
+
 import sys
 import os
 import traceback
@@ -14,6 +24,7 @@ import requests
 import json
 import random
 import time
+import math
 import pprint
 
 sysver = sys.version.split('.')
@@ -29,14 +40,6 @@ def makestring(r):
 	if not isinstance(r, (str, unicode)) and hasattr(r, 'decode'):
 		return str(r.decode())
 	return r
-
-CREDACASH = 'CredaCash'
-FOREIGN = 'Foreign'
-BITCOIND = 'Bitcoind'
-ELECTRUM = 'Electrum'
-ELECTRON = 'Electron Cash'
-MINING = 'Mining'
-TIMEOUT = 'TIMEOUT'
 
 def ensure_one_instance(id):
 	#print 'script instance id = %s' % id
@@ -77,6 +80,8 @@ def do_rpc(s, c, method, params=(), timeout=600, return_timeout=False, needs_wal
 			params = {}
 		if isinstance(params, dict):
 			params['wallet'] = c.walpath
+		else:
+			print('do_rpc %s usage error: dict params required with needs_wallet=True')
 
 	req = '{"id":0,"method":"' + method + '","params":'
 	if isinstance(params, dict):
@@ -124,7 +129,7 @@ def do_rpc(s, c, method, params=(), timeout=600, return_timeout=False, needs_wal
 		if hasattr(r, 'text'):
 			print('%d Warning: rpc port %d json load failed "%s" req %s\n' % (time.time(), c.port, r.text.encode('ascii', 'backslashreplace'), req), end='')
 		else:
-			print('%d Warning: rpc port % d no text returned for req %s\n' % (time.time(), c.port, req), end='')
+			print('%d Warning: rpc port %d no text returned for req %s\n' % (time.time(), c.port, req), end='')
 		return None
 
 class Config:
@@ -198,13 +203,13 @@ class Config:
 			if k.startswith('x-'):
 				del c[k]
 
-def parse_config(conf_file, include_mining=True, ForeignClass=Config):
+def parse_config(conf_file, include_mining=False):
 	global Creda, Foreign, Mining
 	conf_fp = open(conf_file)
 	c = json.load(conf_fp)
 	#print c
 	Creda = Config(c, conf_file, CREDACASH)
-	Foreign = ForeignClass(c, conf_file, FOREIGN)
+	Foreign = ForeignRPC(c, conf_file, FOREIGN)
 	if include_mining:
 		Mining = Config(c, conf_file, MINING)
 	elif MINING in c:
@@ -240,6 +245,24 @@ class ForeignRPC(Config):
 				or (not ':' in addr)	# prefixes may be stripped from BCH addresses
 		else:
 			return False
+
+	def GetNewAddress(self, s):
+		if self.IsBitcoind():
+			return do_rpc(s, self, 'getnewaddress')
+		elif self.IsElectrum():
+			if self.currency == 'bch':
+				r = do_rpc(s, self, 'addrequest', dict(amount=0, force=True))
+			else:
+				r = do_rpc(s, self, 'add_request', dict(amount=0, force=True), needs_wallet=True)
+			#pprint.pprint(r)
+			if 'address' in (r or ()):
+				return r['address']
+			else:
+				print('add_request missing address\n', end='')
+				pprint.pprint(r)
+			return None
+		else:
+			return self.InvalidTypeError()
 
 	def Send(self, s, addr, amt):
 		if self.IsBitcoind():
@@ -379,6 +402,100 @@ class ForeignRPC(Config):
 			return False #do_rpc(s, self, 'removelocaltx', (txid, ))
 		else:
 			return self.InvalidTypeError()
+
+def get_mining_info(s):
+	try:
+		r = do_rpc(s, Creda, 'cc.exchange_query_mining_info')
+		return r['exchange-mining-info-query-results']
+	except:
+		return None
+
+def get_balance(s, c):
+	r = do_rpc(s, c, 'getbalance')
+	try:
+		return float(r)
+	except:
+		return None
+
+def submit_xreq(s, type, amount, rate, expiration=0):
+	if type[0] == 'b':
+		foreign_address = ''
+	else:
+		foreign_address = Foreign.GetNewAddress(s)
+		if not foreign_address:
+			print('Error obtaining a BCH address\n', end='')
+			return None
+		if not foreign_address.startswith('bitcoincash:') and not foreign_address.startswith('bch'):
+			print('Error: unrecognized BCH address %s\n' % foreign_address, end='')
+			return None
+	txid = do_rpc(s, Creda, 'cc.crosschain_request_create', ('', 's'+type[0], amount, amount, rate, 0, 'bch', foreign_address, expiration))
+	if txid:
+		print('Submitted crosschain %s request time %d amount %g rate %g\n' % (type, time.time(), amount, rate), end='')
+		return txid
+	else:
+		print('Crosschain %s request failed time %d amount %g rate %g\n' % (type, time.time(), amount, rate), end='')
+		return None
+
+rounding_test = {}
+
+def round_to_power(amount, rounding):
+	if not amount:
+		return 0
+
+	# round amount to 1, 2, 3, 5 or 7 multiplied by a power of 10
+	expon = int(math.log10(amount))
+	mant = amount / math.pow(10, expon) + rounding
+
+	while mant < 1:
+		mant *= 10
+		expon -= 1
+
+	while mant > 10:
+		mant /= 10
+		expon += 1
+
+	if mant > 3 and mant < 4:
+		mant = 3
+	elif mant >= 4 and mant < 6:
+		mant = 5
+	elif mant >= 6 and mant < 8.5:
+		mant = 7
+	elif mant >= 8.5:
+		mant = 10
+	else:
+		mant = int(mant + 0.5)
+		if mant == 0:
+			mant = 1
+			expon -= 1
+
+	adj_amount = mant * math.pow(10, expon)
+
+	if adj_amount > 0.9:
+		adj_amount = int(adj_amount + 0.5)
+
+	#print '%g\t%g' % (adj_amount, amount + 0.5)
+
+	if rounding == 0 and TEST_ROUNDING:
+		global rounding_test
+		if not adj_amount in rounding_test:
+			rounding_test[adj_amount] = [amount, amount]
+		elif amount < rounding_test[adj_amount][0]:
+			rounding_test[adj_amount][0] = amount
+		elif amount > rounding_test[adj_amount][1]:
+			rounding_test[adj_amount][1] = amount
+
+	#print 'round_to_power %g %g %g\n' % (rounding, amount, adj_amount),
+
+	return adj_amount
+
+if 0:
+	TEST_ROUNDING = True
+	for i in range(10000000):
+		amount = 1 + 130 * random.random()
+		round_to_power(amount, 0)
+	pprint.pprint(rounding_test)
+	exit()
+
 
 def check_if_testnet(s):
 	global IsTestnet

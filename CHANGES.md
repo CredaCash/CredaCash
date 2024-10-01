@@ -2,6 +2,33 @@
 ---
 <!--- NOTE: This file is in Markdown format, and is intended to be viewed in a Markdown viewer. -->
 
+## v2.0.2 2024-09-30
+
+### ccnode
+
+#### - Major Changes
+
+- Fixed a floating point roundoff error that could occur when processing an exchange request with a fractional amount. This roundoff error triggered a rate comparison assertion that caused the blockchain to halt at block level 1299246 on an exchange request with amount 0.1.
+
+#### - Minor Changes
+
+- Version identifier changed to "2.0.2".
+- Fixed the command "cc.crosschain_query_requests" to only return selected request types.
+- Added the configuration option "tor-port" to set the tor proxy port.
+
+### ccwallet
+
+#### - Minor Changes
+
+- Version identifier changed to "2.0.2".
+- Added the configuration option "tor-port" to set the tor proxy port.
+
+### Exchange scripts
+
+#### - Minor Changes
+
+- Various improvments
+
 ## v2.0.01 2024-09-10
 
 ### ccnode

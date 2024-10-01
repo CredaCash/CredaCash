@@ -76,33 +76,16 @@ MIN_ALLOWED_PAYMENT_MINUTES = 4		# Mining will be halted if a match payment is n
 BCH_MIN_SEND_AMOUNT = 1e-4					# don't do exchange requests that involve less than this amount of BCH
 EXCHANGE_REQUEST_EXPIRATION_SECONDS = 90	# expiration seconds for exchange requests
 
-TEST_ROUNDING = False
-
 exchange_common = 'exchange-common.py'
 with open(exchange_common) as f:
     code = compile(f.read(), exchange_common, 'exec')
     exec(code)
 
 import threading
-import math
 
 CC_TYPE_XCX_SIMPLE_BUY = 6
 XMATCH_STATUS_ACCEPTED = 6
 XMATCH_STATUS_PAID = 9
-
-def get_mining_info(s):
-	try:
-		r = do_rpc(s, Creda, 'cc.exchange_query_mining_info')
-		return r['exchange-mining-info-query-results']
-	except:
-		return None
-
-def get_balance(s, c):
-	r = do_rpc(s, c, 'getbalance')
-	try:
-		return float(r)
-	except:
-		return None
 
 class PayChecker:
 	# this class is a singleton, so everything is static
@@ -170,7 +153,9 @@ class PayChecker:
 			# If any results are returned, BCH payments are not being made or dangerously close to not being made
 			PayChecker.status_bad = True
 			pprint.pprint(m)
-			print('BCH Payment Error: match not paid %d minutes before deadline\n' % MIN_ALLOWED_PAYMENT_MINUTES, end='')
+			num = m['match-info']['match-number']
+			print('BCH Payment Error: match %d not paid %d minutes before deadline\n' % (num, MIN_ALLOWED_PAYMENT_MINUTES), end='')
+			do_rpc(s, Creda, 'cc.crosschain_match_mark_paid', (num, '', -1, 0))		# turn off retries
 
 	@staticmethod
 	def StatusIsBad():
@@ -372,85 +357,6 @@ def mine_one(s):
 
 		submit_xreq(s, 'trade', amount, match_rate, expiration)	# send trade request
 
-def submit_xreq(s, type, amount, rate, expiration=0):
-	if type[0] == 'b':
-		foreign_address = ''
-	else:
-		foreign_address = do_rpc(s, Foreign, 'getnewaddress')
-		if not foreign_address:
-			print('Error obtaining a BCH address\n', end='')
-			return None
-		if not foreign_address.startswith('bitcoincash:') and not foreign_address.startswith('bch'):
-			print('Error: unrecognized BCH address %s\n' % foreign_address, end='')
-			return None
-	txid = do_rpc(s, Creda, 'cc.crosschain_request_create', ('', 's'+type[0], amount, amount, rate, 0, 'bch', foreign_address, expiration))
-	if txid:
-		print('Submitted crosschain %s request time %d amount %g rate %g\n' % (type, time.time(), amount, rate), end='')
-		return txid
-	else:
-		print('Crosschain %s request failed time %d amount %g rate %g\n' % (type, time.time(), amount, rate), end='')
-		return None
-
-rounding_test = {}
-
-def round_to_power(amount, rounding):
-	if not amount:
-		return 0
-
-	# round amount to 1, 2, 3, 5 or 7 multiplied by a power of 10
-	expon = int(math.log10(amount))
-	mant = amount / math.pow(10, expon) + rounding
-
-	while mant < 1:
-		mant *= 10
-		expon -= 1
-
-	while mant > 10:
-		mant /= 10
-		expon += 1
-
-	if mant > 3 and mant < 4:
-		mant = 3
-	elif mant >= 4 and mant < 6:
-		mant = 5
-	elif mant >= 6 and mant < 8.5:
-		mant = 7
-	elif mant >= 8.5:
-		mant = 10
-	else:
-		mant = int(mant + 0.5)
-		if mant == 0:
-			mant = 1
-			expon -= 1
-
-	adj_amount = mant * math.pow(10, expon)
-
-	if adj_amount > 0.9:
-		adj_amount = int(adj_amount + 0.5)
-
-	#print '%g\t%g' % (adj_amount, amount + 0.5)
-
-	if rounding == 0 and TEST_ROUNDING:
-		global rounding_test
-		if not adj_amount in rounding_test:
-			rounding_test[adj_amount] = [amount, amount]
-		elif amount < rounding_test[adj_amount][0]:
-			rounding_test[adj_amount][0] = amount
-		elif amount > rounding_test[adj_amount][1]:
-			rounding_test[adj_amount][1] = amount
-
-	#print 'round_to_power %g %g %g\n' % (rounding, amount, adj_amount),
-
-	return adj_amount
-
-if 0:
-	TEST_ROUNDING = True
-	for i in range(10000000):
-		amount = 1 + 130 * random.random()
-		round_to_power(amount, 0)
-	pprint.pprint(rounding_test)
-	exit()
-
 def check_foreign_wallet(s):
 	r = get_balance(s, Foreign)
 	if r is None:
@@ -474,7 +380,7 @@ def pay_monitor_startup(s):
 		print('minimum CredaCash balance adjusted from', Mining.min_cc_bal, 'to', lim)
 		Mining.min_cc_bal = lim
 
-	lim = 0.001
+	lim = 0.0001
 	if Mining.min_bch_bal < lim:
 		print('minimum BCH balance adjusted from', Mining.min_bch_bal, 'to', lim)
 		Mining.min_bch_bal = lim
@@ -556,7 +462,7 @@ def main(argv):
 	else:
 		conf_file = 'exchange-mine.conf'
 
-	parse_config(conf_file)
+	parse_config(conf_file, True)
 
 	if Foreign.currency != 'bch':
 		print()

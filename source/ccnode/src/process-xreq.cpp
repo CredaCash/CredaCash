@@ -370,7 +370,7 @@ static uint64_t ComputeMatchHold(Xreq& buyer, Xreq& seller, uint64_t block_time)
 // computes the discounted rate (in place), and updates the Xreq's recalc_time
 static void ComputeDiscount(Xreq& xreq, UniFloat &rate, uint64_t hold, uint64_t block_time)
 {
-	if (TRACE_PROCESS_XREQ) BOOST_LOG_TRIVIAL(trace) << "ComputeDiscount xreq xreqnum " << xreq.xreqnum << " block_time" << block_time << " hold " << hold << " until " << block_time + hold << " min_wait_time " << xreq.min_wait_time << " rate " << rate << " wait_discount " << xreq.wait_discount;
+	if (TRACE_PROCESS_XREQ) BOOST_LOG_TRIVIAL(trace) << "ComputeDiscount xreq xreqnum " << xreq.xreqnum << " block_time " << block_time << " hold " << hold << " until " << block_time + hold << " min_wait_time " << xreq.min_wait_time << " rate " << rate << " wait_discount " << xreq.wait_discount;
 
 	if (hold <= xreq.min_wait_time || rate == 0 || xreq.wait_discount == 0)
 	{
@@ -649,6 +649,12 @@ bool ProcessXreqs::FindMutualMatches(DbConn *dbconn, const uint64_t passnum, uin
 		// TODO: make major the seller, since sell req's close after one match, all things equal there will be fewer of them and this would therefore make the scan more efficient
 
 		CCASSERT(major.IsBuyer());
+		// The following assertion caused the blockchain to halt at approx 17:40 on 2024-09-26, after block level 1299246.
+		// This assertion was triggered by floating point round off that caused matching_rate_required to be > major.net_rate_required
+		// for Crosschain Simple Buy Request xreqnum 165800 with net_rate_required = 0.00089026568457484245,
+		// open_amount = 0.1 and open_rate_required = matching_rate_required = 0.00089026568457484267.
+		// To assist in rate checking, the assert was fixed by changing the Xreq::MatchRateRequired() function
+		// to make the return value bounded by net_rate_required.
 		CCASSERT(major.matching_rate_required <= major.net_rate_required);
 		CCASSERT(major.best_amount);
 		CCASSERT(major.best_rate <= major.matching_rate_required);

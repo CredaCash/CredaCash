@@ -1072,8 +1072,7 @@ void TransactConnection::HandleTxQueryXreqs(const char *msg, unsigned size)
 
 	auto select_buyers = !Xtx::TypeIsBuyer(xcx_type);
 
-	xreq.type = 0;
-	xreq.db_search_max = 0;
+	tx_dbconn->MatchingInitTypeRange(xcx_type, true, xreq);
 
 	/*
 		Seller wants a higher rate (more Foreign)
@@ -1155,9 +1154,9 @@ void TransactConnection::HandleTxQueryXreqs(const char *msg, unsigned size)
 	int nfound;
 
 	if (only_pending_matched)
-		nfound = tx_dbconn->XreqsSelectPendingMatchRate(xreq, select_buyers, maxret, offset, xreqs, &have_more);
+		nfound = tx_dbconn->XreqsSelectPendingMatchRate(xreq, xcx_type, maxret, offset, xreqs, &have_more);
 	else
-		nfound = tx_dbconn->XreqsSelectOpenRateRequired(xreq, select_buyers, maxret, offset, include_pending_matched, xreqs, &have_more);
+		nfound = tx_dbconn->XreqsSelectOpenRateRequired(xreq, xcx_type, maxret, offset, include_pending_matched, xreqs, &have_more);
 
 	if (nfound < 0)
 		return SendServerError(__LINE__);

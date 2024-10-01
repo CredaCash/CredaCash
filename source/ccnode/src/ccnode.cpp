@@ -106,7 +106,8 @@ void set_service_configs()
 {
 	TorService::SetPorts(g_tor_services, g_params.base_port + TRANSACT_PORT);
 
-	g_params.torproxy_port = g_tor_services[g_tor_services.size()-1]->port + 1;
+	if (!g_params.torproxy_port)
+		g_params.torproxy_port = g_tor_services[g_tor_services.size()-1]->port + 1;
 
 	//cerr << "torproxy_port " << g_params.torproxy_port << endl;
 
@@ -296,6 +297,7 @@ static int process_options(int argc, char **argv)
 		("genesis-maxmal", po::value<int>(&g_params.genesis_maxmal)->default_value(0), "Initial allowance for malicious witnesses when generating new genesis block data files.")
 		("proof-key-dir", po::wvalue<wstring>(&g_params.proof_key_dir), "Path to zero knowledge proof keys; if set to \"env\", the environment variable " KEY_PATH_ENV_VAR " is used (default: the subdirectory \"" ZK_KEY_DIR "\" in same directory as this program).")
 		("tor-exe", po::wvalue<wstring>(&g_params.tor_exe), "Path to Tor executable; if set to \"external\", Tor is not launched by this program, and must be launched and managed externally (default: \"" TOR_EXE "\" in same directory as this program).")
+		("tor-port", po::value<int>(&g_params.torproxy_port)->default_value(0), "Tor proxy port (default baseport+" STRINGIFY(TOR_PORT) ").")
 		("tor-config", po::wvalue<wstring>(&g_params.tor_config), "Path to Tor configuration file (default: \"" TOR_CONFIG "\" in same directory as this program).")
 		("obj-memory-max", po::value<int>(&g_params.max_obj_mem)->default_value(500), "Maximum object (block and transaction) memory in MB.")
 		("tx-validation-threads", po::value<int>(&g_params.tx_validation_threads)->default_value(-1), "Transaction validation threads (-1 = auto config).")
@@ -608,7 +610,7 @@ int main(int argc, char **argv)
 	}
 
 	bool need_tor_proxy = true;	// always true?
-	thread tor_thread(tor_start, g_params.process_dir, g_params.tor_exe, g_params.tor_config, g_params.app_data_dir, need_tor_proxy, ref(g_tor_services), g_tor_services.size()-1);
+	thread tor_thread(tor_start, g_params.process_dir, g_params.tor_exe, g_params.torproxy_port, g_params.tor_config, g_params.app_data_dir, need_tor_proxy, ref(g_tor_services), g_tor_services.size()-1);
 
 	Xreq::Init();
 

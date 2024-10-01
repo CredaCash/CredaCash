@@ -1066,41 +1066,41 @@ int DbConnXreqs::XreqsSelectXreqnum(uint64_t xreqnum, Xreq& xreq, unsigned type)
 }
 
 // return # found
-int DbConnXreqs::XreqsSelectOpenRateRequired(const Xreq& xreq, bool isbuyer, unsigned maxret, unsigned offset, bool include_pending_matched, Xreq *xreqs, bool *have_more)
+int DbConnXreqs::XreqsSelectOpenRateRequired(const Xreq& xreq, unsigned matching_type, unsigned maxret, unsigned offset, bool include_pending_matched, Xreq *xreqs, bool *have_more)
 {
 	//boost::shared_lock<boost::shared_mutex> lock(Xreqs_db_mutex);	// sql statements must be reset before lock is released
 	lock_guard<mutex> lock(Xreqs_db_mutex);						// sql statements must be reset before lock is released
 	Finally finally(boost::bind(&DbConnXreqs::DoXreqsFinish, this));
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnXreqs::XreqsSelectOpenRateRequired isbuyer " << isbuyer << " maxret " << maxret << " offset " << offset << " include_pending_matched " << include_pending_matched << " " << xreq.DebugString();
+	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnXreqs::XreqsSelectOpenRateRequired matching_type " << matching_type << " maxret " << maxret << " offset " << offset << " include_pending_matched " << include_pending_matched << " " << xreq.DebugString();
 
 	auto select = Xreqs_select_open_rate_required;
 
 	// OpenRateRequired >= ?16 and PendingMatchRate <= ?17
-	if (dblog(sqlite3_bind_double(select, 16, Xreq::SignedRate(isbuyer, xreq.open_rate_required).asFloat()))) return -1;
+	if (dblog(sqlite3_bind_double(select, 16, Xreq::SignedRate(!Xtx::TypeIsBuyer(matching_type), xreq.open_rate_required).asFloat()))) return -1;
 	if (dblog(sqlite3_bind_double(select, 17, (include_pending_matched ? DBL_MAX : 0)))) return -1;
 
-	return XreqsSelectRateInternal(select, xreq, isbuyer, maxret, offset, xreqs, have_more);
+	return XreqsSelectRateInternal(select, xreq, matching_type, maxret, offset, xreqs, have_more);
 }
 
 // return # found
-int DbConnXreqs::XreqsSelectPendingMatchRate(const Xreq& xreq, bool isbuyer, unsigned maxret, unsigned offset, Xreq *xreqs, bool *have_more)
+int DbConnXreqs::XreqsSelectPendingMatchRate(const Xreq& xreq, unsigned matching_type, unsigned maxret, unsigned offset, Xreq *xreqs, bool *have_more)
 {
 	//boost::shared_lock<boost::shared_mutex> lock(Xreqs_db_mutex);	// sql statements must be reset before lock is released
 	lock_guard<mutex> lock(Xreqs_db_mutex);						// sql statements must be reset before lock is released
 	Finally finally(boost::bind(&DbConnXreqs::DoXreqsFinish, this));
 
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnXreqs::XreqsSelectPendingMatchRate isbuyer " << isbuyer << " maxret " << maxret << " offset " << offset << " " << xreq.DebugString();
+	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnXreqs::XreqsSelectPendingMatchRate matching_type " << matching_type << " maxret " << maxret << " offset " << offset << " " << xreq.DebugString();
 
-	auto select = (isbuyer ? Xreqs_select_pending_match_rate_descending : Xreqs_select_pending_match_rate_ascending);
+	auto select = (Xtx::TypeIsBuyer(matching_type) ? Xreqs_select_pending_match_rate_ascending : Xreqs_select_pending_match_rate_descending);
 
 	if (dblog(sqlite3_bind_double(select, 16, xreq.pending_match_rate.asFloat()))) return -1;
 
-	return XreqsSelectRateInternal(select, xreq, isbuyer, maxret, offset, xreqs, have_more);
+	return XreqsSelectRateInternal(select, xreq, matching_type, maxret, offset, xreqs, have_more);
 }
 
 // return # found
-int DbConnXreqs::XreqsSelectRateInternal(sqlite3_stmt* select, const Xreq& xreq, bool isbuyer, unsigned maxret, unsigned offset, Xreq *xreqs, bool *have_more)
+int DbConnXreqs::XreqsSelectRateInternal(sqlite3_stmt* select, const Xreq& xreq, unsigned matching_type, unsigned maxret, unsigned offset, Xreq *xreqs, bool *have_more)
 {
 	if (have_more)
 		*have_more = false;
@@ -1113,6 +1113,8 @@ int DbConnXreqs::XreqsSelectRateInternal(sqlite3_stmt* select, const Xreq& xreq,
 
 	if (!xreq.max_amount)
 		memset(&max_amount, -1, AMOUNT_UNSIGNED_PACKED_BYTES);
+
+	auto isbuyer = !Xtx::TypeIsBuyer(matching_type);
 
 	// IsBuyer = ?1 and OpenAmount is not null " // required to use Xreqs_OpenRateRequired_Index
 	// BaseAsset = ?2 and QuoteAsset = ?3 and ForeignAsset = ?4 "
@@ -1155,18 +1157,16 @@ int DbConnXreqs::XreqsSelectRateInternal(sqlite3_stmt* select, const Xreq& xreq,
 		CCASSERT(xreq_out.foreign_asset == xreq.foreign_asset);
 		CCASSERT(xreq_out.type >= xreq.type);
 		CCASSERT(xreq_out.type <= xreq.db_search_max || !xreq.db_search_max);
-
 		CCASSERT(xreq_out.foreign_asset == xreq.foreign_asset);
-		CCASSERT(xreq_out.foreign_asset == xreq.foreign_asset);
-		CCASSERT(xreq_out.foreign_asset == xreq.foreign_asset);
-		CCASSERT(xreq_out.foreign_asset == xreq.foreign_asset);
-		CCASSERT(xreq_out.foreign_asset == xreq.foreign_asset);
-		CCASSERT(xreq_out.foreign_asset == xreq.foreign_asset);
-		CCASSERT(xreq_out.foreign_asset == xreq.foreign_asset);
-
 
 		CCASSERT(xreq_out.min_amount <= xreq.max_amount || !xreq.max_amount);
 		CCASSERT(xreq_out.open_amount >= xreq.min_amount);
+
+		// to ensure integrity of mining, only match CC_TYPE_XCX_SIMPLE_BUY and CC_TYPE_XCX_MINING_BUY with CC_TYPE_XCX_SIMPLE_SELL or CC_TYPE_XCX_MINING_SELL
+		if ((matching_type == CC_TYPE_XCX_SIMPLE_BUY || matching_type == CC_TYPE_XCX_MINING_BUY) && xreq_out.type != CC_TYPE_XCX_SIMPLE_SELL && xreq_out.type != CC_TYPE_XCX_MINING_SELL)
+			continue;
+		if ((xreq_out.type == CC_TYPE_XCX_SIMPLE_BUY || xreq_out.type == CC_TYPE_XCX_MINING_BUY) && matching_type != CC_TYPE_XCX_SIMPLE_SELL && matching_type != CC_TYPE_XCX_MINING_SELL)
+			continue;
 
 		if (offset)
 		{
@@ -1599,21 +1599,26 @@ void DbConnXreqs::MatchingInitMajor(const Xreq& pair, Xreq& xreq)
 	xreq.seqnum = INT64_MIN;
 }
 
-void DbConnXreqs::MatchingInitMinor(const Xreq& major, Xreq& xreq)
+void DbConnXreqs::MatchingInitTypeRange(unsigned type, bool for_query, Xreq& xreq)
 {
-	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnXreqs::MatchingInitMinor major " << major.DebugString();
-
-	xreq.Clear();
-
-	if (major.type == CC_TYPE_XCX_SIMPLE_BUY || major.type == CC_TYPE_XCX_MINING_BUY)
+	if (type == CC_TYPE_XCX_SIMPLE_BUY || type == CC_TYPE_XCX_MINING_BUY)
 	{
-		// simple and mining buy reqs only match to simple sell reqs at this point
+		// simple and mining buy reqs only match to simple sell reqs on first pass matching
 		xreq.type = CC_TYPE_XCX_SIMPLE_SELL;
-		xreq.db_search_max = CC_TYPE_XCX_SIMPLE_SELL;
+		if (!for_query)
+			xreq.db_search_max = CC_TYPE_XCX_SIMPLE_SELL;
+		else
+			xreq.db_search_max = CC_TYPE_XCX_MINING_SELL;
 	}
-	else if (major.type == CC_TYPE_XCX_NAKED_BUY)
+	else if (type == CC_TYPE_XCX_NAKED_SELL || type == CC_TYPE_XCX_REQ_SELL)
 	{
-		// naked buy req will not match mining sell req
+		// naked and full sell reqs cannot match simple or mining buy (converse of above)
+		xreq.type = CC_TYPE_XCX_NAKED_BUY;
+		xreq.db_search_max = CC_TYPE_XCX_REQ_BUY;
+	}
+	else if (type == CC_TYPE_XCX_NAKED_BUY)
+	{
+		// naked buy req cannot match simple or mining sell req (due to pledge)
 		xreq.type = CC_TYPE_XCX_NAKED_SELL;
 		xreq.db_search_max = CC_TYPE_XCX_REQ_SELL;
 	}
@@ -1622,6 +1627,15 @@ void DbConnXreqs::MatchingInitMinor(const Xreq& major, Xreq& xreq)
 		xreq.type = 0;
 		xreq.db_search_max = 0;
 	}
+}
+
+void DbConnXreqs::MatchingInitMinor(const Xreq& major, Xreq& xreq)
+{
+	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnXreqs::MatchingInitMinor major " << major.DebugString();
+
+	xreq.Clear();
+
+	MatchingInitTypeRange(major.type, false, xreq);
 
 	xreq.for_witness = major.for_witness;
 	xreq.base_asset = major.base_asset;
