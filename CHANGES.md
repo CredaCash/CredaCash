@@ -2,6 +2,31 @@
 ---
 <!--- NOTE: This file is in Markdown format, and is intended to be viewed in a Markdown viewer. -->
 
+## v2.0.3 2024-11-04
+
+### ccnode
+
+#### - Major Changes
+
+- Fixed handling of partial exchange payments.
+
+#### - Minor Changes
+
+- Version identifier changed to "2.0.3".
+
+### ccwallet
+
+#### - Minor Changes
+
+- Version identifier changed to "2.0.3".
+- Fixed handling of partial exchange payments.
+
+### Exchange scripts
+
+#### - Minor Changes
+
+- Minor improvements.
+
 ## v2.0.2 2024-09-30
 
 ### ccnode
@@ -27,7 +52,7 @@
 
 #### - Minor Changes
 
-- Various improvments
+- Various improvements.
 
 ## v2.0.01 2024-09-10
 

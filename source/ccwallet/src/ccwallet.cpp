@@ -253,7 +253,7 @@ static int process_options(int argc, char **argv)
 		("tx-polling-threads", po::value<int>(&g_params.polling_threads)->default_value(10), "Transaction polling threads.")
 
 		//TODO?: remove this and compute from target blockchain properies?:
-		("exchange-poll-interval", po::value<int>(&g_params.exchange_poll_time)->default_value(120), "Exchange match polling interval.")
+		("exchange-poll-interval", po::value<int>(&g_params.exchange_poll_time)->default_value(60), "Exchange match polling interval.")
 
 		("wallet-rpc", po::value<bool>(&g_rpc_service.enabled)->default_value(0), "Provide wallet RPC service.")
 		#if 0 // for security, only allow RPC services on localhost

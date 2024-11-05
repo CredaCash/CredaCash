@@ -522,9 +522,17 @@ static int ValidateForeign(DbConn *dbconn, const uint64_t prior_blocktime, bool 
 
 	if (result.amount > xpay.foreign_amount && xpay.foreign_amount < xpay.match_left_to_pay)
 	{
-		BOOST_LOG_TRIVIAL(info) << "ProcessTx::ValidateForeign INVALID claimed amount " << xpay.foreign_amount << " < confirmed amount " << result.amount << " with " << xpay.match_left_to_pay << " remaining to pay";
+		auto encoded = UniFloat::WireEncode(result.amount, -1);	// assume wallet rounded down
+		auto decoded = UniFloat::WireDecode(encoded);
 
-		return TX_RESULT_FOREIGN_VERIFICATION_FAILED;
+		//BOOST_LOG_TRIVIAL(info) << "ProcessTx::ValidateForeign confirmed amount " << result.amount << " wire encoded " << decoded << " claimed amount " << xpay.foreign_amount << " match_left_to_pay " << xpay.match_left_to_pay;
+
+		if (decoded > xpay.foreign_amount)
+		{
+			BOOST_LOG_TRIVIAL(info) << "ProcessTx::ValidateForeign INVALID claimed amount " << xpay.foreign_amount << " < confirmed amount " << decoded << " with " << xpay.match_left_to_pay << " remaining to pay";
+
+			return TX_RESULT_FOREIGN_VERIFICATION_FAILED;
+		}
 	}
 
 	// desired order is xpay.match_timestamp < result.blocktime < prior_blocktime

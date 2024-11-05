@@ -157,6 +157,7 @@ def handle_paid_matches(s, mi, pi, num, amt, addr, conf, mins, pay_claim_stats):
 		# No matter how many times the refid and command are sent, the CredaCash wallet will only do the command once.
 		# After the command completes, the CredaCash wallet will immediately return the result of the command every time
 		# the refid and command are resent.
+		do_rpc(s, Creda, 'cc.crosschain_match_mark_paid', (num, '', 10, 10)) # if interrupted, try again in 10 minutes
 		t0 = time.time()
 		while True:
 			txid = do_rpc(s, Creda, 'cc.crosschain_payment_claim', (refid, num, blockheight, '', amt), return_timeout=True)
@@ -204,6 +205,9 @@ def main_loop():
 
 		if sleep_before_next_check:
 			time.sleep(10 + 10 * random.random())
+			cc_pledged = get_cc_pledged(s, Creda)
+			if cc_pledged is not None:
+				print(int(time.time()), '= %g Creda currently locked in pending buy requests' % cc_pledged)
 		sleep_before_next_check = True
 
 		# >>> Check if any buy requests need action
@@ -291,7 +295,23 @@ def main(argv):
 	except Exception:
 		traceback.print_exc()
 	except KeyboardInterrupt:
-		pass
+		for iter in range(2):
+			while True:
+				building = do_rpc(s, Creda, 'cc.dump_tx_build', expect_json=False)
+				if not (iter and building):
+					break
+				if iter < 2:
+					print('Hold a second... the CredaCash wallet is in the middle of creating a transaction...')
+					iter = 2
+				time.sleep(1)
+			cc_pledged = get_cc_pledged(s, Creda)
+			if cc_pledged:
+				print()
+				print('There is', cc_pledged, 'Creda currently pledged to exchange buy requests.')
+				print('This script should not be stopped until all pending buy requests and matches are fully settled.')
+				break
+			if not building:
+				break # checking pledged can be expensive, so only recheck when building was true
 	except SystemExit:
 		pass
 

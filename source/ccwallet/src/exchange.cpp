@@ -250,9 +250,14 @@ int ExchangeRequest::PollXmatchreq(DbConn *dbconn, TxQuery& txquery, Xmatchreq &
 				if (!xmatch.have_xreqs)
 					break;
 
-				rc = dbconn->TransactionSelectObjIdDescendingId(matching.objid, INT64_MAX, matching_tx);
+				auto orig_objid = matching.objid;
+				Xreq::ConvertTradeObjIdToSellObjId(CC_TYPE_XCX_MINING_TRADE, matching.type, orig_objid);
+
+				rc = dbconn->TransactionSelectObjIdDescendingId(orig_objid, INT64_MAX, matching_tx);
 				if (rc < 0) return rc;
 				if (!rc) break;	// already in wallet
+
+				//BOOST_LOG_TRIVIAL(info) << "ExchangeRequest::PollXmatchreq xmatchnum " << xmatch.xmatchnum << " objid not found " << matching.DebugString();
 
 				// add matching request to wallet
 
@@ -595,8 +600,15 @@ int ExchangeMatch::PollXmatch(DbConn *dbconn, TxQuery& txquery, Xmatch &xmatch, 
 		xmatch.next_deadline = results.xmatch.next_deadline;
 	}
 
-	if (xmatch.IsOpen() || g_shutdown)
+	if (g_shutdown)
 		return 0;
+
+	if (xmatch.IsOpen())
+	{
+		auto rc = dbconn->ExchangeMatchInsert(xmatch, true);
+
+		return rc;
+	}
 
 	xmatch.wallet_polltime = 0;	// no need to poll again
 

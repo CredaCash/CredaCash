@@ -74,7 +74,7 @@ def ensure_one_instance(id):
 		print('To minimize the chance of double payments, only one instance is allowed.\n')
 		exit()
 
-def do_rpc(s, c, method, params=(), timeout=600, return_timeout=False, needs_wallet=False):
+def do_rpc(s, c, method, params=(), timeout=600, return_timeout=False, needs_wallet=False, expect_json=True):
 	if needs_wallet and c.type == ELECTRUM and c.currency == 'btc':
 		if len(params) == 0:
 			params = {}
@@ -100,7 +100,7 @@ def do_rpc(s, c, method, params=(), timeout=600, return_timeout=False, needs_wal
 		req += ']'
 	req += '}\n'
 
-	#print 'performing rpc port %d request %s\n' % (c.port, req),
+	#print('performing rpc port %d request %s\n' % (c.port, req), end='')
 	try:
 		r = s.post('http://127.0.0.1:%d%s' % (c.port, c.url), auth=(c.user, c.pwd), data=req, timeout=(20,timeout))
 	except Exception as e:
@@ -109,7 +109,7 @@ def do_rpc(s, c, method, params=(), timeout=600, return_timeout=False, needs_wal
 		print('%d Warning: rpc port %d exception %s "%s" req %s\n' % (time.time(), c.port, type(e), e, req), end='')
 		#traceback.print_exc()
 		return None
-	#print 'rpc status code %d response: %s\n', (r.status_code, r.text),
+	#print('rpc status code %d response: %s\n' % (r.status_code, r.text), end='')
 	if r.status_code != 200: # and method not in ('sendtoaddress', 'payto', 'broadcast'):
 		print('%d Warning: rpc port %d status code %d req %s\n' % (time.time(), c.port, r.status_code, req), end='')
 
@@ -127,6 +127,8 @@ def do_rpc(s, c, method, params=(), timeout=600, return_timeout=False, needs_wal
 	except:
 		#pprint.pprint(r)
 		if hasattr(r, 'text'):
+			if not expect_json:
+				return r.text
 			print('%d Warning: rpc port %d json load failed "%s" req %s\n' % (time.time(), c.port, r.text.encode('ascii', 'backslashreplace'), req), end='')
 		else:
 			print('%d Warning: rpc port %d no text returned for req %s\n' % (time.time(), c.port, req), end='')
@@ -417,6 +419,15 @@ def get_balance(s, c):
 	except:
 		return None
 
+def get_cc_pledged(s, c, currencies=None):
+	cc_pledged = 0
+	for cur in (currencies or ('btc', 'bch')):
+		pending = do_rpc(s, Creda, 'cc.exchange_requests_pending_totals', (cur, ))
+		if not pending:
+			return None
+		cc_pledged += pending['buy-request-pending-totals']['pledge-amount']
+	return cc_pledged
+
 def submit_xreq(s, type, amount, rate, expiration=0):
 	if type[0] == 'b':
 		foreign_address = ''
@@ -428,9 +439,9 @@ def submit_xreq(s, type, amount, rate, expiration=0):
 		if not foreign_address.startswith('bitcoincash:') and not foreign_address.startswith('bch'):
 			print('Error: unrecognized BCH address %s\n' % foreign_address, end='')
 			return None
+	print('Submitting crosschain %s request time %d amount %g rate %g\n' % (type, time.time(), amount, rate), end='')
 	txid = do_rpc(s, Creda, 'cc.crosschain_request_create', ('', 's'+type[0], amount, amount, rate, 0, 'bch', foreign_address, expiration))
 	if txid:
-		print('Submitted crosschain %s request time %d amount %g rate %g\n' % (type, time.time(), amount, rate), end='')
 		return txid
 	else:
 		print('Crosschain %s request failed time %d amount %g rate %g\n' % (type, time.time(), amount, rate), end='')

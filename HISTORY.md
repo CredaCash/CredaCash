@@ -4,6 +4,10 @@
 
 ## Release History
 
+### 2024-11-04 v2.0.3
+
+Fixed handling of partial exchange payments.
+
 ### 2024-09-30 v2.0.2
 
 Fixed a floating point rounding issue in exchange rate computation.
