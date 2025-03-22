@@ -4,6 +4,10 @@
 
 ## Release History
 
+### 2025-03-22 v2.0.4
+
+Fixed rare assert condition that could cause wallet to stop.
+
 ### 2024-11-04 v2.0.3
 
 Fixed handling of partial exchange payments.

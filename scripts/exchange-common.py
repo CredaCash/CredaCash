@@ -454,6 +454,7 @@ def round_to_power(amount, rounding):
 		return 0
 
 	# round amount to 1, 2, 3, 5 or 7 multiplied by a power of 10
+	#print(amount, rounding)
 	expon = int(math.log10(amount))
 	mant = amount / math.pow(10, expon) + rounding
 
@@ -484,7 +485,7 @@ def round_to_power(amount, rounding):
 	if adj_amount > 0.9:
 		adj_amount = int(adj_amount + 0.5)
 
-	#print '%g\t%g' % (adj_amount, amount + 0.5)
+	#print('%g\t%g' % (adj_amount, amount + 0.5))
 
 	if rounding == 0 and TEST_ROUNDING:
 		global rounding_test
@@ -495,14 +496,19 @@ def round_to_power(amount, rounding):
 		elif amount > rounding_test[adj_amount][1]:
 			rounding_test[adj_amount][1] = amount
 
-	#print 'round_to_power %g %g %g\n' % (rounding, amount, adj_amount),
+	#print('round_to_power %g %g %g\n' % (rounding, amount, adj_amount),)
 
 	return adj_amount
 
 if 0:
 	TEST_ROUNDING = True
+	for i in range (-1, 2):
+		for amount in (0, 1, 2, 3, 5, 7):
+			amount *= 10**i
+			round_to_power(amount, 0)
 	for i in range(10000000):
-		amount = 1 + 130 * random.random()
+		amount = 1 + 1300 * random.random()
+		amount /= 10
 		round_to_power(amount, 0)
 	pprint.pprint(rounding_test)
 	exit()

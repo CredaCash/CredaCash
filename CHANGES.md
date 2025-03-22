@@ -2,6 +2,20 @@
 ---
 <!--- NOTE: This file is in Markdown format, and is intended to be viewed in a Markdown viewer. -->
 
+## v2.0.4 2025-03-22
+
+### ccwallet
+
+#### - Minor Changes
+
+- Fixed rare assert condition that could cause wallet to stop.
+
+### Exchange scripts
+
+#### - Minor Changes
+
+- Minor improvements.
+
 ## v2.0.3 2024-11-04
 
 ### ccnode
@@ -10,15 +24,10 @@
 
 - Fixed handling of partial exchange payments.
 
-#### - Minor Changes
-
-- Version identifier changed to "2.0.3".
-
 ### ccwallet
 
 #### - Minor Changes
 
-- Version identifier changed to "2.0.3".
 - Fixed handling of partial exchange payments.
 
 ### Exchange scripts
@@ -37,7 +46,6 @@
 
 #### - Minor Changes
 
-- Version identifier changed to "2.0.2".
 - Fixed the command "cc.crosschain_query_requests" to only return selected request types.
 - Added the configuration option "tor-port" to set the tor proxy port.
 
@@ -45,7 +53,6 @@
 
 #### - Minor Changes
 
-- Version identifier changed to "2.0.2".
 - Added the configuration option "tor-port" to set the tor proxy port.
 
 ### Exchange scripts
@@ -60,7 +67,6 @@
 
 #### - Minor Changes
 
-- Version identifier changed to "2.0.1".
 - Added support for exchange mining request types.
 - Fixed problems connecting to the network on some platforms due to issues launching Tor.
 - Fixed rare assert that could cause program to halt, requiring restart.
@@ -69,7 +75,6 @@
 
 #### - Minor Changes
 
-- Version identifier changed to "2.0.1".
 - Added the "mining_trade" exchange request type, which simplifies mining using the crosschain exchange.
 - Improved exchange request generation on slower or heavily-loaded computers.
 - Added the commands "cc.crosschain_request_create_local" and "cc.broadcast", which allows exchange requests to be created locally and then broadcast to the network at a later time.
@@ -95,7 +100,6 @@
 
 #### - Minor Changes
 
-- Version identifier changed to "2.0".
 - Faster initial blockchain sync.
 
 ### ccwallet
@@ -107,7 +111,6 @@
 
 #### - Minor Changes
 
-- Version identifier changed to "2.0".
 - Added various "cc.crosschain\_" and "cc.exchange\_" commands.
 - Added command "cc.donation\_estimate".
 - Added command "cc.billets_list_unspent" that can filter output by pending, cleared and allocated statuses.
@@ -125,7 +128,6 @@
 
 #### - Minor Changes
 
-- Version identifier changed to "1.01".
 - Added block timestamp to console output.
 - Changed the default port assignments to allow more services in the future.
 - To make configuration easier, if a "#" character is used in the value of the command line options "datadir", "rendezvous-file" or "genesis-file", it is now replaced by the blockchain number.
@@ -152,7 +154,6 @@
 
 #### - Minor Changes
 
-- Version identifier changed to "1.01".
 - Fixed the command "gettransaction" to report a transaction amount of zero when the amount is sent to one of the wallet's own destinations.
 - In bitcoin, some functions such as "gettransaction" and "getreceivedbyaddress" will return the same error message for an invalid transaction id or address, and for a transaction id or address that is valid but not found in the wallet. In order to make troubleshooting easier, these functions have been changed in the CredaCash wallet to return different error codes and messages for an invalid transaction id or address, as opposed to a transaction id or address that is valid but not in the wallet.
 - Renamed the command "cc.poll\_destination" to "cc.destination\_poll", and added a parameter to generate additional polling addresses and made the default maximum receive time unlimited.

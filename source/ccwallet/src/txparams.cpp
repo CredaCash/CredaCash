@@ -192,7 +192,7 @@ int TxParamQuery::FetchParams(TxParams& txparams, TxQuery& txquery, bool force)
 		return 0;
 	}
 
-	static vector<char> querybuf(100);
+	vector<char> querybuf(64);
 
 	auto rc = txquery.QueryParams(txparams, querybuf);
 	if (rc) return -1;

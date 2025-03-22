@@ -4234,15 +4234,20 @@ CCRESULT tx_reset_work(const string& fn, uint64_t timestamp, char *binbuf, const
 	CCASSERT(binsize);
 
 	auto pheader = (const CCObject::Header *)binbuf;
+	auto msize = pheader->size;
 	const unsigned data_offset = sizeof(CCObject::Header) + TX_POW_SIZE;
 
-	//cerr << hex << "tx_reset_work binsize " << binsize << " tx size " << pheader->size << " tag " << pheader->tag << dec << endl;
-
-	if (pheader->size > binsize)
+	if (msize > binsize)
+	{
+		cerr << "tx_reset_work error msg size " << msize << " > bufsize " << binsize << hex << " tag " << hex << pheader->tag << dec << endl;
 		return -1;
+	}
 
-	if (pheader->size < data_offset)
+	if (msize < data_offset)
+	{
+		cerr << "tx_reset_work error msg size " << msize << " < data_offset " << data_offset << hex << " tag " << hex << pheader->tag << dec << endl;
 		return -1;
+	}
 
 	auto ptime = (uint64_t*)(binbuf + sizeof(CCObject::Header));
 
