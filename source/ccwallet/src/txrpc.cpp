@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
+ * Copyright (C) 2015-2025 Creda Foundation, Inc., or its contributors
  *
  * txrpc.cpp
 */
@@ -431,6 +431,298 @@ void cc_transaction_cancel(CP string& txid, RPC_STDPARAMS)
 	if (rc) throw RPC_Exception(RPC_INVALID_ADDRESS_OR_KEY, "Transaction cannot be cancelled");
 
 	rstream << tx.GetBtcTxid();
+}
+
+void cc_transactions_list(uint64_t start, uint64_t end, uint64_t limit, RPC_STDPARAMS)
+{
+	if (TRACE_TX) BOOST_LOG_TRIVIAL(info) << "cc_transactions_list start " << start << " end " << end << " limit " << limit;
+
+	const bool incwatch = true; // for now
+
+	int dir = (start < end ? 1 : -1);
+	if (!start) start = INT64_MAX;
+	if (!end) end = (dir > 0 ? INT64_MAX : TX_ID_MINIMUM);
+	if (!limit) limit = 40;
+
+	limit = min(limit, (uint64_t)1000);
+
+	end = min(end, (uint64_t)INT64_MAX);
+	end = max(end, (uint64_t)TX_ID_MINIMUM);
+
+	if (dir < 0)
+		start = min(start, (uint64_t)INT64_MAX);
+	if (dir > 0)
+		start = max(start, (uint64_t)TX_ID_MINIMUM);
+
+	uint64_t next_id = start;
+	uint64_t scan_count = 0;
+	bool needs_comma = false;
+
+	Transaction tx;
+	Xmatchreq xreq2;
+	Xreq xreq;
+	Xpay xpay;
+
+	rstream << "[";
+
+	while (scan_count < limit)
+	{
+		if (dir > 0 && next_id > end)
+			break;
+		if (dir < 0 && next_id < end)
+			break;
+
+		int rc;
+		if (dir > 0)
+			rc = tx.BeginAndReadTx(dbconn, next_id, true);
+		else
+			rc = tx.BeginAndReadTxIdDescending(dbconn, next_id);
+
+		if (rc > 0)
+			break;
+		if (rc)
+		{
+			BOOST_LOG_TRIVIAL(error) << "cc_transactions_list BeginAndReadTx dir " << dir << " id " << next_id << " returned " << rc << " " << tx.DebugString();
+			throw txrpc_wallet_db_error;
+		}
+
+		if (g_shutdown)
+			throw txrpc_shutdown_error;
+
+		if (dir > 0 && tx.id > end)
+			break;
+		if (dir < 0 && tx.id < end)
+			break;
+
+		if (TRACE_TX) BOOST_LOG_TRIVIAL(debug) << "cc_transactions_list read " << tx.DebugString();
+
+		next_id = tx.id + dir;
+		++scan_count;
+
+		bool isError = (tx.status <= TX_STATUS_ERROR);
+
+		bool isIntermediate = (tx.type == CC_TYPE_TXPAY && !isError);
+		for (unsigned index = 0; index < tx.nout && isIntermediate; ++index)
+		{
+			if (!tx.output_bills[index].BillIsChange())
+				isIntermediate = false;
+		}
+
+		rstream << (needs_comma ? ",{" : "{");
+		needs_comma = true;
+
+		bool isMint = (tx.nin == 0 && tx.nout == 1 && tx.output_bills[0].dest_id == MINT_DESTINATION_ID);
+
+		bool isXsettle = false;
+		if (!isMint && tx.nin == 0 && tx.nout == 1 && tx.output_destinations[0].type == SECRET_TYPE_SPENDABLE_DESTINATION)
+		{
+			Secret address;
+			auto rc = dbconn->SecretSelectDestination(tx.output_destinations[0].id, 0, address);
+			if (!rc && address.type == SECRET_TYPE_EXCHANGE_ADDRESS)
+				isXsettle = true;
+		}
+
+		bool isXpay = (Xtx::TypeIsXpay(tx.type) && !isError);
+		if (isXpay)
+		{
+			xpay.Clear();
+			xpay.type = tx.type;
+			auto rc = xpay.FromWire("cc_transactions_list", 1, tx.txbody.data(), tx.txbody.size());
+			if (rc)
+			{
+				BOOST_LOG_TRIVIAL(error) << "cc_transactions_lis xpay.FromWire returned " << rc << " " << tx.DebugString();
+				throw txrpc_wallet_error;
+			}
+
+			if (TRACE_TX) BOOST_LOG_TRIVIAL(debug) << "cc_transactions_list read " << xpay.DebugString();
+		}
+
+		bool isXreq = (Xtx::TypeIsXreq(tx.type) && !isError);
+		if (isXreq)
+		{
+			xreq.Clear();
+			xreq.type = tx.type;
+			xreq.for_testnet = IsTestnet(tx.blockchain);
+			xreq.amount_bits = TX_AMOUNT_BITS;
+			xreq.exponent_bits = TX_AMOUNT_EXPONENT_BITS;
+			rc = xreq.FromWire("cc_transactions_list", 1, tx.txbody.data(), tx.txbody.size());
+			if (rc)
+			{
+				BOOST_LOG_TRIVIAL(error) << "cc_transactions_lis txreq.FromWire returned " << rc << " " << tx.DebugString();
+				throw txrpc_wallet_error;
+			}
+
+			// needed for xreqnum, disposition, open_amount
+			rc = dbconn->ExchangeRequestSelectTxId(tx.id, 0, xreq2);
+			if (rc < 0)
+			{
+				BOOST_LOG_TRIVIAL(error) << "cc_transactions_lis ExchangeRequestSelectTxId returned " << rc << " " << tx.DebugString();
+				throw txrpc_wallet_db_error;
+			}
+			if (rc) BOOST_LOG_TRIVIAL(warning) << "cc_transactions_list error reading exchange request for txid " << tx.id;
+
+			if (TRACE_TX) BOOST_LOG_TRIVIAL(debug) << "cc_transactions_list read " << xreq.DebugString();
+			if (TRACE_TX) BOOST_LOG_TRIVIAL(debug) << "cc_transactions_list read " << xreq2.DebugString();
+		}
+
+		bool isSend = tx.WeSent(incwatch);
+		bool isSelf = true;
+
+		const char *cstr = "Receive";
+		if (isSend) cstr = "Send";
+		if (isMint) cstr = "Mint";
+		if (isXpay) cstr = "Exchange Payment";
+		if (isXreq) cstr = "Exchange Request";
+		if (isXsettle) cstr = "Exchange Settlement";
+		if (isIntermediate) cstr = "Intermediate";
+		if (isError) cstr = "Error";
+
+		string amount;
+		amount_to_string(0, tx.donation, amount);
+
+		rstream <<
+			"\"id\":" << tx.id <<
+			",\"type\":" << tx.type <<
+			",\"type-label\":\"" << tx.TypeString() << "\""
+			",\"status\":" << tx.status <<
+			",\"status-label\":\"" << tx.StatusString() << "\""
+			",\"txid\":\"" << tx.GetBtcTxid() << "\""
+			",\"time\":" << tx.create_time <<
+			",\"donation\":" << amount <<
+			",\"outputs\":[";
+
+		bool needs_comma = false;
+
+		if (TRACE_TX) BOOST_LOG_TRIVIAL(debug) << "cc_transactions_list " << cstr << " id " << tx.id << " isError " << isError << " isMint " << isMint << " isXreq " << isXreq << " isXpay " << isXpay << " isXsettle " << isXsettle << " isSend " << isSend << " isIntermediate " << isIntermediate << " nin " << tx.nin << " nout " << tx.nout;
+
+		for (unsigned i = 0; i < tx.nout; ++i)
+		{
+			if (!tx.output_bills[i].amount)
+			{
+				if (TRACE_TX) BOOST_LOG_TRIVIAL(debug) << "cc_transactions_list " << cstr << " id " << tx.id << " isError " << isError << " isMint " << isMint << " isXreq " << isXreq << " isXpay " << isXpay << " isXsettle " << isXsettle << " isSend " << isSend << " isIntermediate " << isIntermediate << " nin " << tx.nin << " nout " << tx.nout << " output " << i << " amount = 0";
+				continue;
+			}
+
+			bool isChange = tx.output_bills[i].BillIsChange() && !isIntermediate;
+			if (isChange) continue;
+
+			bool isRecv = tx.output_destinations[i].DestinationFromThisWallet(incwatch);
+
+			if (!isRecv) isSelf = false; // isSelf true only if all are isRecv
+
+			if (TRACE_TX) BOOST_LOG_TRIVIAL(debug) << "cc_transactions_list " << cstr << " id " << tx.id << " isError " << isError << " isMint " << isMint << " isXreq " << isXreq << " isXpay " << isXpay << " isXsettle " << isXsettle << " isSend " << isSend << " isIntermediate " << isIntermediate << " nin " << tx.nin << " nout " << tx.nout << " output " << i << " isRecv " << isRecv << " isChange " << isChange;
+			if (TRACE_TX) BOOST_LOG_TRIVIAL(debug) << "cc_transactions_list output " << i << " " << tx.output_bills[i].DebugString();
+			if (TRACE_TX) BOOST_LOG_TRIVIAL(debug) << "cc_transactions_list output " << i << " " << tx.output_destinations[i].DebugString();
+
+			rstream << (needs_comma ? ",{" : "{");
+			needs_comma = true;
+
+			amount_to_string(tx.output_bills[i].asset, tx.output_bills[i].amount, amount);
+
+			const char *category = (isSend && isRecv ? "Self" : isSend ? "Send" : isRecv ? "Receive" : "Unknown");
+			const char *sign = (isRecv ? "" : "-");
+
+			rstream <<
+				"\"category\":\"" << category << "\"" <<
+				",\"asset\":" << tx.output_bills[i].asset <<
+				",\"amount\":" << sign << amount;
+
+			if (tx.output_destinations[i].id)
+				rstream << ",\"destination\":\"" << tx.output_destinations[i].EncodeDestination() << "\"";
+
+			//rstream << ",\"x-type-class-send-recv-change\":\"" << tx.type << "-" << cstr << "-" << isSend << "-" << isRecv << "-" << isChange << "\"";
+
+			rstream << "}";
+		}
+
+		rstream << "],";
+
+		_btc_list_conflicts(dbconn, tx, rstream);
+
+		if (cstr[0] == 'S' && isSelf)
+			cstr = "Send-to-Self";
+
+		rstream << ",\"class\":\"" << cstr << "\"";
+
+		//rstream << ",\"x-type-class-send-nout\":\"" << tx.type << "-" << cstr << "-" << isSend << "-" << tx.nout << "\"";
+
+		if (tx.parent_id) rstream << ",\"parent-id\":" << tx.parent_id;
+		if (tx.param_level) rstream << ",\"parameter-level\":" << tx.param_level;
+		if (tx.ref_id.length()) rstream << ",\"reference-id\":\"" << tx.ref_id << "\"";
+
+		if (isXreq)
+		{
+			amount_to_string(xreq.base_asset, xreq.min_amount, amount);
+			rstream << ",\"minimum-amount\":" << amount;
+
+			amount_to_string(xreq.base_asset, xreq.max_amount, amount);
+			rstream << ",\"maximum-amount\":" << amount;
+
+			amount_to_string(xreq.base_asset, xreq2.open_amount, amount);
+			rstream << ",\"open-amount\":" << amount;
+
+			auto pledge = xreq.max_amount;
+			if (Xtx::TypeIsBuyer(xreq.type) && xreq.pledge != 100)
+				pledge = pledge * bigint_t(xreq.pledge) / bigint_t(100UL);	// pledge amounts always rounded down
+
+			amount_to_string(xreq.base_asset, pledge, amount);
+			rstream << ",\"pledge\":" << amount;
+
+			rstream <<
+				",\"disposition\":" << xreq2.disposition <<
+				",\"disposition-label\":\"" << Xmatchreq::DispositionString(xreq2.disposition) << "\"" <<
+				",\"expire-time\":" << xreq.expire_time <<
+				",\"base-asset\":" << xreq.base_asset <<
+				",\"quote-asset\":" << xreq.quote_asset <<
+				",\"net-rate-required\":" << xreq.net_rate_required <<
+				",\"wait-discount\":" << xreq.wait_discount <<
+				",\"base-costs\":" << xreq.base_costs <<
+				",\"quote-costs\":" << xreq.quote_costs <<
+				",\"destination\":\"" << Secret::EncodeDestination(xreq.destination, tx.blockchain) << "\"" <<
+				",\"consideration-required\":" << xreq.consideration_required <<
+				",\"consideration-offered\":" << xreq.consideration_offered <<
+				",\"hold-time\":" << xreq.hold_time <<
+				",\"hold-time-required\":" << xreq.hold_time_required <<
+				",\"minimum-wait-time\":" << xreq.min_wait_time <<
+				",\"payment-time\":" << xreq.payment_time <<
+				",\"confirmations\":" << xreq.confirmations;
+
+				if (xreq.xreqnum)
+					rstream << ",\"request-number\":" << xreq2.xreqnum;
+
+				if (xreq.foreign_asset.length())
+					rstream << ",\"foreign-asset\":\"" << xreq.foreign_asset << "\"";
+
+				if (xreq.foreign_address.length())
+					rstream << ",\"foreign-address\":\"" << xreq.foreign_address << "\"";
+
+				/* fields not streamed:
+				out << " accept_time_required " << accept_time_required;
+				out << " accept_time_offered " << accept_time_offered;
+				out << " objid " << buf2hex(&objid, CC_OID_TRACE_SIZE);
+				out << " add_immediately_to_blockchain " << flags.add_immediately_to_blockchain;
+				out << " auto_accept_matches " << flags.auto_accept_matches;
+				out << " no_minimum_after_first_match " << flags.no_minimum_after_first_match;
+				out << " must_liquidate_crossing_minimum " << flags.must_liquidate_crossing_minimum;
+				out << " must_liquidate_below_minimum " << flags.must_liquidate_below_minimum;
+				out << " has_signing_key " << flags.has_signing_key;
+				req.signing_key_blob
+				*/
+		}
+
+		if (isXpay)
+		{
+			rstream <<
+				",\"match-number\":" << xpay.xmatchnum <<
+				",\"foreign-amount\":" << xpay.foreign_amount <<
+				",\"foreign-txid\":\"" << xpay.foreign_txid << "\"" <<
+				",\"foreign-block-id\":\"" << xpay.foreign_block_id << "\"";
+		}
+
+		rstream << "}";
+	}
+
+	rstream << "]";
 }
 
 void cc_list_change_destinations(RPC_STDPARAMS)
@@ -1450,6 +1742,12 @@ static void stream_match(const Xmatch& xmatch, bool is_buyer, bool is_seller, in
 		rstream << ",\"deadline\":" << xmatch.next_deadline;
 		rstream << ",\"deadline-localtime\":" << xmatch.next_deadline - clock_diff;
 		rstream << ",\"deadline-minutes\":" << ((int64_t)xmatch.next_deadline - now)/60;
+
+		if (xmatch.wallet_reminder_time && xmatch.wallet_reminder_time != (uint64_t)(-1))
+		{
+			rstream << ",\"wallet-reminder-localtime\":" << xmatch.wallet_reminder_time;
+			rstream << ",\"wallet-reminder-minutes\":" << ((int64_t)xmatch.wallet_reminder_time - now)/60;
+		}
 	}
 
 	rstream << "}}";
@@ -1543,9 +1841,14 @@ void cc_crosschain_match_action_list(double minutes, bool override_reminder_time
 			continue;
 		}
 
-		if (TRACE_TX) BOOST_LOG_TRIVIAL(debug) << "cc_crosschain_match_action_list returning xmatchnum " << xmatch.xmatchnum;
+		if (Xmatch::StatusIsClosed(xmatch.status))
+		{
+			//if (TRACE_TX) BOOST_LOG_TRIVIAL(trace) << "cc_crosschain_match_action_list xmatchnum " << xmatch.xmatchnum << " status " << xmatch.status;
 
-		// TODO: double check match status
+			continue;
+		}
+
+		if (TRACE_TX) BOOST_LOG_TRIVIAL(debug) << "cc_crosschain_match_action_list returning xmatchnum " << xmatch.xmatchnum;
 
 		if (needs_comma)
 			rstream << ",";

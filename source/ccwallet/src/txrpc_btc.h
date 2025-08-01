@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
+ * Copyright (C) 2015-2025 Creda Foundation, Inc., or its contributors
  *
  * txrpc_btc.h
 */
@@ -57,3 +57,5 @@ void btc_listtransactions(CP string& acct, int count, int from, bool incwatch, R
 void btc_move(CP string& fromacct, CP string& toacct, CP snarkfront::bigint_t& amount, CP string& comment, RPC_STDPARAMSAQ);
 void btc_sendfrom(CP string& fromacct, CP string& toaddr, CP snarkfront::bigint_t& amount, CP string& comment, CP string& comment_to, RPC_STDPARAMS);
 void btc_setaccount(CP string& addr, CP string& acct, RPC_STDPARAMS);
+
+void _btc_list_conflicts(DbConn *dbconn, class Transaction& tx, ostringstream& rstream);

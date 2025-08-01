@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
+ * Copyright (C) 2015-2025 Creda Foundation, Inc., or its contributors
  *
  * unifloat.hpp
 */
@@ -69,7 +69,7 @@ public:
 	}
 
 	static int64_t WireEncode(const double& v, int rounding = 0, bool allow_zero = true);
-	static UniFloat WireDecode(uint64_t v, int64_t increment = 0, bool allow_zero = true, uint64_t *mantissa = NULL, uint64_t *exponent = NULL);
+	static UniFloat WireDecode(uint64_t v, int64_t increment = 0, bool allow_zero = true, uint64_t *mantissa = NULL, int64_t *exponent = NULL);
 
 	static UniFloatTuple Decompose(const UniFloat& a, unsigned nbits = 0, int rounding = 0, int increment = 0)
 	{
@@ -78,6 +78,8 @@ public:
 
 	static UniFloatTuple Decompose(const double& v, unsigned nbits = 0, int rounding = 0, int increment = 0);
 	static UniFloat Recompose(const UniFloatTuple& v);
+
+	static UniFloat Round(const UniFloat& a, int rounding = 0);
 
 	static UniFloat Add(const UniFloat& a, const UniFloat& b, int rounding = 0, bool average = false);
 

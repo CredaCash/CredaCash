@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
+ * Copyright (C) 2015-2025 Creda Foundation, Inc., or its contributors
  *
  * transactions.cpp
 */
@@ -1018,31 +1018,24 @@ int Transaction::ReadTxLevel(DbConn *dbconn, uint64_t level, uint64_t last_id)
 
 int Transaction::ReadTxBillets(DbConn *dbconn)
 {
-	auto rc = dbconn->BilletSelectCreateTx(id, nout, &output_bills[0], TX_MAXOUT);
-	if (rc)
-	{
-		BOOST_LOG_TRIVIAL(error) << "Transaction::ReadTxBillets error reading output billets for transaction id " << id;
+	if (status <= TX_STATUS_ERROR)
+		return 0;	// an error tx might have no billets
 
-		return -1;
-	}
+	auto rc_out = dbconn->BilletSelectCreateTx(id, nout, &output_bills[0], TX_MAXOUT);
+	if (rc_out) BOOST_LOG_TRIVIAL(warning) << "Transaction::ReadTxBillets error reading output billets for transaction id " << id;
 
-	rc = dbconn->BilletSelectSpendTx(id, nin, &input_bills[0], TX_MAXIN);
-	if (rc)
-	{
-		BOOST_LOG_TRIVIAL(error) << "Transaction::ReadTxBillets error reading input billets for transaction id " << id;
-
-		return -1;
-	}
+	auto rc_in = dbconn->BilletSelectSpendTx(id, nin, &input_bills[0], TX_MAXIN);
+	if (rc_in) BOOST_LOG_TRIVIAL(warning) << "Transaction::ReadTxBillets error reading input billets for transaction id " << id;
 
 	// FUTURE: only read destinations and accounts if needed
 
-	for (unsigned i = 0; i < nout; ++i)
+	for (unsigned i = 0; i < nout && !rc_out; ++i)
 	{
 		// FUTURE: destination might be zero if tx was created in another wallet and only address is known by this wallet?
 
 		Billet& bill = output_bills[i];
 
-		rc = dbconn->SecretSelectId(bill.dest_id, output_destinations[i]);
+		auto rc = dbconn->SecretSelectId(bill.dest_id, output_destinations[i]);
 		if (rc)
 		{
 			BOOST_LOG_TRIVIAL(error) << "Transaction::ReadTxBillets error reading destination id " << bill.dest_id << " for output billet " << i << " id " << bill.id << " of transaction id " << id;
@@ -1067,13 +1060,13 @@ int Transaction::ReadTxBillets(DbConn *dbconn)
 		}
 	}
 
-	for (unsigned i = 0; i < nin; ++i)
+	for (unsigned i = 0; i < nin && !rc_in; ++i)
 	{
 		// !!! TODO: destination might be zero?
 
 		Billet& bill = input_bills[i];
 
-		rc = dbconn->SecretSelectId(bill.dest_id, input_destinations[i]);
+		auto rc = dbconn->SecretSelectId(bill.dest_id, input_destinations[i]);
 		if (rc)
 		{
 			BOOST_LOG_TRIVIAL(error) << "Transaction::ReadTxBillets error reading destination id " << bill.dest_id << " for input billet " << i << " id " << bill.id << " of transaction id " << id;

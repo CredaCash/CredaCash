@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
+ * Copyright (C) 2015-2025 Creda Foundation, Inc., or its contributors
  *
  * torservice.cpp
 */
@@ -145,9 +145,9 @@ void TorService::DumpConfig() const
 	cout << endl;
 }
 
-const string& TorService::TorHostname()
+const string& TorService::TorHostname(bool override_advertise)
 {
-	if (!enabled || !tor_service || !tor_advertise)
+	if (!enabled || !tor_service || (!tor_advertise && !override_advertise))
 		tor_hostname.clear();
 	else if (tor_hostname.empty())
 	{

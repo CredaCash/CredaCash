@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
+ * Copyright (C) 2015-2025 Creda Foundation, Inc., or its contributors
  *
  * txrpc_btc.cpp
 */
@@ -448,7 +448,7 @@ void btc_ping(RPC_STDPARAMSAQ)													// implemented
 
 	// bitcoin sends a ping request to each peer, which updates the pingtime returned by getpeerinfo
 	// in response to the ping, bitcoin returns a null response
-	// CredaCash breaks compatibility with bitcoin's ping by returning the server ping time instead of a null reponse
+	// CredaCash breaks compatibility with bitcoin's ping by returning the server ping time instead of a null response
 
 	rstream << elapsed / (float)CCTICKS_PER_SEC;
 	add_quotes = false;
@@ -891,9 +891,22 @@ static void _btc_list_tx(DbConn *dbconn, Transaction& tx, unsigned index, uint64
 		",\"time\":" << tx.create_time <<
 		",\"timereceived\":" << tx.create_time <<
 		",\"bip125-replaceable\":\"no\""
-		",\"walletconflicts\":[";
+		",";
 
+	_btc_list_conflicts(dbconn, tx, rstream);
+
+
+	//@@! TODO: btc wtx.mapValue items:
+	// "comment" set by sendtoaddress, sendfrom, sendmany
+	// "to" set by sendtoaddress, sendfrom
+
+}
+
+void _btc_list_conflicts(DbConn *dbconn, Transaction& tx, ostringstream& rstream)
+{
 	set<uint64_t> conflicts;
+
+	rstream << "\"walletconflicts\":[";
 
 	// unlike bitcoin, report conflicts only for conflicted and pending tx's
 	for (unsigned i = 0; i < tx.nin && (tx.status == TX_STATUS_CONFLICTED || tx.status == TX_STATUS_PENDING); ++i)
@@ -935,11 +948,6 @@ static void _btc_list_tx(DbConn *dbconn, Transaction& tx, unsigned index, uint64
 		rstream << "0]";	// this wallet doesn't contain the conflicting tx, but report something
 	else
 		rstream << "]";
-
-	//@@! TODO: btc wtx.mapValue items:
-	// "comment" set by sendtoaddress, sendfrom, sendmany
-	// "to" set by sendtoaddress, sendfrom
-
 }
 
 static void _btc_list_sent(Transaction& tx, unsigned index, ostringstream& rstream)

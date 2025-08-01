@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
+ * Copyright (C) 2015-2025 Creda Foundation, Inc., or its contributors
  *
  * xtransaction-xpay.hpp
 */
@@ -11,6 +11,8 @@
 #pragma once
 
 #include "xtransaction.hpp"
+
+#define SATOSHI_PER_BITCOIN		1e8
 
 //#define TRACE_XPAYS		1
 
@@ -84,16 +86,7 @@ public:
 		Clear(true);
 	}
 
-	Xpay(const uint64_t xmatchnum_, const UniFloat& foreign_amount_, const string& foreign_block_id_, const string& foreign_txid_)
-		: Xtx(CC_TYPE_XCX_PAYMENT)
-	{
-		Clear(true);
-
-		xmatchnum = xmatchnum_;
-		foreign_amount = foreign_amount_;
-		foreign_block_id = foreign_block_id_;
-		foreign_txid = foreign_txid_;
-	}
+	Xpay(const uint64_t xmatchnum_, const UniFloat& foreign_amount_, const string& foreign_block_id_, const string& foreign_txid_);
 
 	static Xpay* Cast(Xtx* p)
 	{

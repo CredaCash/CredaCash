@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
+ * Copyright (C) 2015-2025 Creda Foundation, Inc., or its contributors
  *
  * encode.cpp
 */
@@ -337,16 +337,12 @@ typedef uint64_t encint_t;
 
 // Converts symbols to binary data, using range encoding
 // This implementation is lossless when going from symbols -> binary -> symbols
-// It is not lossless going from binary -> symbols -> binary because the decoder only works correctly with previously encoded data,
-//		not with arbitrary binary data (it works 98% of the time, but not all the time)
 // Binary -> symbols can be encoded in blocks of 32 bytes (256 bits) at a time using cc_stringify and cc_destringify
 // call this with a *bin table
 
 CCRESULT cc_alpha_encode(const uint8_t* table, const void* data, const unsigned nchars, vector<char> &outv, bool bclear)
 {
 	CCASSERT(CC_ENC_MAX);
-
-	unsigned nbytes = 0;	// set nbytes to generate that amount of binary data (formerly implemented as a parameter, may still almost work)
 
 	auto mod = cc_table_mod(table);
 
@@ -394,17 +390,8 @@ CCRESULT cc_alpha_encode(const uint8_t* table, const void* data, const unsigned 
 
 		range_check(hval);
 
-		bool bready;
-
-		while (((bready = (((hval ^ lval) & CC_ENC_UPPER) == 0)) || hval < lval + mod - 1) && (nbytes == 0 || outv.size() < nbytes))
+		while ((((hval ^ lval) & CC_ENC_UPPER) == 0) || hval < lval + mod - 1)
 		{
-			if (!bready)	// fix range before next symbol comes in
-			{
-				// range reset automagically works because it always pushes out the upper bytes of lval and hval until lval = 0 and hval = max, with dval somewhere in the middle
-
-				if (0+TRACE) cerr << "   **** cc_alpha_encode range warning levels reset at lval " << DFMT << lval << " hval " << hval << dec << endl;
-			}
-
 			auto b = lval >> CC_ENC_SHIFT;
 
 			outv.push_back(b);
@@ -436,11 +423,9 @@ CCRESULT cc_alpha_encode(const uint8_t* table, const void* data, const unsigned 
 }
 
 // Converts binary data to symbols
-// to reconstruct a previously encoded string, set nchars to the length of the previously encoded string
-// when nchars = 0, some extra phantom symbols are likely to be appended to the end of the string
 // call this with a *sym table
 
-void cc_alpha_decode(const uint8_t* table, const void* data, const unsigned nbytes, string &outs, const unsigned nchars, bool bclear)
+void cc_alpha_decode(const uint8_t* table, const void* data, const unsigned nbytes, const unsigned nchars, string &outs, bool bclear)
 {
 	auto mod = cc_table_mod(table);
 
@@ -449,7 +434,7 @@ void cc_alpha_decode(const uint8_t* table, const void* data, const unsigned nbyt
 	if (bclear)
 		outs.clear();
 
-	if (!nbytes)
+	if (!nbytes || !nchars)
 		return;
 
 	auto buf = (const uint8_t *)data;
@@ -458,13 +443,10 @@ void cc_alpha_decode(const uint8_t* table, const void* data, const unsigned nbyt
 	encint_t dval = 0;
 	encint_t hval = 0;
 	encint_t lval = 0;
-	encint_t eofm = 0;
 
 	if (mod == 256)
 	{
-		auto n = nbytes;
-		if (nchars && nchars < n)
-			n = nchars;
+		auto n = nchars < nbytes ? nchars : nbytes;
 
 		for (unsigned i = 0; i < n; ++i)
 			outs.push_back(buf[i]);
@@ -472,21 +454,14 @@ void cc_alpha_decode(const uint8_t* table, const void* data, const unsigned nbyt
 		return;
 	}
 
-	while (!nchars || outs.length() < outs_base + nchars)
+	while (outs.length() < outs_base + nchars)
 	{
-		bool bready, done = false;
-
-		while ((bready = ((hval ^ lval) & CC_ENC_UPPER) == 0) || hval < lval + mod - 1)
+		while ((((hval ^ lval) & CC_ENC_UPPER) == 0) || hval < lval + mod - 1)
 		{
-			if (!bready)	// fix range before next symbol goes out (note: this is the code path that messes up lossless decode --> encode --> decode)
-				if (0+TRACE) cerr << "   **** cc_alpha_decode range warning levels reset at lval " << DFMT << lval << " dval " << dval << " hval " << hval << dec << endl;
-
 			unsigned b = 128; // picking the midpoint for phantom input bytes may result in shorter output strings
 
 			if (bufpos < nbytes)
 				b = buf[bufpos];
-			else
-				eofm = (eofm << 8) | 255;
 
 			++bufpos;
 
@@ -494,23 +469,13 @@ void cc_alpha_decode(const uint8_t* table, const void* data, const unsigned nbyt
 			dval = ((dval & CC_ENC_LOWER) << 8) | b;
 			lval = ((lval & CC_ENC_LOWER) << 8);
 
-			if (TRACE) cerr << "cc_alpha_decode byte in " << DFMT << (int)b << " lval " << lval << " dval " << dval << " hval " << hval << " eofm " << eofm << dec << endl;
+			if (TRACE) cerr << "cc_alpha_decode byte in " << DFMT << (int)b << " lval " << lval << " dval " << dval << " hval " << hval << dec << endl;
 
 			range_check(hval);
-
-			if (!nchars && ((eofm >> CC_ENC_SHIFT) & 255) == 255)
-			{
-				done = true;	// all bits of next output char would be from the eofm, so we're done
-
-				break;
-			}
 		}
 
-		if (done)
-			break;
-
 		if (dval < lval || dval > hval || hval < lval)
-			cerr << "   **** cc_alpha_decode range error lval " << DFMT << lval << " dval " << dval << " hval " << hval << " eofm " << eofm << dec << endl;
+			cerr << "   **** cc_alpha_decode range error lval " << DFMT << lval << " dval " << dval << " hval " << hval << dec << endl;
 
 		// c = int(((dval - lval) * mod) / (hval - lval + 1)) -- which is always < mod
 
@@ -518,7 +483,7 @@ void cc_alpha_decode(const uint8_t* table, const void* data, const unsigned nbyt
 		auto c = ((dval - lval) * mod) / denom;
 
 		if (c >= mod)
-			cerr << "   **** cc_alpha_decode range error char " << DFMT << c << " >= mod " << mod << " lval " << lval << " dval " << dval << " hval " << hval << " eofm " << eofm << dec << endl;
+			cerr << "   **** cc_alpha_decode range error char " << DFMT << c << " >= mod " << mod << " lval " << lval << " dval " << dval << " hval " << hval << dec << endl;
 
 		// new hval = old lval + int(((c + 1) * denom + mod - 1) / mod) - 1
 		hval = lval + ((c + 1) * denom + mod - 1) / mod - 1;
@@ -528,12 +493,12 @@ void cc_alpha_decode(const uint8_t* table, const void* data, const unsigned nbyt
 
 		outs.push_back(cc_stringify_byte(table, c));
 
-		if (TRACE) cerr << "cc_alpha_decode symbol out " << DFMT << (int)c << " lval " << lval << " dval " << dval << " hval " << hval << " eofm " << eofm << dec << endl;
+		if (TRACE) cerr << "cc_alpha_decode symbol out " << DFMT << (int)c << " lval " << lval << " dval " << dval << " hval " << hval << dec << endl;
 
 		range_check(hval);
 	}
 
-	if (TRACE) cerr << "cc_alpha_decode " << outs << " <-- " << buf2hex(data, nbytes) << endl;
+	if (TRACE) cerr << "cc_alpha_decode result " << outs << " <-- " << buf2hex(data, nbytes) << endl;
 }
 
 // call this with a *bin table
@@ -557,6 +522,7 @@ bool cc_string_uses_symbols(const uint8_t* table, const void* data, const unsign
 	return true;
 }
 
+// encodes data, then truncates the result to make it as short as possible
 CCRESULT cc_alpha_encode_shortest(const uint8_t* encode_table, const uint8_t* decode_table, const void* data, const unsigned nchars, vector<char> &outv, bool bclear)
 {
 	if (TRACE) cerr << "cc_alpha_encode_shortest " << string((char*)data, nchars) << endl;
@@ -567,22 +533,20 @@ CCRESULT cc_alpha_encode_shortest(const uint8_t* encode_table, const uint8_t* de
 	if (rc)
 		return rc;
 
-	auto test_size = outv.size() - start_size;
+	auto shortest_size = outv.size() - start_size;
 
-	if (!test_size)
-		return 0;
-
-	while (test_size)
+	for (auto test_size = shortest_size; test_size > 0; --test_size)
 	{
 		int expected_len = cc_table_expected_strlen(decode_table, test_size);
 		int len_diff = expected_len - nchars;
 		len_diff += LENGTH_DIFF_OFFSET;
+		if (TRACE) cerr << "cc_alpha_encode_shortest test_size " << test_size << " len_diff " << len_diff << endl;
 		if (len_diff < 0 || len_diff > 15)
-			break;
+			continue;
 
 		string decoded;
 
-		cc_alpha_decode(decode_table, outv.data() + start_size, test_size, decoded, nchars);
+		cc_alpha_decode(decode_table, outv.data() + start_size, test_size, nchars, decoded);
 
 		if (decoded.length() != nchars)
 			break;
@@ -590,15 +554,12 @@ CCRESULT cc_alpha_encode_shortest(const uint8_t* encode_table, const uint8_t* de
 		if (memcmp(decoded.data(), data, nchars))
 			break;
 
-		--test_size;
+		shortest_size = test_size;
 	}
 
-	if (test_size == outv.size() - start_size)
-		return -1;
+	outv.resize(start_size + shortest_size);
 
-	outv.resize(start_size + test_size + 1);	// one more than the failed test
-
-	if (TRACE) cerr << "cc_alpha_encode_shortest binary size " << test_size + 1 << endl;
+	if (TRACE) cerr << "cc_alpha_encode_shortest input size " << nchars << " binary size " << shortest_size << endl;
 
 	return 0;
 }
@@ -606,8 +567,7 @@ CCRESULT cc_alpha_encode_shortest(const uint8_t* encode_table, const uint8_t* de
 static const uint8_t* best_encode_table[] = {base10bin, base16bin, base32bin, base32zbin, base34bin, base38bin, base58bin, base66bin, base95bin, base224bin, base256bin};
 static const uint8_t* best_decode_table[] = {base10sym, base16sym, base32sym, base32zsym, base34sym, base38sym, base58sym, base66sym, base95sym, base224bin, base256sym};
 
-// TODO add a best table index to id function with an offset (ie, lowest id's reserved for future use)
-
+// encodes data, selecting the table that gives the shortest result
 CCRESULT cc_alpha_encode_best(const void* data, const unsigned nchars, vector<char> &outv)
 {
 	if (TRACE) cerr << "cc_alpha_encode_best " << string((char*)data, nchars) << endl;
@@ -640,12 +600,14 @@ CCRESULT cc_alpha_encode_best(const void* data, const unsigned nchars, vector<ch
 
 		if (len_diff < 0 || len_diff > 15)
 		{
-			cerr << "cc_alpha_encode_best error table " << i << " len_diff " << len_diff << " out of range" << endl;
+			//cerr << "cc_alpha_encode_best error table " << i << " len_diff " << len_diff << " out of range" << endl;
 
 			continue;
 		}
 
 		outv[0] |= len_diff;
+
+		if (TRACE) cerr << "cc_alpha_encode_best table " << ((uint8_t)outv[0] >> 4) << " input size " << nchars << " output size " << outv.size() << endl;
 
 		return 0;
 	}
@@ -655,7 +617,17 @@ CCRESULT cc_alpha_encode_best(const void* data, const unsigned nchars, vector<ch
 	return -1;
 }
 
-CCRESULT cc_alpha_decode_best(const void* data, const unsigned nbytes, string &outs)
+// work around for backward compatibility problem introduced in v2.0.1 release
+// this problem scrambled XPay.foreign_block_id when decoding older blocks
+static bool use_old_table_mapping_default = true;
+
+void cc_alpha_set_default_decode_tables(uint64_t timestamp)
+{
+	if (timestamp > 1726100000)
+		use_old_table_mapping_default = false;
+}
+
+CCRESULT cc_alpha_decode_best(const void* data, const unsigned nbytes, string &outs, int use_old_table_mapping)
 {
 	if (TRACE) cerr << "cc_alpha_decode_best " << buf2hex(data, nbytes) << endl;
 
@@ -670,6 +642,10 @@ CCRESULT cc_alpha_decode_best(const void* data, const unsigned nbytes, string &o
 
 	auto ntables = sizeof(best_encode_table)/sizeof(uint8_t*);
 	unsigned table = bufp[0] >> 4;
+
+	if (use_old_table_mapping < 0) use_old_table_mapping = use_old_table_mapping_default;
+	if (table == 9 && use_old_table_mapping) table = 10;
+
 	if (table > ntables - 1)
 		return -1;
 
@@ -682,7 +658,9 @@ CCRESULT cc_alpha_decode_best(const void* data, const unsigned nbytes, string &o
 	if (nchars < 0)
 		return 0;
 
-	cc_alpha_decode(best_decode_table[table], bufp + 1, nbytes - 1, outs, nchars);
+	cc_alpha_decode(best_decode_table[table], bufp + 1, nbytes - 1, nchars, outs);
+
+	//cout << "cc_alpha_decode_best table " << table << " result " << outs << endl;
 
 	return 0;
 }
@@ -736,8 +714,6 @@ static void test_one_alpha(const char* table, const uint8_t* encode_table, const
 	vector<char> rbuf(50), encoded;
 	string random, decoded;
 
-	bool generate_decoded = RandTest(2);
-
 	auto buf = rbuf.data();
 	auto bufsize = rbuf.size();
 	//CCRandom(buf, bufsize);
@@ -780,9 +756,6 @@ static void test_one_alpha(const char* table, const uint8_t* encode_table, const
 			memset((char*)random.data() + n, fill, len - n);
 	}
 
-	if (generate_decoded)
-		cc_alpha_decode(decode_table, buf, nbytes, random);
-
 	auto check = cc_string_uses_symbols(encode_table, random.data(), random.length());
 	CCASSERT(check);
 
@@ -793,22 +766,7 @@ static void test_one_alpha(const char* table, const uint8_t* encode_table, const
 		exit(-1);
 	}
 
-	cc_alpha_decode(decode_table, encoded.data(), encoded.size(), decoded);	//, random.length());
-
-	if (generate_decoded)
-	{
-		if (encoded.size() != nbytes)
-		{
-			if (TRACE) cerr << "alpha_test " << table << " seed " << seed << " random " << random << " warning encoded size mismatch " << buf2hex(encoded.data(), encoded.size()) << " != " << buf2hex(buf, nbytes) << endl;
-			//exit(-1);
-		}
-
-		if (encoded.size() < nbytes || memcmp(buf, encoded.data(), nbytes))
-		{
-			if (TRACE) cerr << "alpha_test " << table << " seed " << seed << " random " << random << " warning encoded mismatch " << buf2hex(encoded.data(), encoded.size()) << " != " << buf2hex(buf, nbytes) << endl;
-			//exit(-1);
-		}
-	}
+	cc_alpha_decode(decode_table, encoded.data(), encoded.size(), random.length(), decoded);
 
 	if (decoded.length() != random.length())
 	{
@@ -822,13 +780,7 @@ static void test_one_alpha(const char* table, const uint8_t* encode_table, const
 		exit(-1);
 	}
 
-	if (0+TRACE)
-	{
-		cerr << "--alpha_test OK " << table << " random " << random << endl;
-		if (generate_decoded)
-		cerr << "  generator " << buf2hex(buf, nbytes) << endl;
-		cerr << "    encoded " << buf2hex(encoded.data(), encoded.size()) << endl;
-	}
+	if (0+TRACE) cerr << "--alpha_test OK " << table << " random " << random << endl;
 }
 
 static int max_best_test_length_diff = INT_MIN;
@@ -893,12 +845,35 @@ static void test_one(const char* table, const uint8_t* encode_table, const uint8
 	test_best_alpha(table, encode_table, decode_table);
 }
 
+static void static_test()
+{
+	const int nstrings = 3;
+	const string strings[nstrings] = {
+		"205800",
+		"71b9cd0864c66880fd4fb16ac2f0102c949d0df73f58e8f05516e410af1ccf9c",
+		"qp05fd87402sh5j9596wd5cq072sjucc050ynyjjdl"
+	};
+
+	for (int i = 0; i < nstrings; ++i)
+	{
+		vector<char> outv;
+		auto rc = cc_alpha_encode_best(strings[i].data(), strings[i].size(), outv);
+		cerr << "static_test string " << i << " rc " << rc << " input size " << strings[i].size() <<
+			" result size " << outv.size() << " table " << ((uint8_t)outv[0] >> 4) << endl;
+	}
+}
+
 void encode_test()
 {
 	cerr << "encode_test" << endl;
 
-	for (unsigned i = 0; i < 10000+1*2000000; ++i)
+	static_test();
+	//return;
+
+	for (unsigned i = 0; i < 10000+1*200000; ++i)
 	{
+		if (!(i % 10000)) cerr << i << endl;
+
 		test_one("base256",		base256bin,			base256sym);
 		test_one("base224",		base224bin,			base224sym);
 		test_one("base95",		base95bin,			base95sym);

@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
+ * Copyright (C) 2015-2025 Creda Foundation, Inc., or its contributors
  *
  * unifloat.cpp
 */
@@ -275,7 +275,7 @@ int64_t UniFloat::WireEncode(const double& v, int rounding, bool allow_zero)
 	}
 }
 
-UniFloat UniFloat::WireDecode(uint64_t v, int64_t increment, bool allow_zero, uint64_t *pmantissa, uint64_t *pexponent)
+UniFloat UniFloat::WireDecode(uint64_t v, int64_t increment, bool allow_zero, uint64_t *pmantissa, int64_t *pexponent)
 {
 	if (allow_zero && !v && !increment)
 	{
@@ -304,9 +304,9 @@ UniFloat UniFloat::WireDecode(uint64_t v, int64_t increment, bool allow_zero, ui
 		return -DBL_MAX;
 	}
 
-	mantissa += increment;
+	if (v) mantissa += manhi;
 
-	if (mantissa || exponent) mantissa += manhi;
+	mantissa += increment;
 
 	while (mantissa >= 2*manhi)
 	{
@@ -325,7 +325,7 @@ UniFloat UniFloat::WireDecode(uint64_t v, int64_t increment, bool allow_zero, ui
 	}
 
 	if (pmantissa) *pmantissa = mantissa;
-	if (pexponent) *pexponent = exponent;
+	if (pexponent) *pexponent = exponent - maxexp - UNIFLOAT_MATISSA_BITS;
 
 	auto result = mantissa * pow((double)2, (int64_t)(exponent - maxexp - UNIFLOAT_MATISSA_BITS));
 	if (TRACE_WIRE) cout << "UniFloat::WireDecode " << hex << v << dec << " increment " << increment << " mantissa " << mantissa << " exponent " << exponent << " result " << result << " thread " << cc_thread_id() << endl;
@@ -510,6 +510,16 @@ static void Normalize(unsigned __int128 mant, UniFloatTuple &x, int rounding)
 	if (TRACE) cout << "UniFloat::Normalize out" << x.DebugString() << endl;
 }
 
+UniFloat UniFloat::Round(const UniFloat& a, int rounding)
+{
+	if (rounding > 0)
+		return ceil(a.asFloat());
+	else if (rounding < 0)
+		return floor(a.asFloat());
+	else
+		return round(a.asFloat());
+}
+
 UniFloat UniFloat::Add(const UniFloat& a, const UniFloat& b, int rounding, bool average)
 {
 	int nbits = 8*sizeof(UniFloatTuple::mant) - 2;	// leave 1 bit for sign and 1 bit for overflow
@@ -647,8 +657,13 @@ UniFloat UniFloat::Power(const UniFloat& a, int b)
 
 #include <boost/multiprecision/cpp_dec_float.hpp>
 
+void altTest();
+void generateWireComp();
+
 void UniFloat::Test()
 {
+	generateWireComp();
+
 	cerr << "UniFloat::Test" << endl;
 
 	#if 1
@@ -679,7 +694,10 @@ void UniFloat::Test()
 	cout << UniFloat::Divide((uint32_t)(-1)    , (uint32_t)(-1)    ,  1) << endl;
 	cout << UniFloat::Divide((uint32_t)(-1)    , (uint32_t)(-1) - 1, -1) << endl; // 1.0000000002328306437622898462053
 	cout << UniFloat::Divide((uint32_t)(-1)    , (uint32_t)(-1) - 1,  1) << endl;
+	cout << endl;
 	#endif
+
+	//altTest();
 
 	#define ITER 10000000
 	#define RMAX 1024
@@ -789,6 +807,407 @@ void UniFloat::Test()
 		cout << "mind " << mind << " maxd " << maxd << endl;
 	}
 	}
+}
+
+void generateWireComp()
+{
+	#define COMP_ITER 100*1000*1000
+
+	mt19937_64 rgen(time(NULL));
+
+	for (int iter = 0; iter < COMP_ITER; ++iter)
+	{
+		try
+		{
+			long double x = rnd();
+			if (x < 1e-8) continue;
+
+			uint64_t mantissa;
+			int64_t  exponent;
+
+			auto v = UniFloat::WireEncode(x, 1);
+			auto r = UniFloat::WireDecode(v, 0, true, &mantissa, &exponent);
+
+			cout.precision(UNIFLOAT_DECIMAL_PRECISION + 2);
+			cout << "wc " << x << " " << r << " " << mantissa << " " << exponent << endl;
+		}
+		catch (...)
+		{
+		}
+	}
+
+	exit(0);
+}
+
+
+#define TESTBITS	0
+
+#ifndef DBL_TRUE_MIN
+const double DBL_TRUE_MIN = 8 * pow((double)2, -1000) * pow((double)2, -77);
+#endif
+
+double alt_shift(double x, int exp)
+{
+	while (exp > 0)
+	{
+		if (exp >= 63)
+		{
+			x = x * ((uint64_t)1 << 63);
+			exp -= 63;
+		}
+		else if (exp >= 16)
+		{
+			x = x * ((uint64_t)1 << 16);
+			exp -= 16;
+		}
+		else if (exp >= 4)
+		{
+			x = x * ((uint64_t)1 << 4);
+			exp -= 4;
+		}
+		else
+		{
+			x = x * 2;
+			--exp;
+		}
+	}
+
+	while (exp < 0)
+	{
+		if (exp <= -63)
+		{
+			x = x / ((uint64_t)1 << 63);
+			exp += 63;
+		}
+		else if (exp <= -16)
+		{
+			x = x / ((uint64_t)1 << 16);
+			exp += 16;
+		}
+		else if (exp <= -4)
+		{
+			x = x / ((uint64_t)1 << 4);
+			exp += 4;
+		}
+		else
+		{
+			x = x / 2;
+			++exp;
+		}
+	}
+
+	return x;
+}
+
+double alt_round(double m, int rounding)
+{
+	if (rounding > 0)
+		return ceil(m);
+	else if (rounding < 0)
+		return floor(m);
+	else
+		return round(m);
+}
+
+double altUniFloatTrunc_works(double x, int rounding = 0, int nbits = 0, int expbits = 0, bool trace = false)
+{
+	if (!nbits) nbits = TESTBITS;
+	if (!nbits) nbits = UNIFLOAT_COMPUTATION_BITS;
+
+	if (!x) return x;
+
+	int minexp = (1 << (expbits - 1)) - (nbits - 1);
+	int maxexp = (1 << (expbits - 1)) + (nbits - 1);
+	if (trace && expbits) cout << nbits << " " << expbits << " " << minexp << " " << maxexp << endl;
+
+	int sign = x < 0 ? -1 : 1;
+	x = abs(x);
+
+	auto limit = pow((double)2, nbits);
+	double mant = x;
+	int exp = 0;
+
+	for (exp = 1082 + nbits; exp >= -1026; --exp)
+	{
+		if (expbits && (exp < -minexp || exp >= maxexp))
+			continue;
+
+		auto m = alt_shift(x, exp);
+
+		mant = alt_round(m, rounding);
+
+		if (trace) cout << x << " " << exp << " " << m << " " << mant << " " << limit << endl;
+
+		if (isfinite(mant) && mant < limit)
+			break;
+	}
+
+	auto v = alt_shift(mant, -exp);
+
+	if (trace) cout << x << " " << v << " " << exp << " " << mant << " " << limit << endl;
+	
+	if (isfinite(v) && rounding > 0 && v < x) cout << "alt trunc rounding " << rounding << " error " << v << " < " << x << endl;
+	if (isfinite(v) && rounding < 0 && v > x) cout << "alt trunc rounding " << rounding << " error " << v << " > " << x << endl;
+
+	if (trace) exit(0);
+
+	return sign * v;
+}
+
+double altUniFloatTrunc(double x, int rounding = 0, int nbits = 0, int expbits = 0, bool trace = false)
+{
+	if (!nbits) nbits = TESTBITS;
+	if (!nbits) nbits = UNIFLOAT_COMPUTATION_BITS;
+
+	if (!x) return x;
+
+	int minexp = (1 << (expbits - 1)) - (nbits - 1);
+	int maxexp = (1 << (expbits - 1)) + (nbits - 1);
+	if (!expbits)
+	{
+		minexp = 1026;
+		maxexp = 1082 + nbits;
+	}
+
+	if (trace && expbits) cout << nbits << " " << expbits << " " << minexp << " " << maxexp << endl;
+
+	int sign = x < 0 ? -1 : 1;
+	x = abs(x);
+
+	int exp = 0;
+	double m = x;
+	double lastm = m;
+	double mant = alt_round(m, rounding);
+	auto limit = pow((double)2, nbits);
+
+	while (mant < limit && exp < maxexp)
+	{
+		++exp;
+		lastm = m;
+		m *= 2;
+		mant = alt_round(m, rounding);
+
+		if (trace) cout << x << " up " << exp << " " << m << " " << mant << " " << limit << endl;
+	}
+
+	if (exp > 0)
+	{
+		--exp; // overshot by one, so fix it
+		mant = alt_round(lastm, rounding);
+	}
+
+	while (mant >= limit && exp >= -minexp)
+	{
+		--exp;
+		m /= 2;
+		mant = alt_round(m, rounding);
+
+		if (trace) cout << x << " down " << exp << " " << m << " " << mant << " " << limit << endl;
+	}
+
+	auto v = alt_shift(mant, -exp);
+
+	if (trace) cout << x << " " << rounding << " " << v << " " << exp << " " << mant << " " << limit << endl;
+	
+	if (isfinite(v) && rounding > 0 && v < x) cout << "alt trunc rounding " << rounding << " error " << v << " < " << x << endl;
+	if (isfinite(v) && rounding < 0 && v > x) cout << "alt trunc rounding " << rounding << " error " << v << " > " << x << endl;
+
+	//if (trace) exit(0);
+
+	return sign * v;
+}
+
+double altWireTrunc(double x, int rounding = 0, bool trace = false)
+{
+	if (rounding >= 0 && x && x < DBL_MIN / (rounding ? 2 : 4))
+		return 0x800004 * pow((double)2, -1000) * pow((double)2, -47); // strange quirk in WireEncode/Decode
+
+	if (rounding <= 0 && x < DBL_MIN / 2)
+		return 0;	// this is what WireEncode/Decode does, although it's not necessary
+
+	if (!x && rounding > 0)
+		return UniFloat::WireDecode(1).asFloat();
+
+	return altUniFloatTrunc(x, rounding, UNIFLOAT_MATISSA_BITS + 1, UNIFLOAT_EXPONENT_BITS, trace);
+}
+
+double altUniFloatAdd(double x, double y, int rounding = 0)
+{
+	auto a = altUniFloatTrunc(x);
+	auto b = altUniFloatTrunc(y);
+	auto c = a + b;
+	auto r = altUniFloatTrunc(c, rounding);
+
+	return r;
+}
+
+UniFloat testReducedUniFloat(double x, int rounding = 0)
+{
+	return UniFloat::Recompose(UniFloat::Decompose(x, TESTBITS, rounding));
+}
+
+double altTestTrunc(double x, int rounding = 0)
+{
+	auto a = testReducedUniFloat(x, rounding);
+	auto b = altUniFloatTrunc(x, rounding);
+	auto r = a.asFloat() - b;
+	if (r && isfinite(r)) cout << "alt trunc diff " << hexfloat << r << " (" << x << " " << rounding << " " << a.asFloat() << " " << b << ")\n"; // << altUniFloatTrunc(x, rounding, 0, true) << endl;
+	return r;
+}
+
+double altTestWire(double x, int rounding = 0)
+{
+	auto a = UniFloat::WireDecode(UniFloat::WireEncode(x, rounding));
+	auto b = altWireTrunc(x, rounding);
+	auto r = a.asFloat() - b;
+	if (r && isfinite(r)) cout << "alt wire diff " << hexfloat << r << " (" << x << " " << rounding << " " << a.asFloat() << " " << b << ")\n"; // <<  altWireTrunc(x, rounding, true) << endl;
+	return r;
+}
+
+// altTestAdd doesn't duplicate UniFloat. The rounding is often off by one because
+// UniFloat adds then rounds 64 bit values, while double adds then rounds 53 bit values
+double altTestAdd(double x, double y, int rounding = 0)
+{
+	auto a = UniFloat::Add(x, y, rounding);
+	auto b = altUniFloatAdd(x, y, rounding);
+	auto r = a.asFloat() - b;
+	bool diff = r;
+	if (rounding > 0 && r <= 0) diff = false;
+	if (rounding < 0 && r >= 0) diff = false;
+	if (diff && isfinite(r)) cout << "alt add diff " << hexfloat << r << " (" << x << " " << y << " " << x + y << " " << rounding << " " << a.asFloat() << " " << b << ")" << endl;
+	return r;
+}
+
+void altTest()
+{
+	//auto wire_max = ((uint64_t)(-1) << UNIFLOAT_BITS) - 1;
+	//auto wire_min = 1;
+	auto wire_max = UniFloat::WireEncode(DBL_MAX);
+	auto wire_min = UniFloat::WireEncode(DBL_MIN);
+
+	cout << "limits:" << endl;
+	cout << DBL_MAX << endl;
+	cout << DBL_MIN << endl;
+	cout << DBL_TRUE_MIN << endl;
+	cout << DBL_TRUE_MIN/2 << endl;
+	cout << UniFloat::WireDecode(wire_max) << endl;
+	cout << UniFloat::WireDecode(wire_min) << endl;
+	cout << hexfloat << endl;
+	cout << DBL_MAX << endl;
+	cout << DBL_MIN << endl;
+	cout << DBL_TRUE_MIN << endl;
+	cout << DBL_TRUE_MIN/2 << endl;
+	cout << UniFloat::WireDecode(wire_max).asFloat() << endl;
+	cout << UniFloat::WireDecode(wire_min).asFloat() << endl;
+	cout << defaultfloat << endl;
+	#if 0
+	cout << altTestTrunc(DBL_MAX) << endl;
+	cout << altTestAdd(1, 0) << endl;
+	cout << altTestAdd(0, 1) << endl;
+	cout << altTestAdd(1e200, 1e-200) << endl;
+	cout << altTestAdd(1e-200, 1e200) << endl;
+	cout << altTestAdd(-1, -2) << endl;
+	cout << altTestAdd(-2, 1) << endl;
+	cout << altTestAdd(1, -2) << endl;
+	cout << altTestAdd(2, -1) << endl;
+	cout << altTestAdd(-1, 2) << endl;
+	cout << altTestAdd(1, 2) << endl;
+	cout << altTestAdd((uint32_t)(-1), (uint32_t)(-1)) << endl;
+	#endif
+
+	#define ALT_ITER ITER/2*1+2400+1000
+
+	mt19937_64 rgen(time(NULL));
+
+	for (int round = -1; round <= 1; ++round)
+	{
+	for (int op = 0; op <= 1; ++op)
+	{
+		long double count = 0, count_hi = 0, count_lo = 0, total_hi = 0, total_lo = 0;
+
+		long double mind = LDBL_MAX;
+		long double maxd = -mind;
+
+		for (int iter = 0; iter < ALT_ITER; ++iter)
+		{
+			long double v1 = rnd();
+			long double v2 = rnd();
+			long double v3;
+
+			if (fabs(v1) < DBL_MIN)
+				v1 = DBL_MIN * ((rand() % 3) - 1);
+
+			if (fabs(v2) < DBL_MIN)
+				v2 = DBL_MIN * ((rand() % 3) - 1);
+
+			if (iter < 2400)
+				v1 = v2 = pow((double)2, iter - 1200);
+
+			//if (TRACE) cout << v1 << " " << v2 << endl;
+
+			try
+			{
+			switch (op)
+			{
+			case 0:
+				v3 = altTestTrunc(v1, round);
+				v2 = 0;
+				break;
+			case 1:
+				v1 = abs(v1);
+				v3 = altTestWire(v1, round);
+				v2 = 0;
+				break;
+			case 2:
+				v1 = abs(v1);
+				v2 = abs(v2);
+				v3 = altTestAdd(v1, v2, round);
+				break;
+			case 3:
+				// test only positive addition
+				v1 = abs(v1);
+				v2 = abs(v2);
+				v3 = altTestAdd(v1, v2, round);
+				break;
+			}
+			}
+			catch (...)
+			{
+				continue;
+			}
+
+			if (!isfinite(v3))
+				continue;
+
+			auto diff = v3;
+
+			//if (diff) cout << v1 << " " << v2 << " " << v3 << " " << v4 << " " << diff << endl;
+			//CCASSERTZ(diff);
+
+			++count;
+			mind = min(mind, diff);
+			maxd = max(maxd, diff);
+
+			if (diff > 0)
+			{
+				++count_hi;
+				total_hi += diff;
+			}
+			else if (diff < 0)
+			{
+				++count_lo;
+				total_lo += diff;
+			}
+		}
+
+		cout << "\nop " << op << " round " << round << " count " << count << endl;
+		cout << "count_lo " << count_lo << " count_hi " << count_hi << endl;
+		cout << "avg lo " << total_lo / count_lo << " avg hi " << total_hi / count_hi << endl;
+		cout << "mind " << mind << " maxd " << maxd << endl;
+	}
+	}
+
+	exit(0);
 }
 
 #endif

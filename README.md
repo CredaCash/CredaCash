@@ -32,6 +32,7 @@ The wallet:
 -	Tracks user funds and spend secrets.
 -	Sends and receives transactions.
 -	Can be run interactively from the console, or used by other programs through a JSON-RPC interface.
+-	Includes a GUI interface.
 
 ## Project Status
 
@@ -39,11 +40,11 @@ The software and network are fully operational and have no known issues.
 
 ## Quick Start
 
-Windows evaluation executables with instructions are available at [CredaCash.com](https://CredaCash.com/software/)
+Windows and Android evaluation executables with instructions are available at [CredaCash.com](https://CredaCash.com/software/)
 
 ## Building
 
-The CredaCash network node software is cross-platform, and has been built and tested under Windows and Linux.  For build instructions, see the [BUILDING](https://github.com/CredaCash/CredaCash/blob/master/BUILDING.md) file.
+The CredaCash network node software and command line wallet are cross-platform, and have been built and tested under Windows and Linux.  For build instructions, see the [BUILDING](https://github.com/CredaCash/CredaCash/blob/master/BUILDING.md) file.
 
 ## License
 

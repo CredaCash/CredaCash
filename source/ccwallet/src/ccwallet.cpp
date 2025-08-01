@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
+ * Copyright (C) 2015-2025 Creda Foundation, Inc., or its contributors
  *
  * ccwallet.cpp
 */
@@ -596,8 +596,7 @@ int main(int argc, char **argv)
 
 	//encode_test(); return 0;
 	//base64_test(base64sym, base64bin); return 0;
-	//XcxTest();
-	//return 0;
+	//XcxTest(); return 0;
 
 	cerr << endl;
 
@@ -642,7 +641,7 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	bool need_tor_proxy = g_params.transact_tor;
+	bool need_tor_proxy = g_params.transact_tor || (g_rpc_service.enabled && g_rpc_service.tor_service);
 	thread tor_thread(tor_start, g_params.process_dir, g_params.tor_exe, g_params.torproxy_port, g_params.tor_config, g_params.app_data_dir, need_tor_proxy, ref(g_tor_services), g_tor_services.size()-1);
 
 	int result_code = -99;
@@ -753,9 +752,24 @@ int main(int argc, char **argv)
 
 		g_rpc_service.Start();
 
+		string torhost;
+		while (g_rpc_service.tor_service)
+		{
+			torhost = g_rpc_service.TorHostname(true);
+			if (torhost.length())
+				break;
+
+			sleep(1);
+		}
+
 		lock_guard<mutex> lock(g_cerr_lock);
 		check_cerr_newline();
-		cerr << "RPC service enabled on port " << g_rpc_service.port << "\n" << endl;
+		cerr << "RPC service enabled on localhost port " << g_rpc_service.port << endl;
+
+		if (g_rpc_service.tor_service)
+		cerr << "RPC service enabled on " << torhost << ".onion" << endl;
+
+		cerr << endl;
 	}
 	else if ((!command_line_json.size() || g_params.interactive) && !g_shutdown)
 	{

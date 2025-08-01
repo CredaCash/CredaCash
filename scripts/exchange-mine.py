@@ -74,8 +74,7 @@ MIN_PAYMENT_TIME_PERCENTAGE = 60	# Mining will be paused if a match payment is n
 MIN_ALLOWED_PAYMENT_MINUTES = 4		# Mining will be halted if a match payment is not claimed at least this many minutes before the deadline
 
 BCH_MIN_SEND_AMOUNT = 1e-4					# don't do exchange requests that involve less than this amount of BCH
-BCH_TESTNET_MIN_SEND_AMOUNT = 1e-5			# don't do exchange requests that involve less than this amount of tBCH
-EXCHANGE_REQUEST_EXPIRATION_SECONDS = 90	# expiration seconds for exchange requests
+EXCHANGE_REQUEST_EXPIRATION_SECONDS = 120	# expiration seconds for exchange requests
 
 exchange_common = 'exchange-common.py'
 with open(exchange_common) as f:
@@ -305,15 +304,10 @@ def mine_one(s):
 		min_amount = Mining.req_min_amt
 		max_amount = Mining.req_max_amt
 
-		if IsTestnet:
-			min_amount = max(min_amount, BCH_TESTNET_MIN_SEND_AMOUNT / match_rate)
-		else:
-			min_amount = max(min_amount, BCH_MIN_SEND_AMOUNT / match_rate)
+		min_amount = max(min_amount, BCH_MIN_SEND_AMOUNT / match_rate)
 
 		min_amount = max(min_amount, 0.2 * mi['mining-match-average-amount'])
 		max_amount = min(max_amount, 1.8 * mi['mining-match-average-amount'])
-
-		max_amount = max(1, max_amount)
 
 		if min_amount > max_amount:
 			print('%d mine_thread skipping exchange requests; min_amount %g > max_amount %g\n' % (time.time(), min_amount, max_amount), end='')
@@ -334,29 +328,15 @@ def mine_one(s):
 
 		amount = random.random() * (max_amount - min_amount) + min_amount
 
-		rounding = 0
-		while True:
-			adj_amount = round_to_power(amount, rounding)
-			#print(amount, rounding, adj_amount, min_amount, max_amount)
-			if adj_amount < min_amount:
-				if rounding < 0:
-					adj_amount = None
-					break
-				rounding += 0.5
-				continue
-			if adj_amount > max_amount:
-				if rounding > 0:
-					adj_amount = None
-					break
-				rounding -= 0.5
-				continue
-			break
+		amount = max(amount, min_amount)
+		amount = round_up_to_power(amount)
 
-		if not adj_amount:
-			print('%d mine_thread skipping exchange requests; unable to round %g; min request %g max request %g\n' % (time.time(), amount, min_amount, max_amount), end='')
+		amount = min(amount, max_amount)
+		amount = round_down_to_power(amount)
+
+		if amount < min_amount:
+			print('%d mine_thread skipping exchange requests; unable to round with min request %g max request %g\n' % (time.time(), min_amount, max_amount), end='')
 			return
-
-		amount = adj_amount
 
 		# Create exchange request
 
@@ -393,7 +373,6 @@ def pay_monitor_startup(s):
 		Mining.min_bch_bal = lim
 
 	lim = mi['wallet-exchange-request-minimum-amount']
-	lim = max(1, lim)
 	if Mining.req_min_amt < lim:
 		print('exchange request minimum amount adjusted from', Mining.req_min_amt, 'to', lim)
 		Mining.req_min_amt = lim
@@ -402,10 +381,6 @@ def pay_monitor_startup(s):
 	if Mining.req_max_amt < lim:
 		print('exchange request maximum amount adjusted from', Mining.req_max_amt, 'to', lim)
 		Mining.req_max_amt = lim
-
-	if Mining.req_min_amt > Mining.req_max_amt:
-		print('Error: minimum request amount > maximum request amount')
-		exit()
 
 	lim = 90
 	if EXCHANGE_REQUEST_EXPIRATION_SECONDS < lim:
@@ -425,7 +400,6 @@ def pay_monitor_startup(s):
 	print('Testing exchange autopay script...')
 	amount = mi['wallet-exchange-request-minimum-amount']
 	rate = mi['mining-request-average-match-rate-required']
-	rate = max(rate, 1e-5 / amount)
 	if not submit_xreq(s, 'buy', amount, rate):
 		return False
 	for i in range(8):	# submit 8 sell reqs, to maximize chance that the buy req will find a match
@@ -506,8 +480,6 @@ def main(argv):
 	print('start time %d' % start_time)
 
 	s = requests.Session()
-
-	check_if_testnet(s)
 
 	if not check_foreign_wallet(s):
 		exit()

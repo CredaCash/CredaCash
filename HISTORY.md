@@ -4,6 +4,10 @@
 
 ## Release History
 
+### 2025-07-25 v2.0.5
+
+First release of Wallet GUI application.
+
 ### 2025-03-22 v2.0.4
 
 Fixed rare assert condition that could cause wallet to stop.

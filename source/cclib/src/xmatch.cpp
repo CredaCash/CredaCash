@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
+ * Copyright (C) 2015-2025 Creda Foundation, Inc., or its contributors
  *
  * xmatch.cpp
 */
@@ -341,6 +341,9 @@ UniFloat Xmatch::QuoteAmount() const
 
 UniFloat Xmatch::AmountToPay(bool roundup) const
 {
+	if (status == XMATCH_STATUS_PAID)
+		return 0;
+
 	auto amount = UniFloat::Add(QuoteAmount(), -amount_paid, 1);	// round up
 
 	if (amount < 0)

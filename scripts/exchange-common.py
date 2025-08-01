@@ -268,10 +268,10 @@ class ForeignRPC(Config):
 
 	def Send(self, s, addr, amt):
 		if self.IsBitcoind():
-			return do_rpc(s, self, 'sendtoaddress', (addr, amt))
+			return do_rpc(s, self, 'sendtoaddress', (addr, '%.8f' % amt))
 		elif self.IsElectrum():
 			params = {}
-			params['amount'] = amt + 1e-8 # Electrum seems to have a rounding problem, so pay 1 extra satoshi just to make sure
+			params['amount'] = '%.8f' % (amt + 1e-8) # Electrum seems to have a rounding problem, so pay 1 extra satoshi just to make sure
 			params['destination'] = addr
 			if len(self.walpwd):
 				params['password'] = self.walpwd
@@ -447,6 +447,41 @@ def submit_xreq(s, type, amount, rate, expiration=0):
 		print('Crosschain %s request failed time %d amount %g rate %g\n' % (type, time.time(), amount, rate), end='')
 		return None
 
+def round_down_to_power(amount):
+	if not amount:
+		return 0
+	rounding = 0
+	while True:
+		adj_amount = round_to_power(amount, rounding)
+		if adj_amount <= amount:
+			return adj_amount
+		rounding -= 0.25
+
+def next_lower_power(amount):
+	if not amount:
+		return 0
+	rounding = 0
+	while True:
+		adj_amount = round_to_power(amount, rounding)
+		if adj_amount < amount:
+			return adj_amount
+		rounding -= 0.25
+
+def round_up_to_power(amount):
+	rounding = 0
+	while True:
+		adj_amount = round_to_power(amount, rounding)
+		if adj_amount >= amount:
+			return adj_amount
+		rounding += 0.5
+
+def next_higher_power(amount):
+	while True:
+		adj_amount = round_to_power(amount, rounding)
+		if adj_amount > amount:
+			return adj_amount
+		rounding += 0.5
+
 rounding_test = {}
 
 def round_to_power(amount, rounding):
@@ -454,9 +489,11 @@ def round_to_power(amount, rounding):
 		return 0
 
 	# round amount to 1, 2, 3, 5 or 7 multiplied by a power of 10
-	#print(amount, rounding)
 	expon = int(math.log10(amount))
 	mant = amount / math.pow(10, expon) + rounding
+
+	if mant <= 0:
+		return 0
 
 	while mant < 1:
 		mant *= 10
@@ -485,7 +522,7 @@ def round_to_power(amount, rounding):
 	if adj_amount > 0.9:
 		adj_amount = int(adj_amount + 0.5)
 
-	#print('%g\t%g' % (adj_amount, amount + 0.5))
+	#print '%g\t%g' % (adj_amount, amount + 0.5)
 
 	if rounding == 0 and TEST_ROUNDING:
 		global rounding_test
@@ -496,19 +533,14 @@ def round_to_power(amount, rounding):
 		elif amount > rounding_test[adj_amount][1]:
 			rounding_test[adj_amount][1] = amount
 
-	#print('round_to_power %g %g %g\n' % (rounding, amount, adj_amount),)
+	#print 'round_to_power %g %g %g\n' % (rounding, amount, adj_amount),
 
 	return adj_amount
 
 if 0:
 	TEST_ROUNDING = True
-	for i in range (-1, 2):
-		for amount in (0, 1, 2, 3, 5, 7):
-			amount *= 10**i
-			round_to_power(amount, 0)
 	for i in range(10000000):
-		amount = 1 + 1300 * random.random()
-		amount /= 10
+		amount = 1 + 130 * random.random()
 		round_to_power(amount, 0)
 	pprint.pprint(rounding_test)
 	exit()

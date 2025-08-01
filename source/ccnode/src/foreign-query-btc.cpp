@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
+ * Copyright (C) 2015-2025 Creda Foundation, Inc., or its contributors
  *
  * foreign-query-btc.cpp
 */
@@ -11,6 +11,7 @@
 #include "foreign-rpc.hpp"
 
 #include <xtransaction.hpp>
+#include <xtransaction-xpay.hpp>
 #include <jsonutil.h>
 
 #define TRACE_FORN_RPC		g_params.trace_foreign_rpc
@@ -277,8 +278,12 @@ static int ParseTx(const char* json, Json::Value& root, const string& block, con
 
 		if (TRACE_FORN_RPC) BOOST_LOG_TRIVIAL(trace) << "ForeignQueryBtc::ParseTx block " << block << " txid " << txid << " script " << script << " found txout amount " << amount;
 
+		amount = UniFloat::Multiply(amount, SATOSHI_PER_BITCOIN);
+		amount = UniFloat::Round(amount);
 		result.amount = UniFloat::Add(result.amount, amount);
 	}
+
+	result.amount = UniFloat::Divide(result.amount, SATOSHI_PER_BITCOIN);
 
 	return 0;
 

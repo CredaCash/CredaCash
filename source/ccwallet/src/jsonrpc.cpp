@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
+ * Copyright (C) 2015-2025 Creda Foundation, Inc., or its contributors
  *
  * jsonrpc.cpp
 */
@@ -74,7 +74,7 @@ static bool add_comma(const ostringstream& response)
 
 static void copy_result_to_response(bool add_quotes, const string& msg, const char *version, const char *id, const char *error, bool notification, ostringstream& response)
 {
-	// !!! TODO?: JSON-RPC 2.0: don't send reponse if no id
+	// !!! TODO?: JSON-RPC 2.0: don't send response if no id
 
 	if (msg.length() && (msg[0] == '{' or msg[0] == '['))
 		add_quotes = false;
@@ -328,6 +328,7 @@ static void try_one_rpc(const string& json, const string& method, Json::Value& p
 		"cc.send reference_id destination asset amount\\n"
 		"cc.send_async reference_id destination asset amount\\n"
 		"cc.transaction_cancel txid - cancel transaction\\n"
+		"cc.transactions_list ( start end limit ) - list transactions\\n"
 		"cc.destination_poll destination ( polling_addresses last_received_max ) - check destination for incoming payments\\n"
 		"cc.list_change_destinations - Diagnostic - list destinations used for change\\n"
 		"cc.billets_list_unspent ( statuses min_amount ) - Diagnostic - list unspent billets\\n"
@@ -335,9 +336,9 @@ static void try_one_rpc(const string& json, const string& method, Json::Value& p
 		"cc.billets_release_allocated ( reset_balance ) - Diagnostic - release all billets allocated to transactions\\n"
 		"cc.crosschain_query_requests \\\"simple_buy|simple_sell|naked_buy|naked_sell\\\" min_amount max_amount rate costs cryptoasset ( count offset include_pending_matched ) - query crosschain exchange requests\\n"
 		"cc.crosschain_query_pending_matches \\\"simple_buy|simple_sell|naked_buy|naked_sell\\\" min_amount max_amount rate costs cryptoasset ( count offset ) - query crosschain exchange pending matches\\n"
-		"cc.crosschain_request_create reference_id \\\"simple_buy|simple_sell|naked_buy|naked_sell\\\" min_amount max_amount rate costs cryptoasset ( unique_foreign_address expiration wait_discount ) - create a CredaCash exchange request\\n"
-		"cc.crosschain_request_create_async reference_id \\\"simple_buy|simple_sell|naked_buy|naked_sell\\\" min_amount max_amount rate costs cryptoasset ( unique_foreign_address expiration wait_discount )\\n"
-		"cc.crosschain_request_create_local reference_id \\\"simple_buy|simple_sell|naked_buy|naked_sell\\\" min_amount max_amount rate costs cryptoasset ( unique_foreign_address expiration wait_discount )\\n"
+		"cc.crosschain_request_create reference_id \\\"simple_buy|simple_sell|naked_buy|naked_sell|mining_trade\\\" min_amount max_amount rate costs cryptoasset ( unique_foreign_address expiration wait_discount ) - create a CredaCash exchange request\\n"
+		"cc.crosschain_request_create_async reference_id \\\"simple_buy|simple_sell|naked_buy|naked_sell|mining_trade\\\" min_amount max_amount rate costs cryptoasset ( unique_foreign_address expiration wait_discount )\\n"
+		"cc.crosschain_request_create_local reference_id \\\"simple_buy|simple_sell|naked_buy|naked_sell|mining_trade\\\" min_amount max_amount rate costs cryptoasset ( unique_foreign_address expiration wait_discount )\\n"
 		"cc.broadcast reference_id data\\n"
 		"cc.exchange_requests_pending_totals cryptoasset - get this wallet's total amount of pending exchange requests for the cryptoasset\\n"
 		"cc.exchange_query_mining_info - query crosschain exchange mining information\\n"
@@ -1040,7 +1041,7 @@ static void try_one_rpc(const string& json, const string& method, Json::Value& p
 
 		auto duration = params[0].asInt();
 
-		if (duration <= 0)
+		if (duration < 0)
 			throw RPC_Exception(RPC_INVALID_PARAMETER, "duration must be positive");
 
 		ccsleep(duration);
@@ -1136,6 +1137,22 @@ static void try_one_rpc(const string& json, const string& method, Json::Value& p
 			throw RPC_Exception(RPC_MISC_ERROR, method + " txid");
 
 		cc_transaction_cancel(params[0].asString(), STDARGS);
+	}
+	else if (method == "cc.transactions_list")
+	{
+		if ( /* params.size() < 0 || */ params.size() > 3)
+			throw RPC_Exception(RPC_MISC_ERROR, method + " ( start end limit )");
+
+		if (params.size() > 0 && (!params[0].isIntegral() || !params[0].isConvertibleTo(Json::uintValue)))
+			throw RPC_Exception(RPC_MISC_ERROR, not_int_err);
+
+		if (params.size() > 1 && (!params[1].isIntegral() || !params[1].isConvertibleTo(Json::uintValue)))
+			throw RPC_Exception(RPC_MISC_ERROR, not_int_err);
+
+		if (params.size() > 2 && (!params[2].isIntegral() || !params[2].isConvertibleTo(Json::uintValue)))
+			throw RPC_Exception(RPC_MISC_ERROR, not_int_err);
+
+		cc_transactions_list(params.size() > 0 ? params[0].asUInt() : 0, params.size() > 1 ? params[1].asUInt64() : 0, params.size() > 2 ? params[2].asUInt64() : 0, STDARGS);
 	}
 	else if (method == "cc.destination_poll")
 	{
@@ -1394,7 +1411,7 @@ static void try_one_rpc(const string& json, const string& method, Json::Value& p
 				throw RPC_Exception(RPC_INVALID_PARAMETER, "expiration must be >= " + to_string(min_exp) + " seconds");
 
 			if (expiration > XREQ_MAX_EXPIRE_TIME && expiration <= 365*24*60*60)
-				throw RPC_Exception(RPC_INVALID_PARAMETER, "expiration must be <= " + to_string(XREQ_MAX_EXPIRE_TIME));
+				throw RPC_Exception(RPC_INVALID_PARAMETER, "expiration must be <= " + to_string(XREQ_MAX_EXPIRE_TIME) + " seconds");
 		}
 
 		if (params.size() > 9)
@@ -1414,7 +1431,7 @@ static void try_one_rpc(const string& json, const string& method, Json::Value& p
 		if (xcx_type == CC_TYPE_XCX_MINING_TRADE && wait_discount != 1)
 			throw RPC_Exception(RPC_INVALID_PARAMETER, "wait discount must be 1 for a trade request");
 
-		wait_discount = 1 - pow(1 - wait_discount, XREQ_WAIT_DISCOUNT_INTERVAL / 60.0);	// TODO: test this
+		wait_discount = pow(wait_discount, XREQ_WAIT_DISCOUNT_INTERVAL / 60.0);
 
 		cc_crosschain_request_create(mode, params[0].asString(), xcx_type, min_amount, max_amount, rate, costs, quote_asset, foreign_asset, foreign_address, expiration, wait_discount, STDARGS);
 	}

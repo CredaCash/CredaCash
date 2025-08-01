@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
+ * Copyright (C) 2015-2025 Creda Foundation, Inc., or its contributors
  *
  * encode.h
 */
@@ -31,10 +31,12 @@ void cc_stringify(const uint8_t* table, const snarkfront::bigint_t& maxval, bool
 CCRESULT cc_destringify(const string& fn, const uint8_t* table, bool normalize, unsigned nchars, string &instring, snarkfront::bigint_t &val, char *output, const uint32_t outsize);
 
 CCRESULT cc_alpha_encode(const uint8_t* table, const void* data, const unsigned nchars, vector<char> &outv, bool bclear = true);
-void cc_alpha_decode(const uint8_t* table, const void* data, const unsigned nbytes, string &outs, const unsigned nchars = 0, bool bclear = true);
+void cc_alpha_decode(const uint8_t* table, const void* data, const unsigned nbytes, const unsigned nchars, string &outs, bool bclear = true);
 
 CCRESULT cc_alpha_encode_shortest(const uint8_t* encode_table, const uint8_t* decode_table, const void* data, const unsigned nchars, vector<char> &outv, bool bclear = true);
 CCRESULT cc_alpha_encode_best(const void* data, const unsigned nchars, vector<char> &outv);
-CCRESULT cc_alpha_decode_best(const void* data, const unsigned nbytes, string &outs);
+CCRESULT cc_alpha_decode_best(const void* data, const unsigned nbytes, string &outs, int use_old_table_mapping = -1);
+
+void cc_alpha_set_default_decode_tables(uint64_t timestamp);
 
 void encode_test();

@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
+ * Copyright (C) 2015-2025 Creda Foundation, Inc., or its contributors
  *
  * txrpc.h
 */
@@ -27,8 +27,8 @@ void cc_unique_id_generate(CP string& prefix, unsigned random_bits, unsigned che
 void cc_donation_estimate(unsigned type, unsigned nin, unsigned nout, RPC_STDPARAMSAQ);
 
 void cc_send(bool async, CP string& ref_id, CP string& dest, CP snarkfront::bigint_t& amount, CP string& comment, CP string& comment_to, bool subfee, RPC_STDPARAMS);
-
 void cc_transaction_cancel(CP string& txid, RPC_STDPARAMS);
+void cc_transactions_list(uint64_t start, uint64_t end, uint64_t limit, RPC_STDPARAMS);
 
 void cc_list_change_destinations(RPC_STDPARAMS);
 

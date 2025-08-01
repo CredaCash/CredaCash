@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
+ * Copyright (C) 2015-2025 Creda Foundation, Inc., or its contributors
  *
  * xtransaction-xreq.hpp
 */
@@ -284,8 +284,8 @@ public:
 
 	#if TEST_XREQ
 	void TestWire();
-	void TryTestWireOne(const long double& minrate, const long double& maxrate, unsigned &good, long double &ratediffmin, long double &ratediffmax) const;
-	CCRESULT TestWireOne(bool good, long double &ratediffmin, long double &ratediffmax) const;
+	void TryTestWireOne(const long double& minrate, const long double& maxrate, unsigned &good, long double &ratediffmin, long double &ratediffmax);
+	CCRESULT TestWireOne(bool good, long double &ratediffmin, long double &ratediffmax);
 	#endif
 };
 

@@ -5,7 +5,7 @@ CredaCash(TM) Exchange Autopay Burn-in Test
 
 Part of the CredaCash (TM) cryptocurrency and blockchain
 
-Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
+Copyright (C) 2015-2025 Creda Foundation, Inc., or its contributors
 
 '''
 

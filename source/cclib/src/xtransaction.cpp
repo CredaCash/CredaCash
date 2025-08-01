@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
+ * Copyright (C) 2015-2025 Creda Foundation, Inc., or its contributors
  *
  * xtransaction.cpp
 */
@@ -156,7 +156,7 @@ int Xtx::FromWire(const string& fn, unsigned wire_tag, const void *binbuf, const
 	uint32_t bufpos = 0;
 	const bool bhex = false;
 
-	//cerr << "FromWire nbytes " << binsize << " data " << buf2hex(binbuf, binsize) << endl;
+	//cerr << "Xtx::FromWire type " << type << " nbytes " << binsize << " data " << buf2hex(binbuf, binsize) << endl;
 
 	if (wire_tag == 1)
 	{

@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
+ * Copyright (C) 2015-2025 Creda Foundation, Inc., or its contributors
  *
  * CCutil.cpp
 */
@@ -173,7 +173,10 @@ void copy_to_bufl(unsigned line, const void* data, const size_t nbytes, uint32_t
 		bufpos += nbytes;
 
 		if (bufpos <= bufsize)
+		{
 			memcpy(buf + pos, data, nbytes);
+			//cerr << "copy_to_buf " << buf2hex(data, nbytes) << endl;
+		}
 	}
 	else for (unsigned i = 0; i < nbytes; ++i)
 	{
@@ -204,6 +207,7 @@ void copy_from_bufl(unsigned line, void* data, const size_t datasize, const size
 	{
 		memcpy(data, buf + pos, nbytes);
 		memset((char*)data + nbytes, 0, datasize - nbytes);
+		//cerr << "copy_from_buf " << buf2hex(data, nbytes) << endl;
 	}
 	else
 		memset((char*)data, 0, datasize);

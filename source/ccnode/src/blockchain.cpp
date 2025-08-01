@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
+ * Copyright (C) 2015-2025 Creda Foundation, Inc., or its contributors
  *
  * blockchain.cpp
 */
@@ -26,6 +26,7 @@
 #include <unifloat.hpp>
 #include <xtransaction-xpay.hpp>
 #include <xmatch.hpp>
+#include <encode.h>
 #include <apputil.h>
 #include <BlockChainStatus.hpp>
 
@@ -902,6 +903,8 @@ void BlockChain::SetLastIndelible(SmartBuf smartobj)
 	m_last_matching_start_block_time = g_process_xreqs.m_matching_block_time.load();
 
 	m_last_indelible_ticks = ccticks();
+
+	cc_alpha_set_default_decode_tables(m_last_indelible_timestamp);
 
 	if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(debug) << "BlockChain::SetLastIndelible last_indelible_level " << m_last_indelible_level << " last_matching_start_block_time " << m_last_matching_start_block_time;
 }

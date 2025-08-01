@@ -2,6 +2,31 @@
 ---
 <!--- NOTE: This file is in Markdown format, and is intended to be viewed in a Markdown viewer. -->
 
+## v2.0.5 2025-07-25
+
+### ccnode
+
+#### - Major Changes
+
+- Changed foreign payment accounting from fractional BTC/BCH to integral satoshi, to make verification more reliable.
+
+#### - Minor Changes
+
+- Fixed a regression that prevented strict validation of historical blocks.
+
+### ccwallet
+
+#### - Major Changes
+
+- Added the command "cc.transactions_list" to provide more detailed transaction info.
+- Added an option for remote wallet access via a Tor hidden service.
+
+### Exchange scripts
+
+#### - Minor Changes
+
+- Minor improvements.
+
 ## v2.0.4 2025-03-22
 
 ### ccwallet

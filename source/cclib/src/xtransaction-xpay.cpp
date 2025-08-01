@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
+ * Copyright (C) 2015-2025 Creda Foundation, Inc., or its contributors
  *
  * xtransaction-xpay.cpp
 */
@@ -35,6 +35,23 @@ string Xpay::DebugString() const
 	out << " foreign_address " << foreign_address;
 
 	return out.str();
+}
+
+Xpay::Xpay(const uint64_t xmatchnum_, const UniFloat& foreign_amount_, const string& foreign_block_id_, const string& foreign_txid_)
+	: Xtx(CC_TYPE_XCX_PAYMENT)
+{
+	Clear(true);
+
+	// currently hardcoded for btc/bch
+	// to ensure payment claims are as reliable as possible, round the foreign_amount to the nearest satoshi
+	auto amount = UniFloat::Multiply(foreign_amount_, SATOSHI_PER_BITCOIN);
+	amount = UniFloat::Round(amount);
+	amount = UniFloat::Divide(amount, SATOSHI_PER_BITCOIN);
+
+	xmatchnum = xmatchnum_;
+	foreign_amount = amount;
+	foreign_block_id = foreign_block_id_;
+	foreign_txid = foreign_txid_;
 }
 
 // Compute a hash of the payment identifier for a CC_TYPE_XCX_PAYMENT message
@@ -97,6 +114,8 @@ void Xpay::DataFromWire(const string& fn, const void *binbuf, const uint32_t bin
 	const bool bhex = false;
 	uint64_t encoded;
 	char strbuf[288];
+
+	//cerr << "Xpay::DataFromWire type " << type << " " << TypeIsXpay(type) << endl;
 
 	if (!TypeIsXpay(type))
 		return Xtx::DataFromWire(fn, binbuf, binsize, bufpos);

@@ -1,7 +1,7 @@
 /*
  * CredaCash (TM) cryptocurrency and blockchain
  *
- * Copyright (C) 2015-2024 Creda Foundation, Inc., or its contributors
+ * Copyright (C) 2015-2025 Creda Foundation, Inc., or its contributors
  *
  * xtransaction-xreq.cpp
 */
@@ -72,7 +72,7 @@ string Xreq::DebugString() const
 	out << " wait_discount " << wait_discount;
 	out << " base_costs " << base_costs;
 	out << " quote_costs " << quote_costs;
-	out << " destination " << destination;
+	out << " destination " << buf2hex(&destination, sizeof(destination));
 	out << " foreign_address " << foreign_address;
 
 	out << " add_immediately_to_blockchain " << flags.add_immediately_to_blockchain;
@@ -165,8 +165,14 @@ bool Xreq::NormalizeForeignAddress()
 
 	switch (quote_asset)
 	{
+	case XREQ_BLOCKCHAIN_BTC:
 	case XREQ_BLOCKCHAIN_BCH:
-		auto pos = foreign_address.rfind(':');
+		// strip query string from end
+		auto pos = foreign_address.rfind('?');
+		if (pos != string::npos)
+			foreign_address.erase(pos, string::npos);
+		// strip prefix
+		pos = foreign_address.rfind(':');
 		if (pos != string::npos)
 			foreign_address.erase(0, pos + 1);
 		break;
@@ -180,6 +186,9 @@ bool Xreq::NormalizeForeignAddress()
 bool Xreq::CheckForeignAddress() const
 {
 	if (!TypeIsCrosschain(type) || !TypeIsSeller(type))
+		return false;
+
+	if (TEST_XREQ)
 		return false;
 
 	auto str = foreign_address.data();
@@ -380,7 +389,7 @@ void Xreq::DataToWire(const string& fn, void *binbuf, const uint32_t binsize, ui
 	if (!expire_time)
 		throw range_error("expire_time is 0");
 
-	if (NormalizeForeignAddress())
+	if (NormalizeForeignAddress())	// note: this function call prevents ToWire from being const
 		throw range_error("invalid foreign_address");
 
 	auto encoded_time = Xtx::Encode_Time(expire_time);
@@ -735,20 +744,22 @@ static double randrate(unsigned exp_max)
 
 	CCRandom(&v, sizeof(v));
 
+	v.sign = (v.sign < 0 ? -1 : 1);
+
 	if (RandTest(8))
-		v.first = (uint64_t)1 << (rand() % 70);
+		v.mant = (uint64_t)1 << (rand() % 70);
 
-	auto neg = (v.second < 0);
+	auto neg = (v.exp < 0);
 
-	v.second *= (neg ? -1 : 1);
+	v.exp *= (neg ? -1 : 1);
 
-	if (0 && TRACE_WIRE_TEST) cout << "exp " << v.second << " DBL_MAX_EXP " << DBL_MAX_EXP << " exp_max " << exp_max << endl;
+	if (0 && TRACE_WIRE_TEST) cout << "exp " << v.exp << " DBL_MAX_EXP " << DBL_MAX_EXP << " exp_max " << exp_max << endl;
 
-	v.second %= exp_max;
+	v.exp %= exp_max;
 
-	v.second *= (neg ? -1 : 1);
+	v.exp *= (neg ? -1 : 1);
 
-	v.second -= 8*sizeof(v.first) - 1;
+	v.exp -= 8*sizeof(v.mant) - 1;
 
 	double r = UniFloat::Recompose(v).asFloat();
 
@@ -982,7 +993,7 @@ void XreqTestWire()
 {
 	cerr << "XreqTestWire" << endl;
 
-	Xreq test(CC_TYPE_XCX_REQ_BUY, 0, 0UL, 0UL, 1, 0, 0, "", "x", 0, 0UL);
+	Xreq test(CC_TYPE_XCX_REQ_BUY, 0, 0UL, 0UL, 1, 0, 0, "", "x", 0);
 
 	test.amount_bits = TX_AMOUNT_BITS;
 	test.exponent_bits = TX_AMOUNT_EXPONENT_BITS;
@@ -1017,13 +1028,7 @@ void Xreq::TestWire()
 	{
 		Randomize();
 
-		if (!RandTest(64))
-			type = CC_TYPE_XCX_REQ_BUY + (rand() % (CC_TYPE_XCX_NAKED_SELL + 1 - CC_TYPE_XCX_REQ_BUY));
-		else
-			type = rand() & 31;
-
-		if (!RandTest(32))
-			type = CC_TYPE_XCX_SIMPLE_BUY + (rand() % (CC_TYPE_XCX_NAKED_SELL + 1 - CC_TYPE_XCX_SIMPLE_BUY));
+		type = CC_TYPE_XCX_NAKED_BUY + (rand() % (CC_TYPE_XCX_MINING_TRADE + 1 - CC_TYPE_XCX_NAKED_BUY));
 
 		amount_bits = TX_AMOUNT_BITS;
 		exponent_bits = TX_AMOUNT_EXPONENT_BITS;
@@ -1091,7 +1096,7 @@ void Xreq::TestWire()
 	cerr << "ratediffmin " << ratediffmin << " ratediffmax " << ratediffmax << endl;
 }
 
-void Xreq::TryTestWireOne(const long double& minrate, const long double& maxrate, unsigned &count, long double &ratediffmin, long double &ratediffmax) const
+void Xreq::TryTestWireOne(const long double& minrate, const long double& maxrate, unsigned &count, long double &ratediffmin, long double &ratediffmax)
 {
 	const bigint_t maxamt("343597383680000000000000000000000000000000");
 
@@ -1119,6 +1124,9 @@ void Xreq::TryTestWireOne(const long double& minrate, const long double& maxrate
 
 	if (max_amount > maxamt)
 		bad = 4;
+
+	if (type == CC_TYPE_XCX_MINING_TRADE && min_amount != max_amount)
+		bad = 21;
 
 	if (base_costs != 0)
 		bad = 5;
@@ -1153,29 +1161,29 @@ void Xreq::TryTestWireOne(const long double& minrate, const long double& maxrate
 	if (accept_time_offered > 255)
 		bad = 15;
 
-	if (IsNaked() && consideration_required)
-		bad = 16;
+	//if (IsNaked() && consideration_required)
+	//	bad = 16;
 
-	if (IsNaked() && consideration_offered)
-		bad = 17;
+	//if (IsNaked() && consideration_offered)
+	//	bad = 17;
 
-	if (IsNaked() && pledge)
-		bad = 18;
+	//if (IsNaked() && pledge)
+	//	bad = 18;
 
-	if (IsNaked() && hold_time)
-		bad = 19;
+	//if (IsNaked() && hold_time)
+	//	bad = 19;
 
-	if (IsNaked() && hold_time_required)
-		bad = 20;
+	//if (IsNaked() && hold_time_required)
+	//	bad = 20;
 
-	if (IsNaked() && min_wait_time)
+	if (type == CC_TYPE_XCX_MINING_TRADE && min_wait_time != XREQ_SIMPLE_WAIT_TIME)
 		bad = 21;
 
-	if (IsNaked() && accept_time_required)
-		bad = 22;
+	//if (IsNaked() && accept_time_required)
+	//	bad = 22;
 
-	if (IsNaked() && accept_time_offered)
-		bad = 23;
+	//if (IsNaked() && accept_time_offered)
+	//	bad = 23;
 
 	if (payment_time < 1 || payment_time > 256)
 		bad = 24;
@@ -1249,13 +1257,18 @@ void Xreq::TryTestWireOne(const long double& minrate, const long double& maxrate
 	}
 }
 
-CCRESULT Xreq::TestWireOne(bool good, long double &ratediffmin, long double &ratediffmax) const
+CCRESULT Xreq::TestWireOne(bool good, long double &ratediffmin, long double &ratediffmax)
 {
 	char binbuf[1000];
 	uint32_t bufpos;
 
 	Xreq test;
 	test.Randomize();
+
+	if (type == CC_TYPE_XCX_MINING_TRADE && (rand() & 1))
+		min_amount = max_amount;
+
+	test.expiration = (test.expiration & (((uint64_t)1 << (CC_BLOCKTIME_WIRE_BYTES*8)) - 1)) + TX_TIME_OFFSET;
 
 	// must be set for unpack to work
 	test.type = type;
@@ -1318,21 +1331,33 @@ CCRESULT Xreq::TestWireOne(bool good, long double &ratediffmin, long double &rat
 	test.matching_amount = matching_amount;
 	test.best_amount = best_amount;
 	test.best_other_matching_amount = best_other_matching_amount;
+	test.pending_match_amount = pending_match_amount;
+
 	test.objid = objid;
+	test.address_id = address_id;
 	test.seqnum = seqnum;
-	test.xreqnum = xreqnum;
-	test.db_search_max_xreqnum = db_search_max_xreqnum
+	test.linked_seqnum = linked_seqnum;
 	test.best_other_seqnum = best_other_seqnum;
+	test.blocktime = blocktime;
+	test.xreqnum = xreqnum;
+	test.db_search_max_xreqnum = db_search_max_xreqnum;
+	test.recalc_time = recalc_time;
+	test.last_matched = last_matched;
 	test.best_other_xreqnum = best_other_xreqnum;
+	test.pending_match_epoch = pending_match_epoch;
+	test.pending_match_order = pending_match_order;
+
 	test.open_rate_required = open_rate_required;
 	test.matching_rate_required = matching_rate_required;
 	test.best_rate = best_rate;
 	test.best_net_rate = best_net_rate;
 	test.best_other_net_rate = best_other_net_rate;
-	test.recalc = recalc;
-	test.recalc_time = recalc_time;
-	test.last_matched = last_matched;
+	test.pending_match_rate = pending_match_rate;
+	test.pending_match_hold_time = pending_match_hold_time;
+	test.for_testnet = for_testnet;
 	test.for_witness = for_witness;
+	test.recalc = recalc;
+	test.changed = changed;
 
 	memcpy(test.signing_private_key, signing_private_key, sizeof(signing_private_key));
 
