@@ -115,7 +115,7 @@ void TxParams::ComputeDonation(unsigned type, unsigned nbytes, unsigned nout, un
 	if (TRACE_TXPARAMS) BOOST_LOG_TRIVIAL(trace) << "TxParamQuery::ComputeDonation txparams " << (uintptr_t)this << " type " << type << " nbytes " << nbytes << " nin " << nin << " nout " << nout << " donation " << donation;
 }
 
-TxParamQuery::TxParamQuery()
+void TxParamQuery::Reset()
 {
 	m_params.Clear();
 }

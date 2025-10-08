@@ -16,12 +16,17 @@
 #define TRACE_CCSERVER_OPSCOUNT		0
 
 //!#define RTEST_CUZZ_TIMER				32
+//!#define RTEST_CUZZ_WAIT				(1024-1)
 //!#define RTEST_TIMER_TIMEOUT			32
 
 //!#define TEST_VALIDATION_FAIL_NO_STOP	1	// allows bad tx's to be propogated through network
 
 #ifndef RTEST_CUZZ_TIMER
 #define RTEST_CUZZ_TIMER				0	// don't test
+#endif
+
+#ifndef RTEST_CUZZ_WAIT
+#define RTEST_CUZZ_WAIT					0	// don't test
 #endif
 
 #ifndef RTEST_TIMER_TIMEOUT
@@ -702,9 +707,11 @@ void Connection::HandleReadComplete()
 {
 	if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " Connection::HandleReadComplete signalling completion after " << m_nred << " of " << m_maxread << " of maximum bytes read";
 
-	lock_guard<mutex> lock(event_mutex);
+	{
+		lock_guard<mutex> lock(event_mutex);
 
-	++m_read_count;
+		++m_read_count;
+	}
 
 	event_condition_variable.notify_all();
 }
@@ -989,19 +996,19 @@ void Connection::HandleStop()
 		FinishConnection();
 
 		CCASSERTZ(m_ops_pending.load());
-
-		m_stopping.store(-9999);			// done stopping
 	}
 
 	{
 		lock_guard<mutex> lock(event_mutex);
 
-		m_conn_state = CONN_STOPPED;
+		m_stopping.store(-9999);			// done stopping
 
-		event_condition_variable.notify_all();
+		m_conn_state = CONN_STOPPED;
 	}
 
-	if (m_autofree && !g_shutdown)
+	event_condition_variable.notify_all();
+
+	if (m_autofree)
 		FreeConnection();
 
 	if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " Connection::HandleStop done";
@@ -1009,7 +1016,7 @@ void Connection::HandleStop()
 
 void Connection::FreeConnection()
 {
-	if (!g_shutdown)
+	if (!g_shutdown || g_is_dll)
 	{
 		m_autofree = true;
 
@@ -1032,21 +1039,29 @@ Connection::~Connection()
 	//lock_guard<FastSpinLock> lock3(m_ref_lock);
 }
 
-void Connection::WaitForStopped(bool abort_on_shutdown)	// should not be used with m_autofree = true when the connection can be reused
+void Connection::WaitForStopped(bool abort_on_shutdown)	// this function should not be used with m_autofree = true when the connection can be automatically reused
 {
 	if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " Connection::WaitForStopped abort_on_shutdown " << abort_on_shutdown;
 
 	unique_lock<mutex> lock(event_mutex);
 
-	if (abort_on_shutdown)
+	if (abort_on_shutdown && !g_is_dll)
 	{
 		while (m_conn_state != CONN_STOPPED && !g_shutdown)
+		{
+			if (RTEST_CUZZ_WAIT) usleep(rand() & RTEST_CUZZ_WAIT);
+
 			event_condition_variable.wait_for(lock, chrono::milliseconds(600));
+		}
 	}
 	else
 	{
 		while (m_conn_state != CONN_STOPPED)
+		{
+			if (RTEST_CUZZ_WAIT) usleep(rand() & RTEST_CUZZ_WAIT);
+
 			event_condition_variable.wait(lock);
+		}
 	}
 
 	if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " Connection::WaitForStopped done";
@@ -1061,12 +1076,20 @@ void Connection::WaitForReadComplete(unsigned last_read_count, bool abort_on_shu
 	if (abort_on_shutdown)
 	{
 		while (m_read_count == last_read_count && !m_stopping.load() && !g_shutdown)
+		{
+			if (RTEST_CUZZ_WAIT) usleep(rand() & RTEST_CUZZ_WAIT);
+
 			event_condition_variable.wait_for(lock, chrono::milliseconds(600));
+		}
 	}
 	else
 	{
 		while (m_read_count == last_read_count && !m_stopping.load())
+		{
+			if (RTEST_CUZZ_WAIT) usleep(rand() & RTEST_CUZZ_WAIT);
+
 			event_condition_variable.wait(lock);
+		}
 	}
 
 	if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " Connection::WaitForReadComplete done";

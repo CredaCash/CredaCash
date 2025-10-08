@@ -53,15 +53,15 @@ The following instructions are specifically for Debian 10.  They may be adaptabl
 
 	It is also possible to build Tor from source.  The source code is available at the [Tor Distribution site](https://dist.torproject.org/).  You may need to also first install:
 	
-		sudo apt-get install libevent-dev libssl-dev libzstd-dev libsystemd-dev
+		sudo apt-get install libevent-dev libssl-dev libzstd-dev zlib1g-dev liblzma-dev libsystemd-dev
 		
 	or in a Redhat-based distribution:
 	
-		sudo yum install libevent-devel openssl-devel libzstd-devel systemd-devel
+		sudo yum install libevent-devel openssl-devel libzstd-devel zlib-devel xz-devel systemd-devel
 		
 	Tor can then be built using the commands:
 
-		./configure --enable-systemd --disable-module-relay --disable-unittests
+		./configure --enable-systemd --disable-module-relay --disable-unittests --disable-asciidoc
 		make
 		sudo make install
 

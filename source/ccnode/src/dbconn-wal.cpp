@@ -16,10 +16,15 @@
 
 #define TRACE_DBCONN	(g_params.trace_wal_db)
 
-//!#define TEST_FREERUN_CHECKPOINTS	1
+//!#define TEST_FREERUN_CHECKPOINTS		1
+//!#define RTEST_CUZZ_WAIT				(1024-1)
 
 #ifndef TEST_FREERUN_CHECKPOINTS
-#define TEST_FREERUN_CHECKPOINTS	0	// don't test
+#define TEST_FREERUN_CHECKPOINTS		0	// don't test
+#endif
+
+#ifndef RTEST_CUZZ_WAIT
+#define RTEST_CUZZ_WAIT					0	// don't test
 #endif
 
 void WalDB::WalStartCheckpoint(bool full)
@@ -49,15 +54,19 @@ void WalDB::WalStartCheckpoint(bool full)
 
 	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "WalDB::WalStartCheckpoint " << dbname << " calling notify_one full " << full_checkpoint_pending;
 
-	lock_guard<mutex> lock(checkpoint_mutex);
+	{
+		lock_guard<mutex> lock(checkpoint_mutex);
 
-	do_full_checkpoint.store(full_checkpoint_pending);
+		do_full_checkpoint.store(full_checkpoint_pending);
 
-	full_checkpoint_pending = false;
+		full_checkpoint_pending = false;
 
-	checkpoint_needed.store(true);
+		checkpoint_needed.store(true);
+	}
 
-	checkpoint_condition_variable.notify_one();	// need to hold lock so notify isn't missed by a thread that is just about to enter wait
+	checkpoint_condition_variable.notify_one();
+
+	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "WalDB::WalStartCheckpoint " << dbname << " done";
 }
 
 void WalDB::WalWaitForStartCheckpoint()
@@ -76,8 +85,14 @@ void WalDB::WalWaitForStartCheckpoint()
 
 	while (!checkpoint_needed.load() && !stop_checkpointing.load() && !g_blockchain.HasFatalError() && !g_shutdown)
 	{
+		if (RTEST_CUZZ_WAIT) usleep(rand() & RTEST_CUZZ_WAIT);
+
+		if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "WalDB::WalWaitForStartCheckpoint starting wait " << dbname;
+
 		checkpoint_condition_variable.wait(lock);		// lock is acquired before waking up
 	}
+
+	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "WalDB::WalWaitForStartCheckpoint done " << dbname;
 }
 
 void WalDB::WalCheckpoint(sqlite3 *db)

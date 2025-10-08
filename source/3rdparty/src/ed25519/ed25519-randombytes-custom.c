@@ -16,8 +16,8 @@ void ed25519_randombytes_unsafe(void *p, size_t len)
 {
 	const char *msg = "ERROR: ed25519_randombytes_unsafe called\n";
 
-	printf(msg);
-	fprintf(stderr, msg);
+	printf("%s", msg);
+	fprintf(stderr, "%s", msg);
 
 	memset(p, 0, len);
 

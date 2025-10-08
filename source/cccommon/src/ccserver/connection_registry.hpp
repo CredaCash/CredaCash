@@ -26,10 +26,12 @@ class ConnectionRegistry
 public:
 	ConnectionRegistry()
 	 :	m_conn_registry_lock(__FILE__, __LINE__)
-	{
-		last_unmapped_index = 0;
-		m_connections.push_back(NULL);	// leave entry zero NULL to guard against bugs
-	}
+	{ }
+
+	~ConnectionRegistry();
+
+	void Init();
+	void DeInit();
 
 	int RegisterConn(Connection *conn, bool map);
 

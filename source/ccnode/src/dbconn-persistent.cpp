@@ -300,14 +300,8 @@ int DbConnPersistData::EndWrite(bool commit)
 
 	DoPersistentDataFinish();
 
-	write_pending = false;
-
 	if (dbresult(rc) || !commit)
-	{
-		if (TRACE_DB_READS) BOOST_LOG_TRIVIAL(trace) << "DbConnPersistData::EndWrite releasing mutex rc = " << rc;
-
-		Persistent_db_write_mutex.unlock();
-	}
+		ReleaseMutex();
 
 	if (dbresult(rc))
 		return -1;
@@ -317,7 +311,12 @@ int DbConnPersistData::EndWrite(bool commit)
 
 void DbConnPersistData::ReleaseMutex()
 {
-	if (TRACE_DB_READS) BOOST_LOG_TRIVIAL(trace) << "DbConnPersistData::ReleaseMutex releasing mutex";
+	if (!ThisThreadHoldsMutex())
+		return;
+
+	if (TRACE_DB_READS) BOOST_LOG_TRIVIAL(trace) << "DbConnPersistData::ReleaseMutex";
+
+	write_pending = false;
 
 	Persistent_db_write_mutex.unlock();
 }

@@ -29,20 +29,25 @@
 
 #define TRACE_PROCESS_TX	(g_params.trace_tx_validation)
 
-//#define TEST_IGNORE_TRANSIENT_DUPLICATE_FOREIGN_ADDRESSES		1
-//!#define TEST_CUZZ			1
+//!#define RTEST_CUZZ				(1024-1)
+//!#define RTEST_CUZZ_WAIT			(1024-1)
 //!#define TEST_DELAY_SOME_TXS		1
+//#define TEST_IGNORE_TRANSIENT_DUPLICATE_FOREIGN_ADDRESSES		1
 
-#ifndef TEST_IGNORE_TRANSIENT_DUPLICATE_FOREIGN_ADDRESSES
-#define TEST_IGNORE_TRANSIENT_DUPLICATE_FOREIGN_ADDRESSES		0	// don't test
+#ifndef RTEST_CUZZ
+#define RTEST_CUZZ					0	// don't test
 #endif
 
-#ifndef TEST_CUZZ
-#define TEST_CUZZ				0	// don't test
+#ifndef RTEST_CUZZ_WAIT
+#define RTEST_CUZZ_WAIT					0	// don't test
 #endif
 
 #ifndef TEST_DELAY_SOME_TXS
 #define TEST_DELAY_SOME_TXS		0	// don't test
+#endif
+
+#ifndef TEST_IGNORE_TRANSIENT_DUPLICATE_FOREIGN_ADDRESSES
+#define TEST_IGNORE_TRANSIENT_DUPLICATE_FOREIGN_ADDRESSES		0	// don't test
 #endif
 
 #define FOREIGN_TX_PAST_ALLOWANCE		(4*3600)		// 4 hours	// TODO config this by blockchain
@@ -61,6 +66,7 @@ void ProcessTx::Init()
 	if (g_params.tx_validation_threads <= 0)
 		return;
 
+	m_threads.clear();
 	m_threads.reserve(g_params.tx_validation_threads);
 
 	for (int i = 0; i < g_params.tx_validation_threads && !g_shutdown; ++i)
@@ -72,7 +78,7 @@ void ProcessTx::Init()
 
 void ProcessTx::Stop()
 {
-	if (TRACE_PROCESS_TX) BOOST_LOG_TRIVIAL(trace) << "ProcessTx::Stop";
+	BOOST_LOG_TRIVIAL(trace) << "ProcessTx::Stop";
 
 	CCASSERT(g_shutdown);
 
@@ -82,12 +88,12 @@ void ProcessTx::Stop()
 
 	DbConnProcessQ::StopQueuedWork(PROCESS_Q_TYPE_TX);
 
-	if (TRACE_PROCESS_TX) BOOST_LOG_TRIVIAL(trace) << "ProcessTx::Stop done";
+	BOOST_LOG_TRIVIAL(trace) << "ProcessTx::Stop done";
 }
 
 void ProcessTx::DeInit()
 {
-	if (TRACE_PROCESS_TX) BOOST_LOG_TRIVIAL(trace) << "ProcessTx::DeInit";
+	BOOST_LOG_TRIVIAL(trace) << "ProcessTx::DeInit";
 
 	for (auto t : m_threads)
 	{
@@ -97,7 +103,7 @@ void ProcessTx::DeInit()
 
 	m_threads.clear();
 
-	if (TRACE_PROCESS_TX) BOOST_LOG_TRIVIAL(trace) << "ProcessTx::DeInit done";
+	BOOST_LOG_TRIVIAL(trace) << "ProcessTx::DeInit done";
 }
 
 const char* ProcessTx::ResultString(int result)
@@ -167,10 +173,12 @@ void ProcessTx::WaitForBlockTxValidation()
 
 	while (block_txs_pending > 0 && !g_shutdown)
 	{
+		if (RTEST_CUZZ_WAIT) usleep(rand() & RTEST_CUZZ_WAIT);
+
 		processtx_condition_variable.wait(lock);
 	}
 
-	if (TEST_CUZZ)
+	if (RTEST_CUZZ)
 	{
 		lock.unlock();
 		usleep(rand() & (1024*1024-1));
@@ -183,11 +191,11 @@ int ProcessTx::TxEnqueueValidate(DbConn *dbconn, bool is_block_tx, bool add_to_r
 {
 	// the following operations are atomic, to ensure ValidObj's and ProcessQ stay in sync
 
-	if (TEST_CUZZ) usleep(rand() & (1024*1024-1));
+	if (RTEST_CUZZ) usleep(rand() & RTEST_CUZZ);
 
 	unique_lock<mutex> lock(processtx_mutex);
 
-	if (TEST_CUZZ) usleep(rand() & (1024*1024-1));
+	if (RTEST_CUZZ) usleep(rand() & RTEST_CUZZ);
 
 	// if tx is in valid obj's, then return 1 without enqueuing
 
@@ -221,7 +229,7 @@ int ProcessTx::TxEnqueueValidate(DbConn *dbconn, bool is_block_tx, bool add_to_r
 		return 1;
 	}
 
-	if (TEST_CUZZ) usleep(rand() & (1024*1024-1));
+	if (RTEST_CUZZ) usleep(rand() & RTEST_CUZZ);
 
 	if (add_to_relay_objs)
 	{
@@ -234,14 +242,14 @@ int ProcessTx::TxEnqueueValidate(DbConn *dbconn, bool is_block_tx, bool add_to_r
 		dbconn->RelayObjsInsert(0, CC_TYPE_TXPAY, req_params, RELAY_STATUS_DOWNLOADED, 0);
 	}
 
-	if (TEST_CUZZ) usleep(rand() & (1024*1024-1));
+	if (RTEST_CUZZ) usleep(rand() & RTEST_CUZZ);
 
 	rc = dbconn->ProcessQEnqueueValidate(PROCESS_Q_TYPE_TX, smartobj, NULL, 0, PROCESS_Q_STATUS_PENDING, priority, is_block_tx, conn_index, callback_id);
 	if (TRACE_XPAYS && Xtx::TypeIsXpay(type)) BOOST_LOG_TRIVIAL(info) << "ProcessTx::TxEnqueueValidate ProcessQEnqueueValidate returned " << rc << " for priority " << priority << " type " << type << " oid " << buf2hex(obj->OidPtr(), CC_OID_TRACE_SIZE);
 	if (rc < 0)
 		return -1;
 
-	if (TEST_CUZZ) usleep(rand() & (1024*1024-1));
+	if (RTEST_CUZZ) usleep(rand() & RTEST_CUZZ);
 
 	if (!rc && is_block_tx)
 	{
@@ -250,7 +258,7 @@ int ProcessTx::TxEnqueueValidate(DbConn *dbconn, bool is_block_tx, bool add_to_r
 		if (TRACE_PROCESS_TX) BOOST_LOG_TRIVIAL(debug) << "ProcessTx::TxEnqueueValidate block_txs_pending " << btp;
 	}
 
-	if (TEST_CUZZ)
+	if (RTEST_CUZZ)
 	{
 		lock.unlock();
 		usleep(rand() & (1024*1024-1));
@@ -860,7 +868,7 @@ static int ValidateXreq(DbConn *dbconn, const uint64_t prior_blocktime, bool in_
 
 	if (xreq.expire_time > prior_blocktime + XREQ_MAX_EXPIRE_TIME)
 	{
-		BOOST_LOG_TRIVIAL(info) << "ProcessBlock::BlockValidate INVALID Xreq expire_time " << xreq.expire_time << " prior_blocktime " << prior_blocktime << " XREQ_MAX_EXPIRE_TIME " << XREQ_MAX_EXPIRE_TIME;
+		BOOST_LOG_TRIVIAL(info) << "ProcessTx::ValidateXreq INVALID Xreq expire_time " << xreq.expire_time << " prior_blocktime " << prior_blocktime << " XREQ_MAX_EXPIRE_TIME " << XREQ_MAX_EXPIRE_TIME;
 
 		return TX_RESULT_INVALID_VALUE;
 	}
@@ -1437,7 +1445,7 @@ void ProcessTx::ThreadProc()
 
 	while (true)
 	{
-		if (TEST_CUZZ) usleep(rand() & (1024*1024-1));
+		if (RTEST_CUZZ) usleep(rand() & RTEST_CUZZ);
 
 		dbconn->WaitForQueuedWork(PROCESS_Q_TYPE_TX);
 
@@ -1458,7 +1466,7 @@ void ProcessTx::ThreadProc()
 
 		while (true)	// so we can use break on error
 		{
-			if (TEST_CUZZ) usleep(rand() & (1024*1024-1));
+			if (RTEST_CUZZ) usleep(rand() & RTEST_CUZZ);
 
 			if (dbconn->ProcessQGetNextValidateObj(PROCESS_Q_TYPE_TX, &smartobj, conn_index, callback_id))
 			{
@@ -1474,7 +1482,7 @@ void ProcessTx::ThreadProc()
 			// we have to set this now to avoid a race with the transaction being placed into a persistent block
 			next_commitnum = g_commitments.GetNextCommitnum();
 
-			if (TEST_CUZZ) usleep(rand() & (1024*1024-1));
+			if (RTEST_CUZZ) usleep(rand() & RTEST_CUZZ);
 
 			auto rc = TxValidate(dbconn, tx, smartobj);
 			if (rc < 0)
@@ -1514,7 +1522,7 @@ void ProcessTx::ThreadProc()
 		{
 			//BOOST_LOG_TRIVIAL(debug) << "ProcessTx::TxValidate validated " << validated << " oid " << buf2hex(obj->OidPtr(), CC_OID_TRACE_SIZE);
 
-			if (TEST_CUZZ) usleep(rand() & (1024*1024-1));
+			if (RTEST_CUZZ) usleep(rand() & RTEST_CUZZ);
 
 			// the following operations are atomic, to ensure ValidObj's and ProcessQ stay in sync
 
@@ -1543,7 +1551,7 @@ void ProcessTx::ThreadProc()
 				}
 			}
 
-			if (TEST_CUZZ) usleep(rand() & (1024*1024-1));
+			if (RTEST_CUZZ) usleep(rand() & RTEST_CUZZ);
 
 			// refetch block_tx_count, conn_index and callback_id, in case they have changed
 			auto rc = dbconn->ProcessQSelectAndDelete(PROCESS_Q_TYPE_TX, *obj->OidPtr(), block_tx_count, conn_index, callback_id);

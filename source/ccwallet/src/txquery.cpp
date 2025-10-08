@@ -50,21 +50,40 @@
 CCServer::ConnectionFactoryInstantiation<TxQuery> TxQuery::txconnfac(TXCONN_READ_MAX, TXCONN_WRITE_MAX, -1, -1, 0, 1, 0);	//@@!
 CCServer::ConnectionManagerBase TxQuery::nullconnmgr("TxQuery");
 
-static vector<string> hosts;
+static vector<string> hosts[2];
+static bool tx_server_queries_only = false;
 
 using namespace snarkfront;
 
-int TxQuery::ReadHostsFile(const wstring& path)
+static void shuffle_hosts_file(bool brelay)
 {
-	BOOST_LOG_TRIVIAL(trace) << "TxQuery::ReadHostsFile file \"" << w2s(path) << "\"";
+	for (unsigned i = 0; i < hosts[brelay].size(); ++i)
+	{
+		auto j = rand() % hosts[brelay].size();
+		auto t = hosts[brelay][i];
+		hosts[brelay][i] = hosts[brelay][j];
+		hosts[brelay][j] = t;
+	}
+}
+
+int TxQuery::ReadHostsFile(bool brelay, const wstring& path)
+{
+	BOOST_LOG_TRIVIAL(trace) << "TxQuery::ReadHostsFile brelay " << brelay << " file \"" << w2s(path) << "\"";
 
 	CCASSERT(path.length());
+
+	hosts[brelay].clear();
+
+	if (!brelay)
+		g_txparams.Reset(); // clear the cached parameters from the tx server
 
 	boost::filesystem::ifstream fs;
 	fs.open(path, fstream::in);
 	if(!fs.is_open())
 	{
-		cerr << "ERROR opening transaction server hosts file \"" << w2s(path) << "\"" << endl;
+		if (!brelay)
+			cerr << "ERROR opening transaction server hosts file \"" << w2s(path) << "\"" << endl;
+
 		return -1;
 	}
 
@@ -86,41 +105,58 @@ int TxQuery::ReadHostsFile(const wstring& path)
 		{
 			BOOST_LOG_TRIVIAL(trace) << "TxQuery::ReadHostsFile read hostname \"" << line << "\"";
 
-			hosts.push_back(line);
+			hosts[brelay].push_back(line);
 		}
 
 		if (fs.eof())
 			break;
 	}
 
-	if (hosts.size() < 1)
+	if (hosts[brelay].size() < 1)
 	{
 		cerr << "ERROR no hostnames found in file file \"" << w2s(path) << "\"" << endl;
 		return -1;
 	}
 
-	BOOST_LOG_TRIVIAL(debug) << "TxQuery::ReadHostsFile loaded " << hosts.size() << " transaction server hostnames";
+	BOOST_LOG_TRIVIAL(debug) << "TxQuery::ReadHostsFile brelay " << brelay << " loaded " << hosts[brelay].size() << " transaction server hostnames";
+
+	shuffle_hosts_file(brelay);
 
 	return 0;
 }
 
-void TxQuery::ClearHost()
+static bool use_relay(PowType powtype)
 {
-	m_host_index = -1;
+	return tx_server_queries_only && powtype == PowType_Tx && hosts[1].size();
 }
 
-const string& TxQuery::GetHost()
+void TxQuery::AdvanceHost(PowType powtype, bool retry)
 {
-	unsigned i = m_host_index;
+	auto brelay = use_relay(powtype);
 
-	if (i >= hosts.size())
-	{
-		i = m_host_index = rand() % hosts.size();
+	if (g_params.transact_tor_single_query)
+		m_host_index[brelay] = -1;
+	else if (retry)
+		++m_host_index[brelay];
+}
 
-		BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " TxQuery using server " << hosts[i];
-	}
+const string& TxQuery::GetHost(PowType powtype)
+{
+	auto brelay = use_relay(powtype);
 
-	return hosts[i];
+	unsigned i = m_host_index[brelay];
+
+	if (i == (unsigned)-1)
+		i = rand();
+
+	CCASSERT(hosts[brelay].size());
+
+	i %= hosts[brelay].size();
+	m_host_index[brelay] = i;
+
+	BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " TxQuery using " << (brelay ? "relay " : "") << "server " << hosts[brelay][i];
+
+	return hosts[brelay][i];
 }
 
 int TxQuery::PrepareQuery(PowType powtype, uint64_t expire_time, bool is_retry, vector<char> *pquery)
@@ -154,10 +190,7 @@ int TxQuery::PrepareQuery(PowType powtype, uint64_t expire_time, bool is_retry, 
 	if (RandTest(RTEST_CUZZ)) ccsleep(rand() & 3);
 
 	if (rc)
-	{
-		ClearHost();
 		return -1;
-	}
 
 	auto difficulty = txparams.query_work_difficulty;
 	if (!powtype)
@@ -258,11 +291,15 @@ int TxQuery::TryQuery(PowType powtype, vector<char> *pquery)
 
 		if (TRACE_TXQUERY) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " TxQuery::TryQuery posting query; m_stopping " << m_stopping.load();
 
-		static const string null;
 		int rc;
 
 		if (g_params.transact_tor)
-			rc = Post("TxQuery::TryQuery", boost::bind(&Connection::HandleConnectOutgoingTor, this, g_params.torproxy_port, ref(GetHost()), (g_params.transact_tor_single_query ? ref(null) : ref(GetHost())), AutoCount(this)));
+		{
+			static const string null;
+			const string& torhost = GetHost(powtype);
+			const string& toruser = (g_params.transact_tor_single_query ? null : torhost);
+			rc = Post("TxQuery::TryQuery", boost::bind(&Connection::HandleConnectOutgoingTor, this, g_params.torproxy_port, ref(torhost), ref(toruser), AutoCount(this)));
+		}
 		else
 			rc = Post("TxQuery::TryQuery", boost::bind(&Connection::HandleConnectOutgoing, this, ref(g_params.transact_host), g_params.transact_port, AutoCount(this)));
 
@@ -271,7 +308,6 @@ int TxQuery::TryQuery(PowType powtype, vector<char> *pquery)
 			if (TRACE_TXQUERY) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " TxQuery::TryQuery post failed; m_stopping " << m_stopping.load();
 
 			Stop();
-			ClearHost();
 			return -1;
 		}
 
@@ -282,11 +318,10 @@ int TxQuery::TryQuery(PowType powtype, vector<char> *pquery)
 		BOOST_LOG_TRIVIAL(error) << Name() << " Conn " << m_conn_index << " TxQuery::TryQuery submitting to open connection not yet supported";
 
 		Stop();
-		ClearHost();
 		return -1;	// FUTURE: need a way to submit query to already open connection
 	}
 
-	WaitForReadComplete(read_count_start, IsInteractive());
+	WaitForReadComplete(read_count_start, IsInteractive());	// abort_on_shutdown is false for non interactive queries because these will be closed by Service::StartShutdown() -> StopAllConnections() ?
 
 	if (TRACE_TXQUERY) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " TxQuery::TryQuery result " << m_result_code << " read_count_start " << read_count_start << " m_read_count " << m_read_count << " g_shutdown " << g_shutdown;
 
@@ -298,9 +333,6 @@ int TxQuery::TryQuery(PowType powtype, vector<char> *pquery)
 	if (g_shutdown) return -1;
 
 	if (RandTest(RTEST_CUZZ)) ccsleep(rand() & 7);
-
-	if (m_result_code)
-			ClearHost();	// retry with different server
 
 	return m_result_code;
 }
@@ -316,6 +348,8 @@ int TxQuery::SubmitQuery(PowType powtype, uint64_t expire_time, bool is_retry, J
 		root->clear();
 
 	int result_code = -1;
+
+	AdvanceHost(powtype, is_retry);
 
 	while (true)	// break on error
 	{
@@ -478,9 +512,6 @@ int TxQuery::DoSubmitTx(uint64_t expire_time, uint64_t& next_commitnum, vector<c
 	{
 		if (g_shutdown) return -1;
 
-		if (g_params.transact_tor_single_query)
-			ClearHost();
-
 		auto already_possibly_sent = m_possibly_sent;
 
 		auto rc = SubmitQuery(PowType_Tx, expire_time, i, NULL, &wire, skip_prepare, debug);
@@ -600,15 +631,21 @@ int TxQuery::QueryParams(TxParams& txparams, vector<char> &querybuf)
 
 		result_code = ParseParams(root, txparams);
 
-		if (result_code) break;
+		if (result_code) continue;
+
+		if (txparams.queries_only && !txparams.connected && i < g_params.tx_query_retries)
+		{
+			BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " TxQuery::QueryParams retrying server not connected to network";
+			continue;
+		}
 
 		result_code = ParseBlockChainStatus(root, txparams.blockchain_status);
 
-		if (result_code) break;
+		if (result_code) continue;
 
 		result_code = ParseInputParams(root, txparams);
 
-		if (result_code) break;
+		if (result_code) continue;
 
 		if (root.empty())
 			break;
@@ -656,21 +693,13 @@ int TxQuery::ParseParams(Json::Value& root, TxParams& txparams)
 	//cerr << "clock_diff " << txparams.clock_diff << endl;
 	if (TRACE_TXPARAMS) BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " TxQuery::ParseParams clock_diff " << txparams.clock_diff;
 
-	key = "server-version";
+	key = "connected-to-network";
 	if (!root.removeMember(key, &value))
 		goto missing_key;
-	rc = parse_int_value(fn, key, value.asString(), 64, 0UL, bigval, output, outsize);
+	rc = parse_int_value(fn, key, value.asString(), 1, 0UL, bigval, output, outsize);
 	if (rc) goto parse_error;
-	txparams.server_version = BIG64(bigval);
-	if (TRACE_TXPARAMS) BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " TxQuery::ParseParams server_version " << txparams.server_version;
-
-	key = "server-protocol-version";
-	if (!root.removeMember(key, &value))
-		goto missing_key;
-	rc = parse_int_value(fn, key, value.asString(), 64, 0UL, bigval, output, outsize);
-	if (rc) goto parse_error;
-	txparams.protocol_version = BIG64(bigval);
-	if (TRACE_TXPARAMS) BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " TxQuery::ParseParams protocol_version " << txparams.protocol_version;
+	txparams.connected = BIG64(bigval);
+	if (TRACE_TXPARAMS) BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " TxQuery::ParseParams connected " << txparams.connected;
 
 	key = "parameters-last-modified-level";
 	if (!root.removeMember(key, &value))
@@ -695,13 +724,37 @@ int TxQuery::ParseParams(Json::Value& root, TxParams& txparams)
 		return -1;
 	}
 
-	key = "connected-to-network";
+	// from StreamServerParams()
+
+	key = "server-version";
 	if (!root.removeMember(key, &value))
 		goto missing_key;
-	rc = parse_int_value(fn, key, value.asString(), 1, 0UL, bigval, output, outsize);
+	rc = parse_int_value(fn, key, value.asString(), 64, 0UL, bigval, output, outsize);
 	if (rc) goto parse_error;
-	txparams.connected = BIG64(bigval);
-	if (TRACE_TXPARAMS) BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " TxQuery::ParseParams connected " << txparams.connected;
+	txparams.server_version = BIG64(bigval);
+	if (TRACE_TXPARAMS) BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " TxQuery::ParseParams server_version " << txparams.server_version;
+
+	key = "server-protocol-version";
+	if (!root.removeMember(key, &value))
+		goto missing_key;
+	rc = parse_int_value(fn, key, value.asString(), 64, 0UL, bigval, output, outsize);
+	if (rc) goto parse_error;
+	txparams.protocol_version = BIG64(bigval);
+	if (TRACE_TXPARAMS) BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " TxQuery::ParseParams protocol_version " << txparams.protocol_version;
+
+	key = "server-queries-only";
+	if (root.removeMember(key, &value))
+	{
+		rc = parse_int_value(fn, key, value.asString(), 1, 0UL, bigval, output, outsize);
+		if (rc) goto parse_error;
+		txparams.queries_only = BIG64(bigval);
+	}
+	else
+	{
+		txparams.queries_only = false;
+	}
+	tx_server_queries_only = txparams.queries_only;
+	if (TRACE_TXPARAMS) BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " TxQuery::ParseParams queries_only " << txparams.queries_only;
 
 	// from StreamTxParams()
 
@@ -1031,9 +1084,6 @@ int TxQuery::QuerySerialnums(uint64_t blockchain, const bigint_t *serialnums, un
 		char *output = NULL;
 		uint32_t outsize = 0;
 
-		if (g_params.transact_tor_single_query)
-			ClearHost();
-
 		auto rc = SubmitQuery(PowType_Query, 0, i, &root);
 		if (rc) continue;
 
@@ -1179,9 +1229,6 @@ int TxQuery::QueryInputs(const uint64_t *commitnum, const unsigned ncommits, TxP
 		string fn;
 		char *output = NULL;
 		uint32_t outsize = 0;
-
-		if (g_params.transact_tor_single_query)
-			ClearHost();
 
 		auto rc = SubmitQuery(PowType_Query, 0, i, &root);
 		if (rc) continue;
@@ -1561,9 +1608,6 @@ int TxQuery::QueryAddress(uint64_t blockchain, const bigint_t& address, const ui
 		if (g_shutdown) return -1;
 
 		Json::Value root;
-
-		if (g_params.transact_tor_single_query)
-			ClearHost();
 
 		auto rc = SubmitQuery(PowType_Query, 0, i, &root);
 
@@ -2190,9 +2234,6 @@ int TxQuery::QueryXreqs(const unsigned xcx_type, const bigint_t& min_amount, con
 		results.Clear();
 
 		if (g_shutdown) return -1;
-
-		if (g_params.transact_tor_single_query)
-			ClearHost();
 
 		auto rc = SubmitQuery(PowType_Query, 0, i, &results.json);
 
@@ -2844,9 +2885,6 @@ int TxQuery::QueryXmatchreq(uint64_t blockchain, const ccoid_t& objid, uint64_t 
 
 		Json::Value root;
 
-		if (g_params.transact_tor_single_query)
-			ClearHost();
-
 		auto rc = SubmitQuery(PowType_Query, 0, i, &root);
 
 		if (rc > 0)
@@ -2998,9 +3036,6 @@ int TxQuery::QueryXmatch(uint64_t blockchain, uint64_t matchnum, QueryXmatchResu
 
 		Json::Value root;
 
-		if (g_params.transact_tor_single_query)
-			ClearHost();
-
 		auto rc = SubmitQuery(PowType_Query, 0, i, &root);
 
 		if (rc > 0)
@@ -3111,9 +3146,6 @@ int TxQuery::QueryXminingInfo(QueryXreqsMiningInfoResults &results)
 		results.Clear();
 
 		if (g_shutdown) return -1;
-
-		if (g_params.transact_tor_single_query)
-			ClearHost();
 
 		auto rc = SubmitQuery(PowType_Query, 0, i, &results.json);
 

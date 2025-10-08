@@ -69,10 +69,10 @@ string command_line_to_json()
 {
 	string json;
 
-	if (!g_params.config_options.count("command"))
+	if (!g_params.config_options->count("command"))
 		return json;
 
-	auto cmd = g_params.config_options["command"].as<vector<string>>();
+	auto cmd = (*g_params.config_options)["command"].as<vector<string>>();
 
 	if (cmd[0] == "stop" || cmd[0] == "STOP")
 		return "stop";

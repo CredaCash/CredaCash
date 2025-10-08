@@ -39,8 +39,9 @@ enum PowType
 	PowType_Tx
 };
 
-struct QueryAddressResult
+class QueryAddressResult
 {
+public:
 	uint64_t blockchain;
 	uint32_t domain;
 	uint16_t is_special_domain;
@@ -60,8 +61,9 @@ struct QueryAddressResult
 	}
 };
 
-struct QueryAddressResults
+class QueryAddressResults
 {
+public:
 	unsigned nresults;
 	bool more_results;
 	QueryAddressResult results[WALLET_QUERY_ADDRESS_MAX_RESULTS];
@@ -72,8 +74,9 @@ struct QueryAddressResults
 	}
 };
 
-struct QueryInputResults
+class QueryInputResults
 {
+public:
 	uint64_t param_level;
 	uint64_t param_time;
 	snarkfront::bigint_t merkle_root;
@@ -173,7 +176,7 @@ class TxQuery : public TxConnection
 	int ParseQueryXmatchResults(uint64_t blockchain, uint64_t matchnum, Json::Value root, QueryXmatchResults &results);
 	int ParseQueryXminingInfoResults(QueryXreqsMiningInfoResults &results);
 
-	unsigned m_host_index;
+	unsigned m_host_index[2];
 
 public:
 	bool m_possibly_sent;
@@ -184,7 +187,8 @@ public:
 	TxQuery(class CCServer::ConnectionManagerBase& manager, boost::asio::io_service& io_service, const class CCServer::ConnectionFactoryBase& connfac)
 	 :	TxConnection(manager, io_service, connfac)
 	{
-		ClearHost();
+		m_host_index[0] = -1;
+		m_host_index[1] = -1;
 	}
 
 	bool WasPossiblySent() const
@@ -192,9 +196,9 @@ public:
 		return m_possibly_sent;
 	}
 
-	static int ReadHostsFile(const wstring& path);
-	void ClearHost();
-	const string& GetHost();
+	static int ReadHostsFile(bool brelay, const wstring& path);
+	void AdvanceHost(PowType powtype, bool retry);
+	const string& GetHost(PowType powtype);
 
 	int PrepareTx(TxPay& ts, uint64_t expire_time, vector<char>& wire);
 	int PrepareQuery(PowType powtype, uint64_t expire_time, bool is_retry, vector<char> *pquery = NULL);

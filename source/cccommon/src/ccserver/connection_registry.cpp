@@ -14,6 +14,25 @@ CCServer::ConnectionRegistry g_connregistry;
 
 namespace CCServer {
 
+ConnectionRegistry::~ConnectionRegistry()
+{
+	//CCASSERT(m_connections.empty());
+}
+
+void ConnectionRegistry::DeInit()
+{
+	m_connections.clear();
+}
+
+void ConnectionRegistry::Init()
+{
+	CCASSERT(m_connections.empty());
+
+	m_connections.push_back(NULL);	// leave entry zero NULL to guard against bugs
+
+	last_unmapped_index = 0;
+}
+
 int ConnectionRegistry::RegisterConn(Connection *conn, bool map)
 {
 	int index;

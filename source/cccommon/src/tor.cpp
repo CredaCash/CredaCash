@@ -43,6 +43,7 @@ static void tor_hidden_service_config(bool external_tor, wostringstream& params,
 
 void tor_start(const wstring& process_dir, const wstring& tor_exe, const int tor_port, const wstring& tor_config, const wstring& app_data_dir, bool need_outgoing, vector<TorService*>& services, unsigned tor_control_service_index)
 {
+#ifndef __ANDROID__
 	bool external_tor = (tor_exe == L"external");
 	bool need_tor = need_outgoing;
 	wostringstream params;
@@ -69,8 +70,8 @@ void tor_start(const wstring& process_dir, const wstring& tor_exe, const int tor
 		return;
 	}
 
-	for (unsigned i = 0; i < services.size(); ++i)
-		tor_hidden_service_config(external_tor, params, service_port_list, *services[i]);
+	for (auto service : services)
+		tor_hidden_service_config(external_tor, params, service_port_list, *service);
 
 	params << space << "+LongLivedPorts" << space << "\"443" << service_port_list << "\"";
 
@@ -85,9 +86,9 @@ void tor_start(const wstring& process_dir, const wstring& tor_exe, const int tor
 
 	if (external_tor)
 	{
-		BOOST_LOG_TRIVIAL(warning) << "Skipping Tor launch; Tor must be launched and managed externally";
+		BOOST_LOG_TRIVIAL(info) << "Skipping Tor launch; Tor must be launched and managed externally";
 
-		BOOST_LOG_TRIVIAL(warning) << "Tor command line: " << w2s(paramline_text);
+		BOOST_LOG_TRIVIAL(info) << "Tor command line: " << w2s(paramline_text);
 
 		return;
 	}
@@ -257,4 +258,5 @@ void tor_start(const wstring& process_dir, const wstring& tor_exe, const int tor
 	}
 
 	BOOST_LOG_TRIVIAL(info) << "Tor monitor thread ending";
+#endif // #ifndef __ANDROID__
 }

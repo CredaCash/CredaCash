@@ -102,7 +102,7 @@ static void get_app_data_dir_static(wstring& path, const string& appname)
 
 #else
 
-		auto home = secure_getenv("HOME");
+		auto home = getenv("HOME");
 		if (!home)
 			return;
 

@@ -45,6 +45,12 @@
 //#define XREQ_MAX_PERSISTENT_COUNT		40	// for testing
 //#define XREQ_MIN_NON_PERSISTENT_COUNT	100	// for testing
 
+//!#define RTEST_CUZZ_WAIT				(1024-1)
+
+#ifndef RTEST_CUZZ_WAIT
+#define RTEST_CUZZ_WAIT					0	// don't test
+#endif
+
 #define TRACE_PROCESS_XREQ	(g_params.trace_xreq_processing)
 
 ProcessXreqs g_process_xreqs;
@@ -1121,6 +1127,8 @@ void ProcessXreqs::WaitForCondition(int condition)
 
 	while (m_matching_state != condition && m_matching_state >= 0 && !g_shutdown)
 	{
+		if (RTEST_CUZZ_WAIT) usleep(rand() & RTEST_CUZZ_WAIT);
+
 		m_matching_condition_variable.wait(lock);
 	}
 
@@ -1131,7 +1139,11 @@ void ProcessXreqs::SetCondition(int condition)
 {
 	if (TRACE_PROCESS_XREQ) BOOST_LOG_TRIVIAL(debug) << "ProcessXreqs::SetCondition " << condition;
 
-	m_matching_state = condition;
+	{
+		lock_guard<mutex> lock(m_matching_mutex);
+
+		m_matching_state = condition;
+	}
 
 	m_matching_condition_variable.notify_one();
 }
@@ -1175,7 +1187,7 @@ int ProcessXreqs::Init(DbConn *dbconn, const uint64_t block_level, const uint64_
 	m_last_matching_epoch = block_time / XCX_MATCHING_SECS_PER_EPOCH;
 	m_matching_block_time = m_last_matching_epoch * XCX_MATCHING_SECS_PER_EPOCH;
 
-	if (TRACE_PROCESS_XREQ) BOOST_LOG_TRIVIAL(trace) << "ProcessXreqs::Init block_level " << block_level << " block_time " << block_time << " epoch " << m_last_matching_epoch;
+	BOOST_LOG_TRIVIAL(trace) << "ProcessXreqs::Init block_level " << block_level << " block_time " << block_time << " epoch " << m_last_matching_epoch;
 
 	auto rc = dbconn->ParameterSelect(DB_KEY_XMATCHING, 0, &m_matching_max_xreqnum, sizeof(m_matching_max_xreqnum));
 	if (rc < 0)
@@ -1198,7 +1210,8 @@ void ProcessXreqs::DeInit()
 {
 	BOOST_LOG_TRIVIAL(info) << "ProcessXreqs::DeInit";
 
-	SetCondition(-1);
+	SetCondition(-1); // locks m_matching_mutex
+
 	m_matching_condition_variable.notify_all();
 
 	if (m_thread)
@@ -1207,6 +1220,8 @@ void ProcessXreqs::DeInit()
 		delete m_thread;
 		m_thread = NULL;
 	}
+
+	BOOST_LOG_TRIVIAL(info) << "ProcessXreqs::DeInit done";
 }
 
 void ProcessXreqs::CheckUpdateWitnessWorkTime(const uint64_t block_time)

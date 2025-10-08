@@ -62,10 +62,11 @@ all: main-build
 main-build: ccwallet.exe
 
 # Tool invocations
-ccwallet.exe: $(OBJS) $(USER_OBJS) makefile $(OPTIONAL_TOOL_DEPS)
+ccwallet.exe: ./src/ccwallet_dll.o $(OBJS) $(USER_OBJS) makefile $(OPTIONAL_TOOL_DEPS)
 	@echo 'Building target: $@'
 	@echo 'Invoking: Cross G++ Linker'
-	g++ $(LDFLAGS) -L$(CREDACASH_BUILD)/source/cclib/Debug -L$(CREDACASH_BUILD)/source/cccommon/Debug -L$(CREDACASH_BUILD)/source/3rdparty/Debug -L$(CREDACASH_BUILD)/depends/boost/stage/lib -L$(CREDACASH_BUILD)/depends/gmp/.libs -o "ccwallet.exe" $(OBJS) $(USER_OBJS) $(LIBS) -lcc -lcccommon -l3rdparty -lboost_program_options -lboost_log -lboost_filesystem -lboost_system -lboost_thread -lgmpxx -lgmp $(LDLIBS)
+	g++ $(LDFLAGS) -L$(CREDACASH_BUILD)/source/cclib/Debug -L$(CREDACASH_BUILD)/source/cccommon/Debug -L$(CREDACASH_BUILD)/source/3rdparty/Debug -L$(CREDACASH_BUILD)/depends/boost/stage/lib -L$(CREDACASH_BUILD)/depends/gmp/.libs         -o "ccwallet.exe"                      $(OBJS) $(USER_OBJS) $(LIBS) -lcc -lcccommon -l3rdparty -lboost_program_options -lboost_log -lboost_filesystem -lboost_system -lboost_thread -lgmpxx -lgmp $(LDLIBS)
+	g++ $(LDFLAGS) -L$(CREDACASH_BUILD)/source/cclib/Debug -L$(CREDACASH_BUILD)/source/cccommon/Debug -L$(CREDACASH_BUILD)/source/3rdparty/Debug -L$(CREDACASH_BUILD)/depends/boost/stage/lib -L$(CREDACASH_BUILD)/depends/gmp/.libs -shared -o "ccwallet.dll" ./src/ccwallet_dll.o $(OBJS) $(USER_OBJS) $(LIBS) -lcc -lcccommon -l3rdparty -lboost_program_options -lboost_log -lboost_filesystem -lboost_system -lboost_thread -lgmpxx -lgmp $(LDLIBS)
 	@echo 'Finished building target: $@'
 	@echo ' '
 

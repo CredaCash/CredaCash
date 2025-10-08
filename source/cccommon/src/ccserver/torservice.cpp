@@ -15,10 +15,10 @@ void TorService::SetPorts(vector<TorService*>& services, unsigned base_port)
 {
 	auto port = base_port;
 
-	for (unsigned i = 0; i < services.size(); ++i)
+	for (auto service : services)
 	{
-		if (!services[i]->no_port)
-			services[i]->port = port++;
+		if (!service->no_port)
+			service->port = port++;
 	}
 }
 

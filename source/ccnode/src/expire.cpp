@@ -40,6 +40,11 @@ Expire g_expire;
 
 class RelayObjsExpire : public ExpireObj
 {
+	bool isValidObj() const
+	{
+		return false;
+	}
+
 	int GetExpires(int64_t& seqnum, SmartBuf *retobj, ccoid_t& oid, uint32_t& next_expires_t0)
 	{
 		return m_dbconn->RelayObjsGetExpires(m_min_seqnum, m_max_seqnum, seqnum, oid, next_expires_t0);
@@ -51,13 +56,18 @@ class RelayObjsExpire : public ExpireObj
 	}
 
 public:
-	RelayObjsExpire(const char *name, int64_t min_seqnum, int64_t max_seqnum, int32_t expire_age, bool is_valid_objs)
-	 : ExpireObj(name, min_seqnum, max_seqnum, expire_age, is_valid_objs)
+	RelayObjsExpire(const char *name, int64_t min_seqnum, int64_t max_seqnum, int32_t expire_age)
+	 : ExpireObj(name, min_seqnum, max_seqnum, expire_age)
 	{ }
 };
 
 class ValidObjsExpire : public ExpireObj
 {
+	bool isValidObj() const
+	{
+		return true;
+	}
+
 	int GetExpires(int64_t& seqnum, SmartBuf *retobj, ccoid_t& oid, uint32_t& next_expires_t0)
 	{
 		return m_dbconn->ValidObjsGetExpires(m_min_seqnum, m_max_seqnum, seqnum, retobj, next_expires_t0);
@@ -73,8 +83,8 @@ class ValidObjsExpire : public ExpireObj
 	}
 
 public:
-	ValidObjsExpire(const char *name, int64_t min_seqnum, int64_t max_seqnum, int32_t expire_age, bool is_valid_objs)
-	 : ExpireObj(name, min_seqnum, max_seqnum, expire_age, is_valid_objs)
+	ValidObjsExpire(const char *name, int64_t min_seqnum, int64_t max_seqnum, int32_t expire_age)
+	 : ExpireObj(name, min_seqnum, max_seqnum, expire_age)
 	{ }
 };
 
@@ -208,7 +218,7 @@ void ExpireObj::DoExpires()
 
 		while (objtype == CC_TYPE_BLOCK)
 		{
-			auto prune_level = g_blockchain.ComputePruneLevel(0, BLOCK_PRUNE_ROUNDS + 2 + 2 * m_is_valid_objs);
+			auto prune_level = g_blockchain.ComputePruneLevel(0, BLOCK_PRUNE_ROUNDS + 2 + 2 * isValidObj());
 
 			auto block = (Block*)obj;
 			auto wire = block->WireData();
@@ -217,7 +227,7 @@ void ExpireObj::DoExpires()
 
 			if (wire->level.GetValue() < prune_level)
 			{
-				if (m_is_valid_objs)
+				if (isValidObj())
 					block->SetPriorBlock(SmartBuf());	// break the link so prior block can be freed
 
 				break;
@@ -236,16 +246,16 @@ void ExpireObj::DoExpires()
 
 void Expire::Init()
 {
-	if (TRACE_EXPIRE) BOOST_LOG_TRIVIAL(trace) << "Expire::Init";
+	BOOST_LOG_TRIVIAL(trace) << "Expire::Init";
 
-	m_expireobjs.push_back(new ValidObjsExpire("ValidObjs-Blocks", g_seqnum[BLOCKSEQ][VALIDSEQ].seqmin, g_seqnum[BLOCKSEQ][VALIDSEQ].seqmax, valid_block_expire_age, true));
-	m_expireobjs.push_back(new RelayObjsExpire("RelayObjs-Blocks", g_seqnum[BLOCKSEQ][RELAYSEQ].seqmin, g_seqnum[BLOCKSEQ][RELAYSEQ].seqmax, relay_block_expire_age, false));
+	m_expireobjs.push_back(new ValidObjsExpire("ValidObjs-Blocks", g_seqnum[BLOCKSEQ][VALIDSEQ].seqmin, g_seqnum[BLOCKSEQ][VALIDSEQ].seqmax, valid_block_expire_age));
+	m_expireobjs.push_back(new RelayObjsExpire("RelayObjs-Blocks", g_seqnum[BLOCKSEQ][RELAYSEQ].seqmin, g_seqnum[BLOCKSEQ][RELAYSEQ].seqmax, relay_block_expire_age));
 
-	m_expireobjs.push_back(new ValidObjsExpire("ValidObjs-Txs", g_seqnum[TXSEQ][VALIDSEQ].seqmin, g_seqnum[TXSEQ][VALIDSEQ].seqmax, valid_tx_expire_age, true));
-	m_expireobjs.push_back(new RelayObjsExpire("RelayObjs-Txs", g_seqnum[TXSEQ][RELAYSEQ].seqmin, g_seqnum[TXSEQ][RELAYSEQ].seqmax, relay_tx_expire_age, false));
+	m_expireobjs.push_back(new ValidObjsExpire("ValidObjs-Txs", g_seqnum[TXSEQ][VALIDSEQ].seqmin, g_seqnum[TXSEQ][VALIDSEQ].seqmax, valid_tx_expire_age));
+	m_expireobjs.push_back(new RelayObjsExpire("RelayObjs-Txs", g_seqnum[TXSEQ][RELAYSEQ].seqmin, g_seqnum[TXSEQ][RELAYSEQ].seqmax, relay_tx_expire_age));
 
-	m_expireobjs.push_back(new ValidObjsExpire("ValidObjs-Xreq", g_seqnum[XREQSEQ][VALIDSEQ].seqmin, g_seqnum[XREQSEQ][VALIDSEQ].seqmax, valid_tx_expire_age, true));
-	m_expireobjs.push_back(new RelayObjsExpire("RelayObjs-Xreq", g_seqnum[XREQSEQ][RELAYSEQ].seqmin, g_seqnum[XREQSEQ][RELAYSEQ].seqmax, relay_tx_expire_age, false));
+	m_expireobjs.push_back(new ValidObjsExpire("ValidObjs-Xreq", g_seqnum[XREQSEQ][VALIDSEQ].seqmin, g_seqnum[XREQSEQ][VALIDSEQ].seqmax, valid_tx_expire_age));
+	m_expireobjs.push_back(new RelayObjsExpire("RelayObjs-Xreq", g_seqnum[XREQSEQ][RELAYSEQ].seqmin, g_seqnum[XREQSEQ][RELAYSEQ].seqmax, relay_tx_expire_age));
 
 	for (auto expireobj : m_expireobjs)
 	{
@@ -255,7 +265,7 @@ void Expire::Init()
 
 void Expire::DeInit()
 {
-	if (TRACE_EXPIRE) BOOST_LOG_TRIVIAL(trace) << "Expire::DeInit";
+	BOOST_LOG_TRIVIAL(trace) << "Expire::DeInit";
 
 	for (unsigned i = 0; i < m_expireobjs.size(); ++i)
 	{
@@ -268,7 +278,7 @@ void Expire::DeInit()
 		delete obj;
 	}
 
-	if (TRACE_EXPIRE) BOOST_LOG_TRIVIAL(trace) << "Expire::DeInit done";
+	BOOST_LOG_TRIVIAL(trace) << "Expire::DeInit done";
 }
 
 int32_t Expire::GetExpireAge(unsigned i)
@@ -314,7 +324,7 @@ void Expire::ChangeExpireAge(unsigned i, int32_t age)
 		return;
 	}
 
-	CCASSERT(m_expireobjs[i]->m_is_valid_objs);
+	CCASSERT(m_expireobjs[i]->isValidObj());
 
 	if (age < 0)
 		age = m_expireobjs[i]->m_default_expire_age;

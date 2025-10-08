@@ -106,7 +106,7 @@ static void ShutdownTestThreadProc()
 
 void BlockChain::Init()
 {
-	if (TRACE_BLOCKCHAIN) BOOST_LOG_TRIVIAL(trace) << "BlockChain::Init";
+	BOOST_LOG_TRIVIAL(trace) << "BlockChain::Init";
 
 	CCASSERTZ(TX_TIME_OFFSET % TX_TIME_DIVISOR);
 
@@ -257,7 +257,7 @@ void BlockChain::Init()
 
 void BlockChain::DeInit()
 {
-	if (TRACE_BLOCKCHAIN) BOOST_LOG_TRIVIAL(trace) << "BlockChain::DeInit";
+	BOOST_LOG_TRIVIAL(trace) << "BlockChain::DeInit";
 
 	DbConnPersistData::PersistentData_StopCheckpointing();
 
@@ -885,18 +885,25 @@ void BlockChain::RestoreLastBlocks(DbConn *dbconn, uint64_t last_indelible_level
 	}
 }
 
+static FastSpinLock last_indelible_lock(__FILE__, __LINE__);
+
 void BlockChain::SetLastIndelible(SmartBuf smartobj)
 {
 	CCASSERT(smartobj);
 
 	auto block = (Block*)smartobj.data();
 	auto wire = block->WireData();
+	auto auxp = block->AuxPtr();
 
-	lock_guard<FastSpinLock> lock(m_last_indelible_lock);
+	lock_guard<FastSpinLock> lock(last_indelible_lock);
 
 	m_last_indelible_block = smartobj;
 
-	m_last_indelible_level = wire->level.GetValue();
+	auto level = wire->level.GetValue();
+	if (m_last_indelible_level)
+		CCASSERT(level <= m_last_indelible_level + auxp->blockchain_params.nskipconfsigs);
+	m_last_indelible_level = level;
+	
 	m_last_indelible_timestamp = wire->timestamp.GetValue();
 
 	m_last_matching_completed_block_time = g_process_xreqs.m_last_matched_block_time;
@@ -906,12 +913,12 @@ void BlockChain::SetLastIndelible(SmartBuf smartobj)
 
 	cc_alpha_set_default_decode_tables(m_last_indelible_timestamp);
 
-	if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(debug) << "BlockChain::SetLastIndelible last_indelible_level " << m_last_indelible_level << " last_matching_start_block_time " << m_last_matching_start_block_time;
+	if (TRACE_BLOCKCHAIN || TRACE_TRANSACT) BOOST_LOG_TRIVIAL(debug) << "BlockChain::SetLastIndelible last_indelible_level " << m_last_indelible_level << " last_matching_start_block_time " << m_last_matching_start_block_time;
 }
 
 void BlockChain::GetLastIndelibleValues(BlockChainStatus& blockchain_status)
 {
-	lock_guard<FastSpinLock> lock(m_last_indelible_lock);
+	lock_guard<FastSpinLock> lock(last_indelible_lock);
 
 	blockchain_status.last_indelible_level = m_last_indelible_level;
 	blockchain_status.last_indelible_timestamp = m_last_indelible_timestamp;
@@ -1126,10 +1133,15 @@ bool BlockChain::SetNewlyIndelibleBlock(DbConn *dbconn, SmartBuf smartobj, TxPay
 	auto timestamp = wire->timestamp.GetValue();
 	auto prior_oid = &wire->prior_oid;
 
-	//if (level > 5000) DebugStop("Reached test end level");
+	if (0 && level > 5000)
+	{
+		DebugStop("Reached test end level");
+		CCASSERT(0);
+	}
 
-	// BeginWrite will wait for the checkpoint, so we don't need to do this--and more importantly, it will hang if we already hold the write mutex:
-		//DbConnPersistData::PersistentData_WaitForFullCheckpoint();
+	// BeginWrite will wait for the checkpoint, so we don't need to call PersistentData_WaitForFullCheckpoint.
+	// More importantly, it will hang if we already hold the write mutex:
+	//DbConnPersistData::PersistentData_WaitForFullCheckpoint();
 
 	auto rc = dbconn->BeginWrite();
 	if (rc < 0)

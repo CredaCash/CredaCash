@@ -14,11 +14,22 @@ bool g_trace_ccserver = false;
 
 namespace CCServer {
 
+void Server::DeInit()
+{
+	BOOST_LOG_TRIVIAL(trace) << Name() << " Server::DeInit";
+
+	m_connection_manager.DeInit();
+
+	BOOST_LOG_TRIVIAL(trace) << Name() << " Server::DeInit done";
+}
+
 void Server::Init(const boost::asio::ip::tcp::endpoint& endpoint, unsigned maxconns, unsigned maxincoming, unsigned backlog, const class ConnectionFactory& connfac)
 {
-	if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " Server::Init maxconns " << maxconns << " maxincoming " << maxincoming << " port " << endpoint.port() << " backlog " << backlog;
+	BOOST_LOG_TRIVIAL(trace) << Name() << " Server::Init maxconns " << maxconns << " maxincoming " << maxincoming << " port " << endpoint.port() << " backlog " << backlog;
 
 	lock_guard<mutex> lock(m_new_connection_lock);	// not really needed, but doesn't hurt
+
+	m_stopping = false;
 
 	// Register to handle the signals that indicate when the CCServer should exit.
 	// It is safe to register for the same signal multiple times in a program,
@@ -49,19 +60,19 @@ void Server::Init(const boost::asio::ip::tcp::endpoint& endpoint, unsigned maxco
 	// !!! note: also need to check /proc/sys/net/ipv4/tcp_rmem and /proc/sys/net/ipv4/tcp_wmem
 
 	// SO_REUSEADDR allows the server to be restarted if a prior instance was killed and the port state isn't clean
-	// but it also allows two instances of the server to run at the same time, which can cause problems
+	// but it is not used because it allows two instances of the server to run at the same time
 	//set_int_opt(m_acceptor.native_handle(), SOL_SOCKET, SO_REUSEADDR, 1);
 
 #ifdef _WIN32
-	// prevent duplicate port use
+	// SO_EXCLUSIVEADDRUSE prevents another application from using the same port
 	set_int_opt(m_acceptor.native_handle(), SOL_SOCKET, SO_EXCLUSIVEADDRUSE, 1);
 #else
-	// SO_REUSEPORT allows load distribution, but could have the same tradeoff as SO_REUSEADDR
+	// SO_REUSEPORT isn't used because it allows two instances of the server to run at the same time
 	//set_int_opt(m_acceptor.native_handle(), SOL_SOCKET, SO_REUSEPORT, 1);
 	set_int_opt(m_acceptor.native_handle(), IPPROTO_IP, IP_MTU_DISCOVER, 0);
 	set_int_opt(m_acceptor.native_handle(), IPPROTO_TCP, TCP_DEFER_ACCEPT, 1);
-	if (!connfac.m_noclose)
-		set_int_opt(m_acceptor.native_handle(), IPPROTO_TCP, TCP_CORK, 1);
+	//if (!connfac.m_noclose)
+	//	set_int_opt(m_acceptor.native_handle(), IPPROTO_TCP, TCP_CORK, 1);
 	set_int_opt(m_acceptor.native_handle(), IPPROTO_TCP, TCP_LINGER2, 1);
 #endif
 
@@ -93,14 +104,14 @@ void Server::Run()
 {
 	m_startup_backlog--;
 
-	if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " Server::Run startup backlog " << m_startup_backlog.load();
+	BOOST_LOG_TRIVIAL(trace) << Name() << " Server::Run startup backlog " << m_startup_backlog.load();
 
 	// The io_service::run() call will block until all asynchronous operations
 	// have finished.
 
 	m_io_service.run();
 
-	if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " Server::Run done";
+	BOOST_LOG_TRIVIAL(trace) << Name() << " Server::Run done";
 }
 
 void Server::StartAccept(bool new_connection_used)

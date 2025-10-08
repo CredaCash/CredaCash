@@ -59,6 +59,7 @@ public:
 	~ConnectionManager();
 
 	void Init(unsigned maxconns, unsigned maxincoming, const class ConnectionFactory& connfac);
+	void DeInit();
 
 	/// Register Server object to receive notification when a Connection becomes free
 	void SetFreeConnectionHandler(Server *p);

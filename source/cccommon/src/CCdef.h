@@ -81,7 +81,6 @@
 #include <fcntl.h>
 #include <sys/types.h>
 #include <sys/stat.h>
-#include <sys/timeb.h>
 
 using namespace std;
 
@@ -115,5 +114,6 @@ using namespace std;
 #include "CCassert.h"
 #include "Finally.hpp"
 
+extern bool g_is_dll;
 extern volatile bool g_shutdown;
 extern void (*g_shutdown_callback)();

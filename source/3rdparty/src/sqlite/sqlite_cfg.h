@@ -54,7 +54,9 @@
 
 #else
 #define HAVE_LOCALTIME_R				1
+#ifndef __ANDROID__
 #define HAVE_STRCHRNUL					1
+#endif
 #define HAVE_FDATASYNC					1
 #endif
 

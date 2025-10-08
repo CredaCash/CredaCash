@@ -15,21 +15,24 @@
 #include <execinfo.h>
 #endif
 
+bool g_is_dll = false;
 volatile bool g_shutdown = false;
 void (*g_shutdown_callback)() = NULL;
 
 static mutex shutdown_mutex;
 static condition_variable shutdown_condition_variable;
+static volatile bool return_injected;
+static volatile bool terminate_is_recursing = false;
 static volatile bool shutdown_done;
 
 #ifdef _WIN32
 
 static void inject_return_into_console()
 {
-	static bool already_done = false;
-	if (already_done)
+	if (return_injected)
 		return;
-	already_done = true;
+
+	return_injected = true;
 
 	//Beep(2000, 500);
 
@@ -70,14 +73,12 @@ static void handle_signal(int)
 
 static void handle_terminate()
 {
-	static bool recurse = false;
-
 	auto e = current_exception();
 
 	if (!e)
 	{
 		cerr << "\nTerminate handler called";
-		if (recurse) cerr << " (recursing)";
+		if (terminate_is_recursing) cerr << " (recursing)";
 		cerr << endl;
 	}
 
@@ -92,7 +93,8 @@ static void handle_terminate()
 	}
 
 #ifndef _WIN32
-	if (!recurse)
+#ifndef __ANDROID__
+	if (!terminate_is_recursing)
 	{
 		void *array[20];
 		auto size = backtrace(array, sizeof(array)/sizeof(void*));
@@ -100,14 +102,15 @@ static void handle_terminate()
 		cerr << endl;
 	}
 #endif
+#endif
 
-	recurse = true;
+	terminate_is_recursing = true;
 
 	start_shutdown();
 
 	sleep(10);
 
-	if (!recurse)
+	if (!terminate_is_recursing)
 	{
 		terminate();
 
@@ -120,6 +123,11 @@ static void handle_terminate()
 
 void set_handlers()
 {
+	g_shutdown = false;
+	return_injected = false;
+	terminate_is_recursing = false;
+	shutdown_done = false;
+
 #ifdef _WIN32
 	SetConsoleCtrlHandler(HandlerRoutine, true);
 #endif

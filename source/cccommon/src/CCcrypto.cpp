@@ -89,6 +89,9 @@ extern "C"
 #endif
 void CCPseudoRandom(void *data, unsigned nbytes)
 {
+	static FastSpinLock rnd_lock(__FILE__, __LINE__);
+	lock_guard<FastSpinLock> lock(rnd_lock);
+
 	if (!prnd)
 		CCPseudoRandomInit();
 

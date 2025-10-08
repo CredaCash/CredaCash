@@ -139,7 +139,7 @@ static void OpenDbFile(const char *name, bool createdb, sqlite3** db, bool inter
 
 void DbConn::Startup(bool createdb)
 {
-	BOOST_LOG_TRIVIAL(debug) << "DbConn::Startup createdb " << createdb;
+	BOOST_LOG_TRIVIAL(info) << "DbConn::Startup createdb " << createdb;
 
 	CCASSERT(sqlite3_threadsafe());
 	CCASSERTZ(dblog(sqlite3_config(SQLITE_CONFIG_MULTITHREAD)));
@@ -783,7 +783,7 @@ int DbConn::CheckDb(bool post_create)
 
 void DbConn::CheckSchemaUpdateOption()
 {
-	if (!g_params.config_options.count("update-wallet"))
+	if (!g_params.config_options->count("update-wallet"))
 	{
 		cerr <<
 

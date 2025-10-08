@@ -39,7 +39,7 @@
 #define RELAY_TIMESTAMP_PAST_ALLOWANCE		(60*60) // >= TRANSACT_TIMESTAMP_PAST_ALLOWANCE + relay expire_age + 10
 #define RELAY_TIMESTAMP_FUTURE_ALLOWANCE	(10*60)
 
-//!#define TEST_CUZZ					1
+//!#define RTEST_CUZZ					3
 //!#define RTEST_NO_SEND_TX				4
 //!#define RTEST_NO_SEND_BLOCK			16
 //!#define RTEST_DELAY_TXS				4		// when set, tx's will only be sent on the private relay
@@ -47,8 +47,8 @@
 //!#define TEST_NO_TX_PREVALIDATION		1
 //#define TEST_DOUBLECHECK_BLOCK_OIDS	1
 
-#ifndef TEST_CUZZ
-#define TEST_CUZZ						0	// don't test
+#ifndef RTEST_CUZZ
+#define RTEST_CUZZ						0	// don't test
 #endif
 
 #ifndef RTEST_NO_SEND_TX
@@ -106,7 +106,7 @@ void RelayConnection::StartConnection()
 	db_next_new_block_seqnum = g_seqnum[BLOCKSEQ][VALIDSEQ].seqmin;	// announce existing blocks
 	db_next_new_xreq_seqnum = g_seqnum[XREQSEQ][VALIDSEQ].seqmin;	// announce existing exchange requests
 
-	if (g_transact_service.enabled || (Implement_CCMint(g_params.blockchain) && g_blockchain.GetLastIndelibleLevel() < CC_MINT_COUNT + CC_MINT_ACCEPT_SPAN))
+	if ((g_transact_service.enabled && !g_transact_service.relay_only) || (Implement_CCMint(g_params.blockchain) && g_blockchain.GetLastIndelibleLevel() < CC_MINT_COUNT + CC_MINT_ACCEPT_SPAN))
 		db_next_new_tx_seqnum = g_seqnum[TXSEQ][VALIDSEQ].seqmin;	// announce existing tx's
 	else
 		db_next_new_tx_seqnum = g_seqnum[TXSEQ][VALIDSEQ].Peek();	// don't announce existing tx's
@@ -938,7 +938,7 @@ void RelayConnection::CheckToSend()
 			continue;		// try the next object in the queue
 		}
 
-		if (TEST_CUZZ) ccsleep(rand() & 3);
+		if (RTEST_CUZZ) ccsleep(rand() & RTEST_CUZZ);
 
 		if (WriteAsync("RelayConnection::CheckToSend", boost::asio::buffer(obj->ObjPtr(), size),
 				boost::bind(&RelayConnection::HandleObjWrite, this, boost::asio::placeholders::error, smartobj, AutoCount(this))))

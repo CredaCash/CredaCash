@@ -17,6 +17,7 @@ public:
 	 int64_t clock_diff;
 	uint64_t server_version;
 	uint64_t protocol_version;
+	uint16_t queries_only;
 	uint64_t params_last_modified_level;
 	uint64_t query_work_difficulty;
 	uint64_t tx_work_difficulty;
@@ -72,7 +73,12 @@ class TxParamQuery
 
 public:
 
-	TxParamQuery();
+	TxParamQuery()
+	{
+		Reset();
+	}
+
+	void Reset();
 
 	int GetParams(TxParams& txparams, TxQuery& txquery);
 	int UpdateParams(TxParams& txparams, TxQuery& txquery);

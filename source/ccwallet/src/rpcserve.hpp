@@ -21,7 +21,7 @@ public:
 		m_txquery(TxQuery::nullconnmgr, io_service, TxQuery::txconnfac)
 	{
 		m_terminator = 10;
-		m_read_after_write = true;
+		m_read_after_write = false;	// note: if m_read_after_write == false && m_noclose == true, the connection will hang after the first write
 	}
 
 private:

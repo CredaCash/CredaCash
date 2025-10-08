@@ -86,8 +86,6 @@ class Witness
 
 	int WaitForWork(bool bwait4block, bool bwait4tx, uint32_t exchange_time, uint32_t max_time);
 
-	void NotifyNewExchangeWorkTime();
-
 	void ShutdownWork();
 
 public:

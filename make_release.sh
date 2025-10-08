@@ -11,7 +11,7 @@ export CPPFLAGS="-O3 -g1 -pthread -fPIC -fstack-protector-strong -Wno-misleading
 export CXXFLAGS="-Wno-deprecated-copy"
 export LDFLAGS="-fstack-protector"
 export LDLIBS="-lpthread -ldl"
-rm -f ccnode.exe ccwallet.exe cctracker.exe cctx64.dll
+rm -f ccnode.exe ccwallet.exe ccwallet.dll cctracker.exe cctx64.dll
 find source -type f \( -name \*.exe -o -name \*.dll -o -name \*.a \) -delete
 cd source/3rdparty/Release
 make all

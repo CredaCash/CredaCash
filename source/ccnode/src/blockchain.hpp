@@ -40,7 +40,6 @@ class BlockChain
 	atomic<uint64_t> m_last_matching_completed_block_time;
 	atomic<uint64_t> m_last_matching_start_block_time;
 	atomic<uint32_t> m_last_indelible_ticks;
-	FastSpinLock m_last_indelible_lock;
 
 	uint64_t m_startup_prune_level;
 
@@ -101,7 +100,6 @@ public:
 		m_last_matching_completed_block_time(0),
 		m_last_matching_start_block_time(0),
 		m_last_indelible_ticks(0),
-		m_last_indelible_lock(__FILE__, __LINE__),
 		m_startup_prune_level(0),
 		m_have_fatal_error(false)
 	{ }

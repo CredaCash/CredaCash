@@ -24,6 +24,7 @@
 #include <encode.h>
 
 #include <tor.h>
+#include <ccserver/connection_registry.hpp>
 
 #include <dblog.h>
 #include <sqlite/sqlite3.h>
@@ -35,6 +36,7 @@
 #include <xtransaction-xreq.hpp>
 
 #define TRANSACT_HOSTS		"transact_tor_hosts-#.lis"
+#define TRANSACT_RELAYS		"transact_tor_relays-#.lis"
 
 #define DEFAULT_TRACE_LEVEL	3
 #define TRACE_SHUTDOWN		0
@@ -49,16 +51,18 @@
 
 extern "C" bool IsInteractive()
 {
-	return g_interactive_thread_id == std::this_thread::get_id();
+	return g_interactive_thread_id == std::this_thread::get_id() || g_is_dll;
 }
 
 void set_service_pre_configs()
 {
+	g_tor_services.clear();
+
 	g_tor_services.push_back(&g_rpc_service);
 	g_tor_services.push_back(&g_tor_control_service);
 
-	for (unsigned i = 0; i < g_tor_services.size(); ++i)
-		g_tor_services[i]->ConfigPreset();
+	for (auto service : g_tor_services)
+		service->ConfigPreset();
 
 	g_lpc_service.ConfigPreset();
 }
@@ -72,8 +76,8 @@ void set_service_configs()
 
 	//cerr << "torproxy_port " << g_params.torproxy_port << endl;
 
-	for (unsigned i = 0; i < g_tor_services.size(); ++i)
-		g_tor_services[i]->SetConfig();
+	for (auto service : g_tor_services)
+		service->SetConfig();
 
 	g_lpc_service.SetConfig();
 }
@@ -103,6 +107,7 @@ static void do_show_config()
 	{
 		cout << "   new Tor circuit for each query = " << yesno(g_params.transact_tor_single_query) << endl;
 		cout << "   path to file of transaction server hostnames = " << w2s(g_params.transact_tor_hosts_file) << endl;
+		cout << "   path to file of transaction relay hostnames = " << w2s(g_params.transact_tor_relays_file) << endl;
 	}
 
 	cout << "   transaction query retries = " << g_params.tx_query_retries << endl;
@@ -116,8 +121,8 @@ static void do_show_config()
 	cout << "   exchange poll interval = " << g_params.exchange_poll_time << endl;
 	cout << endl;
 
-	for (unsigned i = 0; i < g_tor_services.size(); ++i)
-		g_tor_services[i]->DumpConfig();
+	for (auto service : g_tor_services)
+		service->DumpConfig();
 
 	cout << "Trace output settings:" << endl;
 	cout << "   trace level = " << g_params.trace_level << endl;
@@ -198,7 +203,7 @@ It will also not detect exchange request matches, even if addresses are manually
 		throw range_error("Max connections for transaction support service not in valid range");
 }
 
-static int process_options(int argc, char **argv)
+static int process_options(int argc, const char **argv)
 {
 	namespace po = boost::program_options;
 
@@ -213,6 +218,19 @@ static int process_options(int argc, char **argv)
 		//("create-master-secret", "Create master secret if it does not exist.")	// create-wallet does this
 		("interactive", "Run the wallet in interactive mode after executing the command line.")
 		;
+
+	g_rpc_service.user_string.clear();
+	g_rpc_service.pass_string.clear();
+	//g_control_service.password_string.clear();
+	g_params.initial_master_secret.clear();
+	g_params.initial_master_secret_passphrase.clear();
+
+	g_params.app_data_dir.clear();
+	g_params.proof_key_dir.clear();
+	g_params.transact_tor_hosts_file.clear();
+	g_params.transact_tor_relays_file.clear();
+	g_params.tor_exe.clear();
+	g_params.tor_config.clear();
 
 	po::options_description advanced_options("ADVANCED OPTIONS", 99, 0);
 	advanced_options.add_options()
@@ -240,6 +258,7 @@ static int process_options(int argc, char **argv)
 		("transact-tor", po::value<bool>(&g_params.transact_tor)->default_value(false), "Connect to transaction support server via Tor.")
 		("transact-tor-single-query", po::value<bool>(&g_params.transact_tor_single_query)->default_value(false), "Create a new Tor circuit for each transaction server query (slower but more private).")
 		("transact-tor-hosts-file", po::wvalue<wstring>(&g_params.transact_tor_hosts_file), "Path to file with transaction server Tor hostnames; a \"#\" character in this path will be replaced by the blockchain number (default: \"" TRANSACT_HOSTS "\" in same directory as this program).")
+		("transact-tor-relays-file", po::wvalue<wstring>(&g_params.transact_tor_relays_file), "Path to file with transaction relay Tor hostnames; a \"#\" character in this path will be replaced by the blockchain number (default: \"" TRANSACT_RELAYS "\" in same directory as this program).")
 
 		("tx-query-retries", po::value<int>(&g_params.tx_query_retries)->default_value(2), "Number of times to retry a query to the transaction server before aborting.")
 		("tx-submit-retries", po::value<int>(&g_params.tx_submit_retries)->default_value(4), "Number of times to retry submitting a transaction to the network before aborting.")
@@ -253,7 +272,7 @@ static int process_options(int argc, char **argv)
 		("tx-polling-threads", po::value<int>(&g_params.polling_threads)->default_value(10), "Transaction polling threads.")
 
 		//TODO?: remove this and compute from target blockchain properies?:
-		("exchange-poll-interval", po::value<int>(&g_params.exchange_poll_time)->default_value(60), "Exchange match polling interval.")
+		("exchange-poll-interval", po::value<int>(&g_params.exchange_poll_time)->default_value(80), "Exchange match polling interval.")
 
 		("wallet-rpc", po::value<bool>(&g_rpc_service.enabled)->default_value(0), "Provide wallet RPC service.")
 		#if 0 // for security, only allow RPC services on localhost
@@ -322,9 +341,12 @@ static int process_options(int argc, char **argv)
 	po::options_description all;
 	all.add(basic_options).add(advanced_options).add(hidden_options);
 
-	po::store(po::command_line_parser(argc, argv).options(all).positional(positional_options).run(), g_params.config_options);
+	if (g_params.config_options) delete g_params.config_options;
+	g_params.config_options = new po::variables_map;
 
-	if (g_params.config_options.count("help"))
+	po::store(po::command_line_parser(argc, argv).options(all).positional(positional_options).run(), *g_params.config_options);
+
+	if (g_params.config_options->count("help"))
 	{
 		cerr << CCAPPNAME " v" CCVERSION << endl;
 		cerr << "\nUsage: " << argv[0] << " [command] [params...]" << endl;
@@ -335,20 +357,20 @@ static int process_options(int argc, char **argv)
 		return 1;
 	}
 
-	if (g_params.config_options.count("config"))
+	if (g_params.config_options->count("config"))
 	{
 		boost::filesystem::ifstream fs;
-		auto fname = g_params.config_options.at("config").as<wstring>();
+		auto fname = g_params.config_options->at("config").as<wstring>();
 		fs.open(fname, fstream::in);
 		if(!fs.is_open())
 			throw runtime_error(string("Unable to open config file \"") + w2s(fname) + "\"");
 
-		po::store(po::parse_config_file(fs, all), g_params.config_options);
+		po::store(po::parse_config_file(fs, all), *g_params.config_options);
 
 		set_trace_level(g_params.trace_level);
 	}
 
-	po::notify(g_params.config_options);
+	po::notify(*g_params.config_options);
 
 	set_trace_level(g_params.trace_level);
 
@@ -383,6 +405,15 @@ static int process_options(int argc, char **argv)
 	else
 		expand_number_wide(g_params.transact_tor_hosts_file, g_params.blockchain);
 
+	if (!g_params.transact_tor_relays_file.length())
+	{
+		string def = TRANSACT_RELAYS;
+		expand_number(def, g_params.blockchain);
+		g_params.transact_tor_relays_file = g_params.process_dir + WIDE(PATH_DELIMITER) + s2w(def);
+	}
+	else
+		expand_number_wide(g_params.transact_tor_relays_file, g_params.blockchain);
+
 	g_lpc_service.max_outconns = 1 + g_params.polling_threads + g_params.tx_threads_max;
 
 	/* polling_table[secret type][last_receive>0][list elements][period/endtime]
@@ -393,6 +424,10 @@ static int process_options(int argc, char **argv)
 		#define SECRET_TYPE_STATIC_ADDRESS			17	// + paynum if known
 		#define SECRET_TYPE_EXCHANGE_ADDRESS		18	// + paynum if known
 	*/
+
+	for (unsigned a = 0; a < g_params.polling_table.size(); ++a)
+	for (unsigned r = 0; r < g_params.polling_table[a].size(); ++r)
+	g_params.polling_table[a][r].clear();
 
 	// SECRET_TYPE_SEND_ADDRESS nothing received
 	unsigned a = 0, r = 0;
@@ -468,6 +503,7 @@ static int process_options(int argc, char **argv)
 
 	// SECRET_TYPE_EXCHANGE_ADDRESS with payment (copy nothing received)
 		r++;
+	CCASSERT(g_params.polling_table[a][r].empty());
 	g_params.polling_table[a][r] = g_params.polling_table[a][0];
 
 	get_proof_key_dir(g_params.proof_key_dir, g_params.process_dir);
@@ -488,7 +524,7 @@ static int process_options(int argc, char **argv)
 
 	set_service_configs();
 
-	if (g_params.config_options.count("show-config"))
+	if (g_params.config_options->count("show-config"))
 		do_show_config();
 
 	check_config_values();
@@ -519,7 +555,7 @@ static int set_rpc_auth_string()
 	wstring fname = g_params.app_data_dir + s2w(PATH_DELIMITER) + L".cookie";
 
 	BOOST_LOG_TRIVIAL(info) << "Saving RCP user and password to file " << fname;
-	//BOOST_LOG_TRIVIAL(info) << "RCP cookie = " << cookie;	// logging this would be a security leak
+	//BOOST_LOG_TRIVIAL(warning) << "RCP cookie = " << cookie;	// logging this would be a security leak
 
 	auto fd = open_file(fname, O_WRONLY | O_CREAT | O_TRUNC, S_IWUSR | S_IRUSR);
 	if (fd == -1)
@@ -548,7 +584,7 @@ static int set_rpc_auth_string()
 	g_rpc_service.auth_string = " Basic ";
 	g_rpc_service.auth_string += encoded;
 
-	//BOOST_LOG_TRIVIAL(info) << "RCP Authorization string = " << g_rpc_service.auth_string;	// logging this would be a security leak
+	//BOOST_LOG_TRIVIAL(warning) << "RCP Authorization string = " << g_rpc_service.auth_string;	// logging this would be a security leak
 
 	lock_guard<mutex> lock(g_cerr_lock);
 	check_cerr_newline();
@@ -580,9 +616,14 @@ static void shutdown_callback()
 int _dowildcard = 0;	// disable wildcard globbing
 #endif
 
-int main(int argc, char **argv)
+int main(int argc, const char **argv)
 {
-	//cc_malloc_logging(true);
+	for (int i = 0; i < argc && g_is_dll; ++i)
+	{
+		char passkey[] = "--wallet-rpc-password";
+		bool notpassword = strncmp(argv[i], passkey, sizeof(passkey)-1);
+		BOOST_LOG_TRIVIAL(info) << "ccwallet argc " << argc << " index " << i << " " << (notpassword ? argv[i] : passkey) << (notpassword ? "" : "=*****");
+	}
 
 	//auto t0 = highres_ticks();
 	//sleep(10);
@@ -611,29 +652,37 @@ int main(int argc, char **argv)
 
 	g_params.process_dir = get_process_dir();
 	if (!g_params.process_dir.length())
+	{
+		BOOST_LOG_TRIVIAL(fatal) << "Unable to get process_dir";
 		return -1;
+	}
 
 	set_service_pre_configs();
 
 	try
 	{
 		auto rc = process_options(argc, argv);
-		if (rc) return rc;
+		if (rc)
+		{
+			BOOST_LOG_TRIVIAL(fatal) << "process_options rc = " << rc;
+			return rc;
+		}
 	}
 	catch (const exception& e)
 	{
 		cerr << "ERROR: " << e.what() << endl;
+		BOOST_LOG_TRIVIAL(fatal) << "process_options exception: " << e.what();
 		return -1;
 	}
 
-	if (g_params.config_options.count("interactive"))
+	if (g_params.config_options->count("interactive"))
 		g_params.interactive = true;
 	else
 		g_params.interactive = false;
 
 	auto command_line_json = command_line_to_json();
 
-	if (g_params.config_options.count("dry-run"))
+	if (g_params.config_options->count("dry-run"))
 	{
 		if (command_line_json.size())
 			cerr << "\nJSON command to execute:\n" << command_line_json << endl;
@@ -649,8 +698,8 @@ int main(int argc, char **argv)
 	DbConn *dbconn = NULL;
 	TxQuery *txquery_interactive = NULL;
 
-	auto create_wallet = g_params.config_options.count("create-wallet");
-	auto reset_wallet = g_params.config_options.count("reset-wallet");
+	auto create_wallet = g_params.config_options->count("create-wallet");
+	auto reset_wallet = g_params.config_options->count("reset-wallet");
 
 	try
 	{
@@ -675,13 +724,17 @@ int main(int argc, char **argv)
 				auto rc = Secret::CreateMasterSecret(dbconn);
 
 				if (rc < 0)
+				{
+					BOOST_LOG_TRIVIAL(fatal) << "CreateMasterSecret rc = " << rc;
 					goto do_fatal;
+				}
 
 				if (!rc)
 					Secret::CreateBaseSecrets(dbconn);
 			}
 			catch (const exception& e)
 			{
+				BOOST_LOG_TRIVIAL(fatal) << "CreateMasterSecret exception: " << e.what();
 				BOOST_LOG_TRIVIAL(warning) << "Deleting all secrets";
 
 				CCASSERTZ(dbconn->Exec("delete from Secrets;"));
@@ -696,18 +749,24 @@ int main(int argc, char **argv)
 		{
 			auto rc = Billet::ResetAllocated(dbconn, true);
 
-			if (rc) goto do_fatal;
+			if (rc)
+			{
+				BOOST_LOG_TRIVIAL(fatal) << "reset_wallet rc = " << rc;
+				goto do_fatal;
+			}
 		}
 
 	}
 	catch (const exception& e)
 	{
 		cerr << "ERROR: " << e.what() << endl;
+		BOOST_LOG_TRIVIAL(fatal) << "Initialization exception: " << e.what();
 
 		goto do_fatal;
 	}
 	catch (...)
 	{
+		BOOST_LOG_TRIVIAL(fatal) << "Initialization exception";
 		goto do_fatal;
 	}
 
@@ -718,14 +777,28 @@ int main(int argc, char **argv)
 	#endif
 
 	if (g_btc_block.Init(dbconn))
+	{
+		BOOST_LOG_TRIVIAL(fatal) << "btc_block init failed";
 		goto do_fatal;
+	}
 
 	if (g_params.transact_tor)
 	{
-		auto rc = TxQuery::ReadHostsFile(g_params.transact_tor_hosts_file);
+		auto rc = TxQuery::ReadHostsFile(0, g_params.transact_tor_hosts_file);
 		if (rc)
+		{
+			BOOST_LOG_TRIVIAL(fatal) << "Error reading transaction server hosts file " << g_params.transact_tor_hosts_file;
 			goto do_fatal;
+		}
+
+		rc = TxQuery::ReadHostsFile(1, g_params.transact_tor_relays_file);
+		if (rc)
+		{
+			BOOST_LOG_TRIVIAL(info) << "Unable to read transaction relays file " << g_params.transact_tor_relays_file;
+		}
 	}
+
+	g_connregistry.Init();
 
 	g_lpc_service.Start();
 
@@ -748,12 +821,32 @@ int main(int argc, char **argv)
 	if (g_rpc_service.enabled && !g_shutdown)
 	{
 		auto rc = set_rpc_auth_string();
-		if (rc) goto do_fatal;
+		if (rc)
+		{
+			BOOST_LOG_TRIVIAL(fatal) << "set_rpc_auth_string rc = " << rc;
+			goto do_fatal;
+		}
 
-		g_rpc_service.Start();
+		try
+		{
+			g_rpc_service.Start();		
+		}
+		catch (const exception& e)
+		{
+			cerr << "ERROR starting RPC service: " << e.what() << endl;
+			BOOST_LOG_TRIVIAL(fatal) << "ERROR starting RPC service: " << e.what();
 
-		string torhost;
-		while (g_rpc_service.tor_service)
+			goto do_fatal;
+		}
+		catch (...)
+		{
+			cerr << "ERROR starting RPC service" << endl;
+			BOOST_LOG_TRIVIAL(fatal) << "ERROR starting RPC service";
+			goto do_fatal;
+		}
+
+		string torhost = "external ";
+		while (g_rpc_service.tor_service && g_params.tor_exe != L"external")
 		{
 			torhost = g_rpc_service.TorHostname(true);
 			if (torhost.length())
@@ -785,11 +878,13 @@ int main(int argc, char **argv)
 
 	result_code = 0;
 
+	BOOST_LOG_TRIVIAL(info) << "Initialization done";
+
 	if ((g_rpc_service.enabled || g_params.interactive) && !g_shutdown)
 	{
 		Polling g_polling;
 
-		g_polling.Start(g_params.polling_threads);
+		g_polling.StartPolling(g_params.polling_threads);
 
 		if (g_params.interactive)
 		{
@@ -867,13 +962,17 @@ do_fatal:
 
 	g_lpc_service.StartShutdown();
 
-		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(info) << "shutdown 14...";
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(info) << "shutdown 13...";
 
 	g_rpc_service.WaitForShutdown();
 
-		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(info) << "shutdown 15...";
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(info) << "shutdown 14...";
 
 	g_lpc_service.WaitForShutdown();
+
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(info) << "shutdown 15...";
+
+	g_connregistry.DeInit();
 
 	if (dbconn)
 	{
@@ -903,7 +1002,23 @@ do_fatal:
 
 	//*(int*)0 = 0;
 
-	//cc_malloc_logging(false);
-
 	return result_code;
 }
+
+#if 0
+int main(int argc, const char **argv)
+{
+	cerr << "ccwallet dll memory leak test" << endl;
+
+	g_is_dll = true;
+
+	for (unsigned i = 0; ; ++i)
+	{
+		cc_malloc_logging(true);
+
+		do_main(argc, argv);
+
+		cc_malloc_logging(false);
+	}
+}
+#endif

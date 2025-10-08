@@ -148,21 +148,14 @@ public:
 		return TxDataSize() > 0;
 	}
 
-	static FastSpinLock prior_block_lock;
-
-	SmartBuf GetPriorBlock() const
-	{
-		lock_guard<FastSpinLock> lock(prior_block_lock);
-
-		return SmartBuf(preamble.auxp[1]);
-	}
-
 	BlockAux* AuxPtr();
 
 	const BlockAux* AuxPtr() const
 	{
 		return ((Block*)this)->AuxPtr();
 	}
+
+	SmartBuf GetPriorBlock() const;
 
 	void SetOrVerifyOid(bool bset);
 	void CalcHash(block_hash_t& block_hash);

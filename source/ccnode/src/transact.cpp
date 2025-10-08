@@ -104,17 +104,11 @@ void TransactConnection::HandleReadComplete()
 		return;
 	}
 
-	unsigned clock_allowance;
 	SmartBuf smartobj;
 
 	switch (tag)
 	{
 	case CC_TAG_TX_QUERY_PARAMS:
-		if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleReadComplete CC_TAG_TX_QUERY_PARAMS";
-
-		clock_allowance = 0;
-		break;
-
 	case CC_TAG_TX_QUERY_ADDRESS:
 	case CC_TAG_TX_QUERY_INPUTS:
 	case CC_TAG_TX_QUERY_SERIAL:
@@ -124,9 +118,21 @@ void TransactConnection::HandleReadComplete()
 	case CC_TAG_TX_QUERY_XMATCH_MATCHNUM:
 	case CC_TAG_TX_QUERY_XMINING_INFO:
 
-		if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleReadComplete CC_TAG_TX_QUERY_*";
+		if (g_transact_service.relay_only)
+		{
+			// note: this results in a forcible close because it doesn't read all of the data that was sent
 
-		clock_allowance = TRANSACT_TIMESTAMP_PAST_ALLOWANCE;
+			static const string outbuf = "ERROR:transaction queries disabled";
+
+			if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleReadComplete error disabled message tag " << hex << tag << dec << "; sending " << outbuf;
+
+			WriteAsync("TransactConnection::HandleReadComplete", boost::asio::buffer(outbuf.c_str(), outbuf.size() + 1),
+					boost::bind(&Connection::HandleWrite, this, boost::asio::placeholders::error, AutoCount(this)));
+
+			return;
+		}
+
+		if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleReadComplete CC_TAG_TX_QUERY_*";
 
 		break;
 
@@ -140,9 +146,21 @@ void TransactConnection::HandleReadComplete()
 	case CC_TAG_XCX_SIMPLE_TRADE:
 	case CC_TAG_XCX_PAYMENT:
 	{
-		if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleReadComplete tag " << hex << tag << dec;
+		if (g_transact_service.info_only)
+		{
+			// note: this results in a forcible close because it doesn't read all of the data that was sent
 
-		clock_allowance = TRANSACT_TIMESTAMP_PAST_ALLOWANCE;
+			static const string outbuf = "ERROR:transaction relay disabled";
+
+			if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(info) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleReadComplete error disabled message tag " << hex << tag << dec << "; sending " << outbuf;
+
+			WriteAsync("TransactConnection::HandleReadComplete", boost::asio::buffer(outbuf.c_str(), outbuf.size() + 1),
+					boost::bind(&Connection::HandleWrite, this, boost::asio::placeholders::error, AutoCount(this)));
+
+			return;
+		}
+
+		if (TRACE_TRANSACT) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " TransactConnection::HandleReadComplete tag " << hex << tag << dec;
 
 		CCASSERT(CC_MSG_HEADER_SIZE == sizeof(CCObject::Header));
 
@@ -178,7 +196,7 @@ void TransactConnection::HandleReadComplete()
 
 	auto timestamp = *(uint64_t*)(m_pread + CC_MSG_HEADER_SIZE);
 
-	if (clock_allowance && tx_check_timestamp(timestamp, clock_allowance, TRANSACT_TIMESTAMP_FUTURE_ALLOWANCE))
+	if (tag != CC_TAG_TX_QUERY_PARAMS && tx_check_timestamp(timestamp, TRANSACT_TIMESTAMP_PAST_ALLOWANCE, TRANSACT_TIMESTAMP_FUTURE_ALLOWANCE))
 	{
 		char *outbuf = m_writebuf.data();
 
@@ -563,13 +581,21 @@ void TransactConnection::HandleValidationTimeout(uint32_t callback_id, const boo
 
 static void StreamNetParams(ostream& os)
 {
+	// this function does not output a leading comma, so it has to be called first
+
 	os << dec;
 	os << " \"server-timestamp\":" << unixtime() JSON_ENDL
+	os << ",\"connected-to-network\":" << g_transact_service.IsConnectedToNet() JSON_ENDL
+	os << ",\"blockchain-number\":" << g_params.blockchain JSON_ENDL
+	os << ",\"parameters-last-modified-level\":" << g_params.params_last_modified_level JSON_ENDL
+}
+
+static void StreamServerParams(ostream& os)
+{
+	os << dec;
 	os << ",\"server-version\":" << g_params.server_version JSON_ENDL
 	os << ",\"server-protocol-version\":" << g_params.protocol_version JSON_ENDL
-	os << ",\"parameters-last-modified-level\":" << g_params.params_last_modified_level JSON_ENDL
-	os << ",\"blockchain-number\":" << g_params.blockchain JSON_ENDL
-	os << ",\"connected-to-network\":" << g_transact_service.IsConnectedToNet() JSON_ENDL
+	os << ",\"server-queries-only\":" << g_transact_service.info_only JSON_ENDL
 }
 
 static void StreamBlockChainStatus(ostream& os, const BlockChainStatus& blockchain_status)
@@ -634,6 +660,7 @@ static void StreamDonationParams(ostream& os)
 static void StreamParams(ostream& os)
 {
 	StreamNetParams(os);
+	StreamServerParams(os);
 	StreamTxParams(os);
 	StreamAmountBits(os);		// !!! if these change, need to make sure they stay sync'ed with parameter-level
 	StreamDonationParams(os);	// !!! if these change, need to make sure they stay sync'ed with parameter-level
@@ -1714,6 +1741,12 @@ void TransactConnection::SendTimeout()
 
 	WriteAsync("TransactConnection::SendTimeout", boost::asio::buffer(outbuf.c_str(), outbuf.size() + 1),
 			boost::bind(&Connection::HandleWrite, this, boost::asio::placeholders::error, AutoCount(this)));
+}
+
+void TransactService::DumpExtraConfigTop() const
+{
+	cout << "   info only = " << yesno(info_only) << endl;
+	cout << "   relay only = " << yesno(relay_only) << endl;
 }
 
 void TransactService::DumpExtraConfigBottom() const

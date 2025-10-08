@@ -213,7 +213,7 @@ void ForeignRpcClient::Start()
 	if (!enabled)
 		return;
 
-	if (TRACE_FORN_CONN) BOOST_LOG_TRIVIAL(trace) << Name() << " ForeignRpcClient Start";
+	BOOST_LOG_TRIVIAL(trace) << Name() << " ForeignRpcClient Start";
 
 	unsigned TXCONN_READ_MAX = NON_WITNESS_BUFSIZE;
 

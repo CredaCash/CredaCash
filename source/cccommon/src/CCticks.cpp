@@ -18,13 +18,6 @@ int64_t unixtime()
 	return (int64_t)time(NULL) + g_clock_offset;
 }
 
-void unixtimeb(timeb *t)
-{
-	ftime(t);
-
-	t->time = (int64_t)t->time + g_clock_offset;
-}
-
 uint64_t highres_ticks()
 {
 	uint64_t rv = 0;

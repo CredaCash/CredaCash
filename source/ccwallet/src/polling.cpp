@@ -65,25 +65,26 @@ uint64_t Polling::EstimatedBlocktime(uint64_t checktime, uint64_t *conservative_
 	return estimated_lastblocktime;
 }
 
-void Polling::Start(unsigned nthreads)
+void Polling::StartPolling(unsigned nthreads)
 {
-	if (TRACE_POLLING) BOOST_LOG_TRIVIAL(info) << "Polling::Start nthreads " << nthreads;
+	BOOST_LOG_TRIVIAL(info) << "Polling::StartPolling nthreads " << nthreads;
 
+	m_pthreads.clear();
 	m_pthreads.reserve(m_pthreads.size() + nthreads);
 
 	for (unsigned i = 0; i < nthreads; ++i)
 	{
 		auto t = new PollThread();
-		t->Start();
+		t->StartPollThread();
 		m_pthreads.emplace_back(t);
 	}
 
-	if (TRACE_POLLING) BOOST_LOG_TRIVIAL(debug) << "Polling::Start done";
+	BOOST_LOG_TRIVIAL(debug) << "Polling::StartPolling done";
 }
 
 void Polling::StartShutdown()
 {
-	if (TRACE_POLLING) BOOST_LOG_TRIVIAL(info) << "Polling::StartShutdown";
+	BOOST_LOG_TRIVIAL(info) << "Polling::StartShutdown";
 
 	for (auto t = m_pthreads.rbegin(); t != m_pthreads.rend(); ++t)
 		(*t)->StartShutdown();
@@ -91,20 +92,21 @@ void Polling::StartShutdown()
 
 void Polling::WaitForShutdown()
 {
-	if (TRACE_POLLING) BOOST_LOG_TRIVIAL(info) << "Polling::WaitForShutdown";
+	BOOST_LOG_TRIVIAL(info) << "Polling::WaitForShutdown";
 
 	while (m_pthreads.size())
 	{
 		m_pthreads.back()->WaitForShutdown();
+		delete m_pthreads.back();
 		m_pthreads.pop_back();
 	}
 
-	if (TRACE_POLLING) BOOST_LOG_TRIVIAL(debug) << "Polling::WaitForShutdown done";
+	BOOST_LOG_TRIVIAL(debug) << "Polling::WaitForShutdown done";
 }
 
-void PollThread::Start()
+void PollThread::StartPollThread()
 {
-	//if (TRACE_POLLING) BOOST_LOG_TRIVIAL(trace) << "PollThread::Start";
+	//if (TRACE_POLLING) BOOST_LOG_TRIVIAL(trace) << "PollThread::StartPollThread";
 
 	m_dbconn = new DbConn;
 	CCASSERT(m_dbconn);
@@ -112,7 +114,7 @@ void PollThread::Start()
 	m_txquery = g_lpc_service.GetConnection(false);
 	CCASSERT(m_txquery);
 
-	if (TRACE_POLLING) BOOST_LOG_TRIVIAL(trace) << "PollThread::Start starting thread with m_dbconn " << (uintptr_t)m_dbconn << " m_txquery " << (uintptr_t)m_txquery;
+	if (TRACE_POLLING) BOOST_LOG_TRIVIAL(trace) << "PollThread::StartPollThread starting thread with m_dbconn " << (uintptr_t)m_dbconn << " m_txquery " << (uintptr_t)m_txquery;
 
 	m_thread = new thread(&PollThread::ThreadProc, this);
 	CCASSERT(m_thread);
@@ -167,24 +169,27 @@ void PollThread::ThreadProc()
 
 	while (!g_shutdown)
 	{
-		timeb t1;
+		timeval t1;
 
 		while (!g_shutdown)
 		{
-			unixtimeb(&t1);
+			gettimeofday(&t1, NULL);
+			t1.tv_sec += g_clock_offset;
 
-			//if (TRACE_POLLING) BOOST_LOG_TRIVIAL(trace) << "PollThread::ThreadProc now " << t1.time << "." << t1.millitm;
+			//if (TRACE_POLLING) BOOST_LOG_TRIVIAL(trace) << "PollThread::ThreadProc now " << t1.tv_sec << "." << t1.tv_usec;
 
-			if (t1.time != t0)
+			if (t1.tv_sec != t0)
 				break;
 
-			int millisec = 1000 - t1.millitm;
+			// wait for the time to tick to the next second
+
+			int millisec = 1200 - t1.tv_usec/1000;
 
 			if (millisec > 0)
 				wait_for_shutdown(millisec);
 		}
 
-		t0 = t1.time;
+		t0 = t1.tv_sec;
 
 		//t0 = INT64_MAX;	// for testing -- allow polling to free run
 

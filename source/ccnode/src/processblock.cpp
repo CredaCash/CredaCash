@@ -24,12 +24,12 @@
 
 #define TRACE_PROCESS_BLOCK	(g_params.trace_block_validation)
 
-//!#define TEST_CUZZ			1
+//!#define RTEST_CUZZ			(1024-1)
 //!#define RTEST_SKIP_TX_WAIT	4
 //!#define TEST_FUTURE_BLOCKS		1
 
-#ifndef TEST_CUZZ
-#define TEST_CUZZ			0	// don't test
+#ifndef RTEST_CUZZ
+#define RTEST_CUZZ			0	// don't test
 #endif
 
 #ifndef RTEST_SKIP_TX_WAIT
@@ -46,7 +46,7 @@ static DbConn *dbconn = NULL;	// not thread safe
 
 void ProcessBlock::Init()
 {
-	if (TRACE_PROCESS_BLOCK) BOOST_LOG_TRIVIAL(trace) << "ProcessBlock::Init";
+	BOOST_LOG_TRIVIAL(trace) << "ProcessBlock::Init";
 
 	dbconn = new DbConn;
 
@@ -55,16 +55,16 @@ void ProcessBlock::Init()
 
 void ProcessBlock::Stop()
 {
-	if (TRACE_PROCESS_BLOCK) BOOST_LOG_TRIVIAL(trace) << "ProcessBlock::Stop";
+	BOOST_LOG_TRIVIAL(trace) << "ProcessBlock::Stop";
 
 	DbConnProcessQ::StopQueuedWork(PROCESS_Q_TYPE_BLOCK);
 
-	if (TRACE_PROCESS_BLOCK) BOOST_LOG_TRIVIAL(trace) << "ProcessBlock::Stop done";
+	BOOST_LOG_TRIVIAL(trace) << "ProcessBlock::Stop done";
 }
 
 void ProcessBlock::DeInit()
 {
-	if (TRACE_PROCESS_BLOCK) BOOST_LOG_TRIVIAL(trace) << "ProcessBlock::DeInit";
+	BOOST_LOG_TRIVIAL(trace) << "ProcessBlock::DeInit";
 
 	if (m_thread)
 	{
@@ -77,7 +77,7 @@ void ProcessBlock::DeInit()
 
 	delete dbconn;
 
-	if (TRACE_PROCESS_BLOCK) BOOST_LOG_TRIVIAL(trace) << "ProcessBlock::DeInit done";
+	BOOST_LOG_TRIVIAL(trace) << "ProcessBlock::DeInit done";
 }
 
 int ProcessBlock::ExtractTx(const char *wire, const uint32_t txsize, SmartBuf& smartobj)
@@ -277,7 +277,7 @@ int ProcessBlock::BlockValidate(DbConn *dbconn, SmartBuf smartobj, TxPay& txbuf)
 			return -1;
 		}
 
-		if (TEST_CUZZ) usleep(rand() & (1024*1024-1));
+		if (RTEST_CUZZ) usleep(rand() & RTEST_CUZZ);
 
 		auto xtx = ProcessTx::ExtractXtx(dbconn, txbuf);
 		if (!xtx && ProcessTx::ExtractXtxFailed(txbuf, true)) return -1;
@@ -342,7 +342,7 @@ int ProcessBlock::BlockValidate(DbConn *dbconn, SmartBuf smartobj, TxPay& txbuf)
 
 		for (unsigned i = 0; i < txbuf.nin; ++i)
 		{
-			if (TEST_CUZZ) usleep(rand() & (1024*1024-1));
+			if (RTEST_CUZZ) usleep(rand() & RTEST_CUZZ);
 
 			auto rc = g_blockchain.CheckSerialnum(dbconn, priorobj, TEMP_SERIALS_PROCESS_BLOCKP, SmartBuf(), &txbuf.inputs[i].S_serialnum, TX_SERIALNUM_BYTES);
 
@@ -357,7 +357,7 @@ int ProcessBlock::BlockValidate(DbConn *dbconn, SmartBuf smartobj, TxPay& txbuf)
 							// !!! TODO: disconnect if duplicate serialnum was in same block or indelible block with respect to block being checked
 			}
 
-			if (TEST_CUZZ) usleep(rand() & (1024*1024-1));
+			if (RTEST_CUZZ) usleep(rand() & RTEST_CUZZ);
 
 			auto rc2 = dbconn->TempSerialnumInsert(&txbuf.inputs[i].S_serialnum, TX_SERIALNUM_BYTES, (void*)TEMP_SERIALS_PROCESS_BLOCKP);
 			if (rc2)
@@ -372,6 +372,12 @@ int ProcessBlock::BlockValidate(DbConn *dbconn, SmartBuf smartobj, TxPay& txbuf)
 		rc = ExtractTx((char*)p, txsize, smartobj);
 		if (rc) return -1;
 		CCASSERT(smartobj);
+
+		// The below function invocation validates tx's assuming the prior block is the last indelible block.
+		// That may have an earlier timestamp than the actual block in which the tx appears.
+		// As a result, an xreq could fail validation here because
+		// (xreq.expire_time > last indelible block time + XREQ_MAX_EXPIRE_TIME)
+		// but succeed when validated below against the actual block in which the xreq appears.
 
 		g_processtx.TxEnqueueValidate(dbconn, true, false, PROCESS_Q_PRIORITY_BLOCK_TX, smartobj, 0, 0);
 	}
@@ -402,7 +408,7 @@ int ProcessBlock::BlockValidate(DbConn *dbconn, SmartBuf smartobj, TxPay& txbuf)
 
 		auto obj = (CCObject*)smartobj.data();
 
-		if (TEST_CUZZ) usleep(rand() & (1024*1024-1));
+		if (RTEST_CUZZ) usleep(rand() & RTEST_CUZZ);
 
 		rc = dbconn->ValidObjsGetObj(*obj->OidPtr(), &validobj);
 		if (!rc)
@@ -450,7 +456,7 @@ void ProcessBlock::ValidObjsBlockInsert(DbConn *dbconn, SmartBuf smartobj, TxPay
 
 	if (TRACE_PROCESS_BLOCK) BOOST_LOG_TRIVIAL(trace) << "ProcessBlock::ValidObjsBlockInsert enqueue " << enqueue << " check indelible " << check_indelible << " block level " << wire->level.GetValue() << " witness " << (unsigned)wire->witness << " size " << block->ObjSize() << " oid " << buf2hex(&auxp->oid, CC_OID_TRACE_SIZE) << " prior oid " << buf2hex(&wire->prior_oid, CC_OID_TRACE_SIZE);
 
-	if (TEST_CUZZ) usleep(rand() & (1024*1024-1));
+	if (RTEST_CUZZ) usleep(rand() & RTEST_CUZZ);
 
 	if (dbconn->ValidObjsInsert(smartobj))
 	{
@@ -467,7 +473,7 @@ void ProcessBlock::ValidObjsBlockInsert(DbConn *dbconn, SmartBuf smartobj, TxPay
 		m_last_network_ticks = (auxp->announce_ticks ? auxp->announce_ticks : 1);
 	}
 
-	if (TEST_CUZZ) usleep(rand() & (1024*1024-1));
+	if (RTEST_CUZZ) usleep(rand() & RTEST_CUZZ);
 
 	if (enqueue)
 	{
@@ -480,14 +486,14 @@ void ProcessBlock::ValidObjsBlockInsert(DbConn *dbconn, SmartBuf smartobj, TxPay
 		dbconn->ProcessQUpdateObj(PROCESS_Q_TYPE_BLOCK, auxp->oid, PROCESS_Q_STATUS_VALID, 0);
 	}
 
-	if (TEST_CUZZ) usleep(rand() & (1024*1024-1));
+	if (RTEST_CUZZ) usleep(rand() & RTEST_CUZZ);
 
 	if (dbconn->ProcessQUpdateSubsequentBlockStatus(PROCESS_Q_TYPE_BLOCK, auxp->oid))
 	{
 		BOOST_LOG_TRIVIAL(error) << "ProcessBlock::ValidObjsBlockInsert ProcessQUpdateSubsequentBlockStatus failed which might cause this node to lose sync with blockchain";
 	}
 
-	if (TEST_CUZZ) usleep(rand() & (1024*1024-1));
+	if (RTEST_CUZZ) usleep(rand() & RTEST_CUZZ);
 
 	if (check_indelible && !g_blockchain.DoConfirmations(dbconn, smartobj, txbuf))
 	{
@@ -525,7 +531,7 @@ void ProcessBlock::ThreadProc()
 
 	while (true)
 	{
-		if (TEST_CUZZ) usleep(rand() & (1024*1024-1));
+		if (RTEST_CUZZ) usleep(rand() & RTEST_CUZZ);
 
 		dbconn->WaitForQueuedWork(PROCESS_Q_TYPE_BLOCK);
 
@@ -547,7 +553,7 @@ void ProcessBlock::ThreadProc()
 
 		while (true)	// so we can use break on error
 		{
-			if (TEST_CUZZ) usleep(rand() & (1024*1024-1));
+			if (RTEST_CUZZ) usleep(rand() & RTEST_CUZZ);
 
 			if (dbconn->ProcessQGetNextValidateObj(PROCESS_Q_TYPE_BLOCK, &smartobj, conn_index, callback_id))
 			{
@@ -556,7 +562,7 @@ void ProcessBlock::ThreadProc()
 				break;
 			}
 
-			if (TEST_CUZZ) usleep(rand() & (1024*1024-1));
+			if (RTEST_CUZZ) usleep(rand() & RTEST_CUZZ);
 
 			auto bufp = smartobj.BasePtr();
 			auto block = (Block*)smartobj.data();

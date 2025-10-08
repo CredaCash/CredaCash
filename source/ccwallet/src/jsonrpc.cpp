@@ -1704,7 +1704,7 @@ static bool do_one_rpc(const string& json, Json::Value& root, DbConn *dbconn, Tx
 
 done:
 
-	if (TRACE_JSONRPC) BOOST_LOG_TRIVIAL(info) << "do_one_rpc rc " << (int)rc << " json " << json << " response " << (response.str().length() <= 120 ? response.str() : response.str().substr(0,120) + "...");
+	if (TRACE_JSONRPC) BOOST_LOG_TRIVIAL(info) << "do_one_rpc " << method << " rc " << (int)rc << " response " << (response.str().length() <= 120 ? response.str() : response.str().substr(0,120) + "...");
 
 	return rc;
 }

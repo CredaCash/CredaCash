@@ -133,9 +133,9 @@ void RpcConnection::HandleReadComplete()
 			if (m_pread[pos] != ' ')
 				return SendMethodNotImplemented();
 
-			// !!! set m_keepalive if HTTP version is 1.1 or above
-
-			m_keepalive = true;	// !!! for now
+			// currently no connection keep alive
+			// !!! FUTURE: set m_keepalive if HTTP version is 1.1 or above
+			//m_keepalive = true;
 		}
 
 		// !!! handle Expect: 100-continue?
@@ -182,7 +182,7 @@ void RpcConnection::HandleReadComplete()
 			auto *bufp = &m_pread[m_parse_point + sizeof(authheader)-1];
 
 			if (TRACE_RPCSERVE) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " RpcConnection::HandleReadComplete " << authheader;
-			//if (TRACE_RPCSERVE) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " RpcConnection::HandleReadComplete " << authheader << "\"" << bufp << "\"";	// logging this would be a security leak
+			//if (TRACE_RPCSERVE) BOOST_LOG_TRIVIAL(warning) << Name() << " Conn " << m_conn_index << " RpcConnection::HandleReadComplete " << authheader << "\"" << bufp << "\"";	// logging this would be a security leak
 
 			m_has_auth = !g_rpc_service.auth_string.empty() && !strcmp(bufp, g_rpc_service.auth_string.c_str());
 
@@ -317,7 +317,7 @@ void RpcConnection::HandleContentReadComplete(const boost::system::error_code& e
 	if (TRACE_RPCSERVE) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << m_conn_index << " RpcConnection::HandleContentReadComplete response headers >>" << m_writebuf.data() << "<<";
 	if (TRACE_RPCSERVE) BOOST_LOG_TRIVIAL(debug) << Name() << " Conn " << m_conn_index << " RpcConnection::HandleContentReadComplete response body >>" << *rbuf << "<<";
 
-	m_noclose = m_keepalive;
+	m_read_after_write = m_keepalive;
 
 	WriteAsync("RpcConnection::HandleContentReadComplete", boost::asio::buffer(m_writebuf.data(), bufp - m_writebuf.data()),
 			boost::bind(&RpcConnection::HandleWriteHeader, this, boost::asio::placeholders::error, rbuf, AutoCount(this)));
@@ -406,7 +406,7 @@ void RpcService::Start()
 	if (TRACE_RPCSERVE) BOOST_LOG_TRIVIAL(trace) << Name() << " RpcService port " << port;
 
 	// unsigned conn_nreadbuf, unsigned conn_nwritebuf, unsigned sock_nreadbuf, unsigned sock_nwritebuf, unsigned headersize, bool noclose, bool bregister
-	CCServer::ConnectionFactoryInstantiation<RpcConnection> connfac(RPC_READ_MAX, RPC_RESPONSE_HEADER_MAX, -1, -1, 0, 1, 0);
+	CCServer::ConnectionFactoryInstantiation<RpcConnection> connfac(RPC_READ_MAX, RPC_RESPONSE_HEADER_MAX, -1, -1, 0, 0, 0);
 	CCThreadFactoryInstantiation<RpcThread> threadfac;
 
 	unsigned maxconns = (unsigned)(max_inconns + max_outconns);

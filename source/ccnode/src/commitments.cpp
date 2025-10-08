@@ -20,7 +20,7 @@ Commitments g_commitments;
 
 void Commitments::Init(DbConn *dbconn)
 {
-	if (TRACE_COMMITMENTS) BOOST_LOG_TRIVIAL(trace) << "Commitments::Init";
+	BOOST_LOG_TRIVIAL(trace) << "Commitments::Init";
 
 	uint64_t row_end;
 
@@ -37,8 +37,7 @@ void Commitments::Init(DbConn *dbconn)
 
 void Commitments::DeInit()
 {
-	if (TRACE_COMMITMENTS) BOOST_LOG_TRIVIAL(trace) << "Commitments::DeInit";
-
+	BOOST_LOG_TRIVIAL(trace) << "Commitments::DeInit";
 }
 
 uint64_t Commitments::GetNextCommitnum(bool increment)

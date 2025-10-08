@@ -21,6 +21,7 @@
 #include <CCmint.h>
 
 #include <tor.h>
+#include <ccserver/connection_registry.hpp>
 
 #include <dblog.h>
 #include <sqlite/sqlite3.h>
@@ -53,7 +54,7 @@
 #define DEFAULT_PRIVATE_RELAY_HOSTS_FILE	"private_relay_hosts.lis"
 
 #define DEFAULT_TRACE_LEVEL	4
-#define TRACE_SHUTDOWN		0
+#define TRACE_SHUTDOWN		1
 
 #if 0 // not yet used
 static void set_storage()
@@ -62,33 +63,35 @@ static void set_storage()
 	g_store_created = 1;
 	g_store_spent = 1;
 
-	if (g_params.config_options.count("micronode"))
+	if (g_params.config_options->count("micronode"))
 	{
 		g_store_blocks = 0;
 		g_store_created = 0;
 		g_store_spent = 0;
 	}
 
-	if (g_params.config_options.count("mininode"))
+	if (g_params.config_options->count("mininode"))
 	{
 		g_store_blocks = 0;
 		g_store_created = 0;
 		g_store_spent = 1;
 	}
 
-	if (g_params.config_options.count("store-blocks"))
-		g_store_blocks = g_params.config_options.at("store-blocks").as<int>();
+	if (g_params.config_options->count("store-blocks"))
+		g_store_blocks = g_params.config_options->at("store-blocks").as<int>();
 
-	if (g_params.config_options.count("store-created"))
-		g_store_created = g_params.config_options.at("store-created").as<int>();
+	if (g_params.config_options->count("store-created"))
+		g_store_created = g_params.config_options->at("store-created").as<int>();
 
-	if (g_params.config_options.count("store-spent"))
-		g_store_spent = g_params.config_options.at("store-spent").as<int>();
+	if (g_params.config_options->count("store-spent"))
+		g_store_spent = g_params.config_options->at("store-spent").as<int>();
 }
 #endif
 
 void set_service_pre_configs()
 {
+	g_tor_services.clear();
+
 	g_tor_services.push_back(&g_transact_service);
 	g_tor_services.push_back(&g_relay_service);
 	g_tor_services.push_back(&g_privrelay_service);
@@ -98,8 +101,8 @@ void set_service_pre_configs()
 	g_tor_services.push_back(&g_control_service);
 	g_tor_services.push_back(&g_tor_control_service);
 
-	for (unsigned i = 0; i < g_tor_services.size(); ++i)
-		g_tor_services[i]->ConfigPreset();
+	for (auto service : g_tor_services)
+		service->ConfigPreset();
 }
 
 void set_service_configs()
@@ -111,8 +114,8 @@ void set_service_configs()
 
 	//cerr << "torproxy_port " << g_params.torproxy_port << endl;
 
-	for (unsigned i = 0; i < g_tor_services.size(); ++i)
-		g_tor_services[i]->SetConfig();
+	for (auto service : g_tor_services)
+		service->SetConfig();
 }
 
 static void do_show_config()
@@ -141,8 +144,8 @@ static void do_show_config()
 
 	cout << endl;
 
-	for (unsigned i = 0; i < g_tor_services.size(); ++i)
-		g_tor_services[i]->DumpConfig();
+	for (auto service : g_tor_services)
+		service->DumpConfig();
 
 	if (IsWitness())
 	{
@@ -215,17 +218,20 @@ static void check_config_values()
 	if (g_params.db_checkpoint_sec < 0 || g_params.db_checkpoint_sec > 3600)
 		throw range_error("Database checkpoint seconds not in valid range");
 
-	if (g_transact_service.enabled && !g_params.index_txouts)
+	if (g_transact_service.enabled && g_transact_service.info_only && g_transact_service.relay_only)
+		throw range_error("transaction service info-only and relay-only cannot both be enabled");
+
+	if (g_transact_service.enabled && !g_transact_service.relay_only && !g_params.index_txouts)
 		throw range_error("transactions must be indexed for the transaction service to work correctly");
 
 	if (g_params.base_port < 1 || g_params.base_port > 0xFFFF - TOR_PORT)
 		throw range_error("baseport value not in valid range");
 
 	if (g_transact_service.max_inconns < 0 || g_transact_service.max_inconns > 100000)
-		throw range_error("Max connections for transaction support service not in valid range");
+		throw range_error("Max connections for transaction service not in valid range");
 
 	if (g_transact_service.threads_per_conn <= 0 || g_transact_service.threads_per_conn > 2)
-		throw range_error("Max connections for transaction support service not in valid range");
+		throw range_error("Max connections for transaction service not in valid range");
 
 	if (g_transact_service.query_work_difficulty && g_transact_service.query_work_difficulty < ((uint64_t)1 << 38))
 		throw range_error("Transaction server query work difficulty not in valid range");
@@ -265,7 +271,7 @@ static void check_config_values()
 	}
 }
 
-static int process_options(int argc, char **argv)
+static int process_options(int argc, const char **argv)
 {
 	namespace po = boost::program_options;
 
@@ -278,6 +284,19 @@ static int process_options(int argc, char **argv)
 		("show-config", "Show configuration information.")
 		("dry-run", "Exit after parsing configuration.")
 	;
+
+	g_transact_service.password_string.clear();
+	g_blockserve_service.password_string.clear();
+	g_control_service.password_string.clear();
+	g_tor_control_service.password_string.clear();
+
+	g_params.app_data_dir.clear();
+	g_params.rendezvous_servers_file.clear();
+	g_params.genesis_data_file.clear();
+	g_params.proof_key_dir.clear();
+	g_params.tor_exe.clear();
+	g_params.tor_config.clear();
+	g_privrelay_service.priv_hosts_file.clear();
 
 	po::options_description advanced_options("ADVANCED OPTIONS", 99, 0);
 	advanced_options.add_options()
@@ -309,7 +328,9 @@ static int process_options(int argc, char **argv)
 		//("store-blocks", po::value<int>(), "Store entire blockchain;\ndefaults to 0 if micronode=1 or mininode=1.")
 		//("store-created", po::value<int>(), "Store database of created bills;\ndefaults to 0 if micronode=1 or mininode=1.")
 		//("store-spent", po::value<int>(), "Store database of spent bills\ndefaults to 0 if micronode=1 and mininode=0; if this is set to zero, transactions can only be partially validated by node.")
-		("transact", po::value<bool>(&g_transact_service.enabled)->default_value(1), "Answer transaction queries from wallet applications (at port baseport).")
+		("transact", po::value<bool>(&g_transact_service.enabled)->default_value(1), "Enable transact service for wallet applications (at port baseport).")
+		("transact-info-only", po::value<bool>(&g_transact_service.info_only)->default_value(false), "Transact service only provides public blockchain info, will not relay transactions.")
+		("transact-relay-only", po::value<bool>(&g_transact_service.relay_only)->default_value(false), "Transact service only relays transactions, will not provide blockchain info.")
 		("transact-addr", po::value<string>(&g_transact_service.address_string)->default_value(LOCALHOST), "Network address for transaction support service;\n"
 				"by default, this service is available from the localhost only;\n"
 				"this setting can be used to bind to another address for access via the local network or internet.")
@@ -420,9 +441,12 @@ static int process_options(int argc, char **argv)
 	po::options_description all;
 	all.add(basic_options).add(advanced_options).add(hidden_options);
 
-	po::store(po::parse_command_line(argc, argv, all), g_params.config_options);
+	if (g_params.config_options) delete g_params.config_options;
+	g_params.config_options = new po::variables_map;
 
-	if (g_params.config_options.count("help"))
+	po::store(po::parse_command_line(argc, argv, all), *g_params.config_options);
+
+	if (g_params.config_options->count("help"))
 	{
 		cerr << CCAPPNAME " v" CCVERSION << endl;
 		cerr << basic_options << endl;
@@ -431,20 +455,20 @@ static int process_options(int argc, char **argv)
 		return 1;
 	}
 
-	if (g_params.config_options.count("config"))
+	if (g_params.config_options->count("config"))
 	{
 		boost::filesystem::ifstream fs;
-		auto fname = g_params.config_options.at("config").as<wstring>();
+		auto fname = g_params.config_options->at("config").as<wstring>();
 		fs.open(fname, fstream::in);
 		if(!fs.is_open())
 			throw runtime_error(string("Unable to open config file \"") + w2s(fname) + "\"");
 
-		po::store(po::parse_config_file(fs, all), g_params.config_options);
+		po::store(po::parse_config_file(fs, all), *g_params.config_options);
 
 		set_trace_level(g_params.trace_level);
 	}
 
-	po::notify(g_params.config_options);
+	po::notify(*g_params.config_options);
 
 	set_trace_level(g_params.trace_level);
 
@@ -540,7 +564,7 @@ static int process_options(int argc, char **argv)
 
 	set_service_configs();
 
-	if (g_params.config_options.count("show-config"))
+	if (g_params.config_options->count("show-config"))
 		do_show_config();
 
 	check_config_values();
@@ -552,7 +576,7 @@ static int process_options(int argc, char **argv)
 int _dowildcard = 0;	// disable wildcard globbing
 #endif
 
-int main(int argc, char **argv)
+int main(int argc, const char **argv)
 {
 	//srand(0);
 	srand(time(NULL));
@@ -590,10 +614,10 @@ int main(int argc, char **argv)
 		return -1;
 	}
 
-	if (g_params.config_options.count("dry-run"))
+	if (g_params.config_options->count("dry-run"))
 		return 1;
 
-	if (g_params.config_options.count("genesis-generate"))
+	if (g_params.config_options->count("genesis-generate"))
 	{
 		try
 		{
@@ -627,6 +651,8 @@ int main(int argc, char **argv)
 	g_blockchain.Init();
 	if (g_blockchain.HasFatalError())
 		goto do_fatal;
+
+	g_connregistry.Init();
 
 	g_foreignrpc_client.Start();
 
@@ -720,32 +746,36 @@ int main(int argc, char **argv)
 
 		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(info) << "shutdown 6...";
 
-	g_processblock.DeInit();
+	g_connregistry.DeInit();
 
 		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(info) << "shutdown 7...";
 
-	g_processtx.DeInit();
+	g_processblock.DeInit();
 
 		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(info) << "shutdown 8...";
 
-	g_process_xreqs.DeInit();
+	g_processtx.DeInit();
 
 		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(info) << "shutdown 9...";
+
+	g_process_xreqs.DeInit();
+
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(info) << "shutdown 10...";
 
 	g_expire.DeInit();
 
 do_fatal:
 
-		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(info) << "shutdown 10...";
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(info) << "shutdown 11...";
 
 	start_shutdown();
 	wait_for_shutdown();
 
-		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(info) << "shutdown 11...";
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(info) << "shutdown 12...";
 
 	g_blockchain.DeInit();
 
-		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(info) << "shutdown 12...";
+		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(info) << "shutdown 13...";
 
 	dbinit.DeInit();
 
@@ -756,8 +786,6 @@ do_fatal:
 		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(info) << "shutdown 15...";
 
 	tor_thread.join();
-
-		if (TRACE_SHUTDOWN) BOOST_LOG_TRIVIAL(info) << "shutdown 16...";
 
 	BOOST_LOG_TRIVIAL(info) << CCEXENAME << " done";
 	cerr << CCEXENAME << " done" << endl;

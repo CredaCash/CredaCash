@@ -2,6 +2,22 @@
 ---
 <!--- NOTE: This file is in Markdown format, and is intended to be viewed in a Markdown viewer. -->
 
+## v2.1 2025-10-08
+
+### ccnode
+
+#### - Minor Changes
+
+- Added support for standalone GUI wallet.
+- Fixed a bug that could cause blocksync to hang, requiring the node to be restarted to continue.
+
+### ccwallet
+
+#### - Minor Changes
+
+- Enabled ccwallet to be loaded as a dynamic library.
+- Released standalone, self-contained GUI Wallet app for Android and Windows that runs without server software.
+
 ## v2.0.5 2025-07-25
 
 ### ccnode

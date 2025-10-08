@@ -45,6 +45,9 @@ void Service::Start(const boost::asio::ip::tcp::endpoint& endpoint, unsigned nth
 
 	threads_per_server += 20;		// add some extra threads to avoid deadlocks
 
+	CCASSERT(m_servers.empty());
+	CCASSERT(m_threads.empty());
+
 	m_servers.reserve(nservers);
 	m_threads.reserve(threads_per_server * nservers);
 
@@ -52,6 +55,7 @@ void Service::Start(const boost::asio::ip::tcp::endpoint& endpoint, unsigned nth
 	{
 		auto s = new Server(Name());
 		m_servers.push_back(s);
+		//cout << ">>> " << (uintptr_t)s << " new Server" << endl;
 
 		s->Init(endpoint, connections_per_server, incoming_connections_per_server, backlog, connfac);
 
@@ -68,6 +72,7 @@ void Service::Start(const boost::asio::ip::tcp::endpoint& endpoint, unsigned nth
 			auto t = threadfac.NewThread();
 			t->Run(boost::bind(&Server::Run, s));
 			m_threads.push_back(t);
+			//cout << ">>> " << (uintptr_t)t << " new Server thread" << endl;
 		}
 
 		s->HandleFreeConnection();
@@ -76,23 +81,34 @@ void Service::Start(const boost::asio::ip::tcp::endpoint& endpoint, unsigned nth
 
 void Service::StartShutdown()
 {
+	BOOST_LOG_TRIVIAL(debug) << Name() << " Service::StartShutdown";
+
 	for (auto s : m_servers)
 		s->AsyncStop();
 }
 
 void Service::WaitForShutdown()
 {
+	BOOST_LOG_TRIVIAL(debug) << Name() << " Service::WaitForShutdown";
+
 	for (auto t : m_threads)
 	{
 		t->join();
 		delete t;
+		//cout << ">>> " << (uintptr_t)t << " delete Server thread" << endl;
 	}
 
 	for (auto s : m_servers)
+	{
+		s->DeInit();
 		delete s;
+		//cout << ">>> " << (uintptr_t)s << " delete Server" << endl;
+	}
 
 	m_threads.clear();
 	m_servers.clear();
+
+	BOOST_LOG_TRIVIAL(debug) << Name() << " Service::WaitForShutdown done.";
 }
 
 } // namespace CCServer

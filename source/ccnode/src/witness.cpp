@@ -49,7 +49,9 @@
 
 //#define TEST_MAL_IGNORE_SIG_ORDER		1	// when used, a few bad blocks will be relayed before this node has a fatal blockchain error
 
-//!#define TEST_CUZZ					1
+//!#define RTEST_CUZZ					(1024*1024-1)
+//!#define RTEST_CUZZ_WAIT				(1024-1)
+
 //#define TEST_PROCESS_Q				1
 
 //#define TEST_UNRECOGNIZED_TAG			1
@@ -115,8 +117,12 @@
 #define TEST_MAL_IGNORE_SIG_ORDER		0	// don't test
 #endif
 
-#ifndef TEST_CUZZ
-#define TEST_CUZZ						0	// don't test
+#ifndef RTEST_CUZZ
+#define RTEST_CUZZ						0	// don't test
+#endif
+
+#ifndef RTEST_CUZZ_WAIT
+#define RTEST_CUZZ_WAIT					0	// don't test
 #endif
 
 #ifndef TEST_PROCESS_Q
@@ -243,7 +249,7 @@ Witness::Witness()
 
 void Witness::Init()
 {
-	if (TRACE_WITNESS) BOOST_LOG_TRIVIAL(trace) << "Witness::Init witness " << witness_index << " test mal " << test_mal;
+	BOOST_LOG_TRIVIAL(trace) << "Witness::Init witness " << witness_index << " test mal " << test_mal;
 
 	//cerr << "witness tx seqnum range " << g_seqnum[TXSEQ][VALIDSEQ].seqmin << " to " << g_seqnum[TXSEQ][VALIDSEQ].seqmax << endl;
 
@@ -258,7 +264,7 @@ void Witness::Init()
 
 		if (TEST_WITNESS_LOSS > 0) BOOST_LOG_TRIVIAL(info) << "Witness::Init simulating witness loss with max witness " << WITNESS_TEST_LOSS_REQ_WITNESS << " at levels mod " << TEST_WITNESS_LOSS;
 
-		if (TRACE_WITNESS) BOOST_LOG_TRIVIAL(trace) << "Witness::Init launching ThreadProc";
+		BOOST_LOG_TRIVIAL(trace) << "Witness::Init launching ThreadProc";
 
 		m_pthread = new thread(&Witness::ThreadProc, this);
 		CCASSERT(m_pthread);
@@ -267,7 +273,7 @@ void Witness::Init()
 
 void Witness::DeInit()
 {
-	if (TRACE_WITNESS) BOOST_LOG_TRIVIAL(trace) << "Witness::DeInit";
+	BOOST_LOG_TRIVIAL(trace) << "Witness::DeInit";
 
 	ShutdownWork();
 
@@ -332,7 +338,7 @@ void Witness::ThreadProc()
 
 	while (IsWitness())
 	{
-		if (TEST_CUZZ) usleep(rand() & (1024*1024-1));
+		if (RTEST_CUZZ) usleep(rand() & RTEST_CUZZ);
 
 		if (g_blockchain.HasFatalError())
 		{
@@ -1446,11 +1452,6 @@ void Witness::NotifyNewWork(unsigned type)
 	m_work_condition_variable.notify_one();
 }
 
-void Witness::NotifyNewExchangeWorkTime()
-{
-	m_work_condition_variable.notify_one();
-}
-
 void Witness::ShutdownWork()
 {
 	lock_guard<mutex> lock(m_work_mutex);
@@ -1541,12 +1542,16 @@ int Witness::WaitForWork(bool bwait4block, bool bwait4tx, uint32_t exchange_time
 
 		if (elapse < INT_MAX)
 		{
+			if (RTEST_CUZZ_WAIT) usleep(rand() & RTEST_CUZZ_WAIT);
+
 			if (TRACE_WITNESS) BOOST_LOG_TRIVIAL(trace) << "Witness::WaitForWork waiting for " << elapse << " milliseconds";
 
 			m_work_condition_variable.wait_for(lock, chrono::milliseconds(elapse));
 		}
 		else
 		{
+			if (RTEST_CUZZ_WAIT) usleep(rand() & RTEST_CUZZ_WAIT);
+
 			if (TRACE_WITNESS) BOOST_LOG_TRIVIAL(trace) << "Witness::WaitForWork waiting";
 
 			m_work_condition_variable.wait(lock);
@@ -1611,6 +1616,6 @@ void Witness::UpdateExchangeWorkTime(uint64_t timestamp, bool bnotify)
 		if (TRACE_WITNESS) BOOST_LOG_TRIVIAL(debug) << "Witness::UpdateExchangeWorkTime timestamp " << timestamp << " m_exchange_work_time " << m_exchange_work_time << " bnotify " << bnotify;
 
 		if (bnotify)
-			NotifyNewExchangeWorkTime();
+			m_work_condition_variable.notify_one();
 	}
 }

@@ -9,7 +9,7 @@
 #pragma once
 
 #define CCAPPNAME	"CredaCash RPC Wallet"
-#define CCVERSION	"2.0.5" //@@!
+#define CCVERSION	"2.1.0" //@@!
 #define CCEXENAME	"ccwallet"
 #define CCAPPDIR	"CCWallet-#" //@@!
 
@@ -38,7 +38,7 @@ extern "C" bool IsInteractive();
 
 DECLARE_EXTERN struct global_params_struct
 {
-	boost::program_options::variables_map config_options;
+	boost::program_options::variables_map *config_options = NULL;
 
 	snarkfront::bigint_t wallet_id;
 
@@ -65,6 +65,7 @@ DECLARE_EXTERN struct global_params_struct
 	bool	transact_tor;
 	bool	transact_tor_single_query;
 	wstring	transact_tor_hosts_file;
+	wstring transact_tor_relays_file;
 
 	int tx_query_retries;
 	int tx_submit_retries;

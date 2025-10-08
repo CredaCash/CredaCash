@@ -4,6 +4,10 @@
 
 ## Release History
 
+### 2025-10-08 v2.1
+
+Standalone, self-contained Wallet GUI app for Android and Windows that runs without server software.
+
 ### 2025-07-25 v2.0.5
 
 First release of Wallet GUI application.

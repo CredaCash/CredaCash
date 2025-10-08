@@ -25,7 +25,7 @@ CXXM_DEPS :=
 CXX_DEPS := 
 C_DEPS := 
 C_UPPER_DEPS := 
-EXECUTABLES := 
+LIBRARIES := 
 OBJS := 
 
 # Every subdirectory with source files must be described here

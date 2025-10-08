@@ -9,7 +9,7 @@
 #pragma once
 
 #define CCAPPNAME	"CredaCash node"
-#define CCVERSION	"2.0.5" //@@!
+#define CCVERSION	"2.1.0" //@@!
 #define CCEXENAME	"ccnode"
 #define CCAPPDIR	"CCNode2-#" //@@!
 
@@ -39,7 +39,7 @@ DECLARE_EXTERN char g_bigbuf[256*1024];
 
 DECLARE_EXTERN struct global_params_struct
 {
-	boost::program_options::variables_map config_options;
+	boost::program_options::variables_map *config_options = NULL;
 
 	wstring process_dir;
 	wstring app_data_dir;

@@ -20,7 +20,7 @@ public:
 	Polling()
 	{ }
 
-	void Start(unsigned nthreads);
+	void StartPolling(unsigned nthreads);
 	void StartShutdown();
 	void WaitForShutdown();
 
@@ -40,7 +40,7 @@ public:
 		m_txquery(NULL)
 	{ }
 
-	void Start();
+	void StartPollThread();
 	void StartShutdown();
 	void WaitForShutdown();
 	void ThreadProc();

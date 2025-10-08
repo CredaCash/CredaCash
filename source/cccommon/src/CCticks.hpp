@@ -10,7 +10,6 @@
 
 #include <cstdint>
 #include <time.h>
-#include <sys/timeb.h>
 
 // ticks are measured in milliseconds
 // maximum elapsed is 2^31/1000 = 24 days
@@ -22,7 +21,6 @@
 
 extern std::int64_t g_clock_offset;
 std::int64_t unixtime();
-void unixtimeb(timeb *t);
 
 std::uint64_t highres_ticks();
 bool report_highres_ticks(std::uint64_t dt);

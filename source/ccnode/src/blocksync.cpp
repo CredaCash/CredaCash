@@ -725,24 +725,13 @@ void BlockSyncClient::DoSync()
 
 		if (indelible_dt > BLOCKSYNC_LOST_SECS)
 		{
-			auto last_indelible_block = g_blockchain.GetLastIndelibleBlock();
-			auto block = (Block*)last_indelible_block.data();
-			auto wire = block->WireData();
-			auto auxp = block->AuxPtr();
-
-			auto level = wire->level.GetValue() + 1;
-			auto last_level = level + 2 * auxp->blockchain_params.nskipconfsigs - 1 + BLOCKSYNC_NLEVELS_PER_REQ - 1;
-
-			last_level -= last_level % BLOCKSYNC_NLEVELS_PER_REQ;
-
-			BlockSyncEntry entry(level, last_level - level + 1);
+			BlockSyncEntry entry(last_indelible_level + 1, BLOCKSYNC_NLEVELS_PER_REQ);
 
 			g_blocksync_client.m_sync_list.RequeueEntry(Name(), 0, entry);
 
 			m_nfinished = 0;
 			last_indelible_time = now;
 		}
-
 
 		bool done = IsFinishing() && !m_sync_list.HasRequeues();
 

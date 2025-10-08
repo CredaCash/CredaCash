@@ -52,7 +52,7 @@
 #define TEST_SHOW_VERIFY_BENCHMARKS	0	// don't show
 #endif
 
-CCHasher::HashBases hashbases;
+CCHasher::HashBases CCHasher::hashbases;
 
 typedef bigint_x<BN128_FR> ZKVAR;
 //typedef field_x<BN128_FR> ZKVAR;

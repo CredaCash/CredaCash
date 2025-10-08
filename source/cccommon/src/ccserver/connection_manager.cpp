@@ -15,15 +15,31 @@ namespace CCServer {
 
 ConnectionManager::~ConnectionManager()
 {
+	//CCASSERT(m_connections.empty());
+	//CCASSERT(m_free_connections.empty());
+}
+
+void ConnectionManager::DeInit()
+{
 	lock_guard<FastSpinLock> lock(m_conn_mgr_lock);
 
+	BOOST_LOG_TRIVIAL(trace) << Name() << " ConnectionManager::DeInit";
+
 	for (auto connection : m_connections)
+	{
 		delete connection;
+		//cout << ">>> " << (uintptr_t)connection << " delete ConnectionManager connection" << endl;
+	}
+
+	m_connections.clear();
+	m_free_connections.clear();
+
+	BOOST_LOG_TRIVIAL(trace) << Name() << " ConnectionManager::DeInit done";
 }
 
 void ConnectionManager::Init(unsigned maxconns, unsigned maxincoming, const class ConnectionFactory& connfac)
 {
-	if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " ConnectionManager::Init maxconns " << maxconns << " maxincoming " << maxincoming;
+	BOOST_LOG_TRIVIAL(trace) << Name() << " ConnectionManager::Init maxconns " << maxconns << " maxincoming " << maxincoming;
 
 	CCASSERT(m_connections.empty());
 	CCASSERT(m_free_connections.empty());
@@ -36,6 +52,7 @@ void ConnectionManager::Init(unsigned maxconns, unsigned maxincoming, const clas
 	for (unsigned i = 0; i < maxconns; ++i)
 	{
 		pconnection_t connection = connfac.NewConnection(*this, m_io_service);
+		//cout << ">>> " << (uintptr_t)connection << " new ConnectionManager connection" << endl;
 
 		{
 			lock_guard<FastSpinLock> lock(m_conn_mgr_lock);
@@ -49,7 +66,7 @@ void ConnectionManager::Init(unsigned maxconns, unsigned maxincoming, const clas
 
 void ConnectionManager::FreeConnection(pconnection_t connection)
 {
-	if (g_shutdown)
+	if (g_shutdown && !g_is_dll)
 	{
 		if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << connection->m_conn_index << " ConnectionManager::FreeConnection shutting down";
 
@@ -75,7 +92,7 @@ void ConnectionManager::FreeConnection(pconnection_t connection)
 		}
 	}
 
-	if (was_freed && m_free_callback_obj && !g_shutdown)
+	if (was_freed && m_free_callback_obj && (!g_shutdown || g_is_dll))
 		m_free_callback_obj->HandleFreeConnection();
 
 	if (TRACE_CCSERVER) BOOST_LOG_TRIVIAL(trace) << Name() << " Conn " << connection->m_conn_index << " ConnectionManager::FreeConnection done";
@@ -124,10 +141,10 @@ unsigned ConnectionManager::GetOutgoingConnectionCount()
 void ConnectionManager::StopAllConnections()
 {
 	for (auto connection : m_connections)
-	{
 		connection->Stop();
+
+	for (auto connection : m_connections)
 		connection->WaitForStopped();
-	}
 }
 
 void set_int_opt(int sockfd, int level, int optname, int opt)

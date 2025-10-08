@@ -37,9 +37,11 @@ void ZKKeyStore::Init(bool reset)
 
 	nproof = (4 * 2 + 8) + (5 * 2 + 5);	// all keys, for testing and keygen
 	nproof = (4 * 2 + 8);				// all keys with full merkle paths; comment out for keygen
+	nproof = 4;	// since v1, the wallet has only used 4 keys
 	//nproof = 4 * 2;					// for beta release
 
 	nproofsave = 8;						// keep memory requirement low //@@! make this a config option?
+	nproofsave = 0; // minimize use of page file
 	//nproofsave = nproof;				// for releases with smaller keysets, and for benchmarking, and for mint
 	//nproofsave = 0;					// for keygen
 
@@ -130,7 +132,7 @@ void ZKKeyStore::SetKeyFilePath(const wstring& path)
 		if (env)
 			key_path = env;
 #else
-		auto env = secure_getenv(KEY_PATH_ENV_VAR);
+		auto env = getenv(KEY_PATH_ENV_VAR);
 		if (env)
 			key_path = s2w(env);
 #endif

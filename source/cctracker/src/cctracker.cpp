@@ -62,7 +62,7 @@ static void check_config_values()
 		throw range_error("expire minutes not in valid range");
 }
 
-static int process_options(int argc, char **argv)
+static int process_options(int argc, const char **argv)
 {
 	namespace po = boost::program_options;
 
@@ -186,7 +186,7 @@ static bool read_tor_hostname()
 int _dowildcard = 0;	// disable wildcard globbing
 #endif
 
-int main(int argc, char* argv[])
+int main(int argc, const char **argv)
 {
 	//srand(0);
 	srand(time(NULL));

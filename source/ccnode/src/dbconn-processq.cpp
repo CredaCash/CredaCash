@@ -13,6 +13,12 @@
 #include <CCobjects.hpp>
 #include <ccserver/connection_registry.hpp>
 
+//!#define RTEST_CUZZ_WAIT				(1024-1)
+
+#ifndef RTEST_CUZZ_WAIT
+#define RTEST_CUZZ_WAIT					0	// don't test
+#endif
+
 #define TRACE_DBCONN	(g_params.trace_validation_q_db)
 #define TRACE_PROCESS	(g_params.trace_block_validation || g_params.trace_tx_validation || g_params.trace_xreq_processing)
 
@@ -124,6 +130,8 @@ void DbConnProcessQ::IncrementQueuedWork(unsigned type, unsigned changes)
 {
 	CCASSERT(type < PROCESS_Q_N);
 
+	lock_guard<mutex> lock(work_queue_mutex[type]);
+
 	auto prior_work = queued_work[type].fetch_add(changes);
 
 	if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnProcessQ::IncrementQueuedWork type " << type << " changes " << changes << " pre-increment work " << prior_work;
@@ -132,10 +140,8 @@ void DbConnProcessQ::IncrementQueuedWork(unsigned type, unsigned changes)
 	{
 		if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnProcessQ::IncrementQueuedWork calling notify_one/notify_all type " << type;
 
-		lock_guard<mutex> lock(work_queue_mutex[type]);
-
 		for (unsigned i = 0; i < changes; ++i)
-			work_queue_condition_variable[type].notify_one();	// need to hold lock so notify isn't missed by a thread that is just about to enter wait
+			work_queue_condition_variable[type].notify_one();
 	}
 }
 
@@ -174,10 +180,14 @@ void DbConnProcessQ::WaitForQueuedWork(unsigned type)
 
 		if (timed_wake_scheduled[type])
 		{
+			if (RTEST_CUZZ_WAIT) usleep(rand() & RTEST_CUZZ_WAIT);
+
 			work_queue_condition_variable[type].wait(lock);		// lock is acquired before waking up
 		}
 		else
 		{
+			if (RTEST_CUZZ_WAIT) usleep(rand() & RTEST_CUZZ_WAIT);
+
 			if (TRACE_DBCONN) BOOST_LOG_TRIVIAL(trace) << "DbConnProcessQ::WaitForQueuedWork type " << type << " timed wait";
 
 			timed_wake_scheduled[type] = true;

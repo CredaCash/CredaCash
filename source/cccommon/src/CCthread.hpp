@@ -25,6 +25,7 @@ public:
 	virtual void Run(boost::function<void()> threadproc = NULL)
 	{
 		m_pthread = new std::thread(&CCThread::ThreadProc, this, threadproc);
+		//cout << ">>> " << (uintptr_t)m_pthread << " new CCThread::Run thread" << endl;
 	}
 
 	virtual void ThreadProc(boost::function<void()> threadproc)
@@ -45,6 +46,9 @@ public:
 		if (m_pthread)
 		{
 			m_pthread->join();
+			delete m_pthread;
+			//cout << ">>> " << (uintptr_t)m_pthread << " delete CCThread::Run thread" << endl;
+
 			m_pthread = NULL;
 		}
 	}

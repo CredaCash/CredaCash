@@ -21,14 +21,20 @@
 
 static volatile bool blog = false;
 thread_local static bool blog_not_thread = false;
+static volatile unsigned counter = 0;
 
 #define MAX_CACHE	200*1000
 
-static const unsigned depth = 6;
+#define CLEAR_CACHE_AFTER_WALK	0
+
+static const unsigned depth = 10;
 static const unsigned skip = 2;
 static const char delim[] = " ;; ";
-static uintptr_t cache_p[MAX_CACHE];
-static uintptr_t cache_d[MAX_CACHE][depth + 1];
+static uintptr_t cache_p[MAX_CACHE];		// pointer
+static size_t	 cache_n[MAX_CACHE];		// size
+static unsigned  cache_c[MAX_CACHE];		// counter
+static unsigned	 cache_t[MAX_CACHE];		// thread id
+static uintptr_t cache_s[MAX_CACHE][depth];	// stack
 static unsigned free_start = 0;
 static unsigned alloc_end = 0;
 static unsigned high_water = 0;
@@ -104,9 +110,11 @@ static int add_sym(HANDLE process, uintptr_t p, char *str)
 		LPTSTR lpMsgBuf;
 		FormatMessage(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, NULL,
 			GetLastError(), MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), (LPTSTR)&lpMsgBuf, 0, NULL);
-		printf("### add_sym err %s\n", lpMsgBuf);
+		printf("### add_sym %llu err %s\n", p, lpMsgBuf);
 		LocalFree(lpMsgBuf);
 	}
+
+	symbol->Name[MAX_SYM_NAME-1] = 0;
 
 	return sprintf(str, "%s", symbol->Name);
 }
@@ -121,8 +129,10 @@ static void add_cache(void *p, size_t size)
 			continue;
 
 		cache_p[i] = (uintptr_t)p;
-		cache_d[i][0] = size;
-		add_stack(&cache_d[i][1]);
+		cache_n[i] = size;
+		cache_c[i] = ++counter;
+		cache_t[i] = cc_thread_id();
+		add_stack(cache_s[i]);
 
 		free_start = i + 1;
 
@@ -183,6 +193,8 @@ static void delete_cache(void *p)
 
 static void walk_cache()
 {
+	printf("***** walk_cache\n");
+
 	sym_init();
 
 	HANDLE process = GetCurrentProcess();
@@ -192,26 +204,32 @@ static void walk_cache()
 		if (!cache_p[i])
 			continue;
 
-		char str[2000];
+		char str[(MAX_SYM_NAME + 20) * depth + 200];
 
-		auto n = sprintf(str, "### %llu %llu", cache_d[i][0], cache_p[i]);
+		auto n = sprintf(str, "### %llu %llu %u 0x%08x", cache_n[i], cache_p[i], cache_c[i], cache_t[i]);
 
 		for (unsigned j = 0; j < depth; ++j)
 		{
 			n += sprintf(&str[n], "%s", delim);
-			n += add_sym(process, cache_d[i][1+j], &str[n]);
+			n += add_sym(process, cache_s[i][j], &str[n]);
 		}
 
 		printf("%s ###\n", str);
 
-		cache_p[i] = 0;
+		if (CLEAR_CACHE_AFTER_WALK)
+			cache_p[i] = 0;
 	}
 
-	free_start = 0;
-	alloc_end = 0;
+	if (CLEAR_CACHE_AFTER_WALK)
+	{
+		free_start = 0;
+		alloc_end = 0;
+	}
 
 	SymCleanup(process);
 	sym_inited = false;
+
+	printf("***** walk_cache done.\n");
 }
 
 bool cc_malloc_logging(int on)
@@ -220,15 +238,13 @@ bool cc_malloc_logging(int on)
 
 	auto rv = blog;
 
-	if (on >= 0)
-	{
-		printf("### 0x%x cc_malloc_logging %d ###\n", cc_thread_id(), on);
+	blog = on;
 
-		blog = on;
+	if (rv != blog)
+		printf("### 0x%08x cc_malloc_logging %d (was %d) counter %u ###\n", cc_thread_id(), blog, rv, counter);
 
-		if (rv and !blog)
-			walk_cache();
-	}
+	if (rv and !blog)
+		walk_cache();
 
 	return rv;
 }
@@ -239,7 +255,7 @@ bool cc_malloc_logging_not_this_thread(int on)
 
 	if (on >= 0)
 	{
-		printf("### 0x%x cc_malloc_logging_not_this_thread %d ###\n", cc_thread_id(), on);
+		printf("### 0x%08x cc_malloc_logging_not_this_thread %d ###\n", cc_thread_id(), on);
 
 		blog_not_thread = on;
 	}
@@ -253,7 +269,7 @@ void* operator new(size_t size)
 
 	if (!p) throw std::bad_alloc();
 
-	if (blog && !blog_not_thread && !g_shutdown)
+	if (blog && !blog_not_thread)
 		add_cache(p, size);
 
 	return p;
@@ -265,7 +281,7 @@ void* operator new[](size_t size)
 
 	if (!p) throw std::bad_alloc();
 
-	if (blog && !blog_not_thread && !g_shutdown)
+	if (blog && !blog_not_thread)
 		add_cache(p, size);
 
 	return p;
@@ -275,7 +291,7 @@ void* operator new(size_t size, const std::nothrow_t& tag)
 {
 	auto p = malloc(size);
 
-	if (blog && !blog_not_thread && !g_shutdown)
+	if (blog && !blog_not_thread)
 		add_cache(p, size);
 
 	return p;
@@ -285,7 +301,7 @@ void* operator new[](size_t size, const std::nothrow_t& tag)
 {
 	auto p = malloc(size);
 
-	if (blog && !blog_not_thread && !g_shutdown)
+	if (blog && !blog_not_thread)
 		add_cache(p, size);
 
 	return p;
@@ -293,7 +309,7 @@ void* operator new[](size_t size, const std::nothrow_t& tag)
 
 void operator delete(void* p)
 {
-	if (blog && !blog_not_thread && !g_shutdown)
+	if (blog && !blog_not_thread)
 		delete_cache(p);
 
 	free(p);
@@ -301,7 +317,7 @@ void operator delete(void* p)
 
 void operator delete[](void* p)
 {
-	if (blog && !blog_not_thread && !g_shutdown)
+	if (blog && !blog_not_thread)
 		delete_cache(p);
 
 	free(p);
@@ -311,7 +327,7 @@ void* std::cc_malloc(size_t size, const char *file, int line)
 {
 	auto p = malloc(size);
 
-	if (blog && !blog_not_thread && !g_shutdown)
+	if (blog && !blog_not_thread)
 		add_cache(p, size);
 
 	return p;
@@ -321,7 +337,7 @@ void* std::cc_calloc(size_t num, size_t size, const char *file, int line)
 {
 	auto p = calloc(num, size);
 
-	if (blog && !blog_not_thread && !g_shutdown)
+	if (blog && !blog_not_thread)
 		add_cache(p, size);
 
 	return p;
@@ -329,12 +345,12 @@ void* std::cc_calloc(size_t num, size_t size, const char *file, int line)
 
 void* std::cc_realloc(void* p, size_t size, const char *file, int line)
 {
-	if (blog && !blog_not_thread && !g_shutdown)
+	if (blog && !blog_not_thread)
 		delete_cache(p);
 
 	p = realloc(p, size);
 
-	if (blog && !blog_not_thread && !g_shutdown)
+	if (blog && !blog_not_thread)
 		add_cache(p, size);
 
 	return p;
@@ -342,7 +358,7 @@ void* std::cc_realloc(void* p, size_t size, const char *file, int line)
 
 void std::cc_free(void* p, const char *file, int line)
 {
-	if (blog && !blog_not_thread && !g_shutdown)
+	if (blog && !blog_not_thread)
 		delete_cache(p);
 
 	free(p);

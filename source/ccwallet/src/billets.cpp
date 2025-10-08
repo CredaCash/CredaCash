@@ -19,6 +19,12 @@
 #include <transaction.h>
 #include <transaction.hpp>
 
+//!#define RTEST_CUZZ_WAIT				(1024-1)
+
+#ifndef RTEST_CUZZ_WAIT
+#define RTEST_CUZZ_WAIT					0	// don't test
+#endif
+
 #define TRACE_BILLETS	(g_params.trace_billets)
 
 static mutex billet_available_mutex;
@@ -554,6 +560,8 @@ int Billet::WaitNewBillet(uint64_t last_count, uint32_t seconds)
 
 		if (last_count != billet_available_count)
 			return 0;
+
+		if (RTEST_CUZZ_WAIT) usleep(rand() & RTEST_CUZZ_WAIT);
 
 		//cerr << "WaitNewBillet" << endl;
 

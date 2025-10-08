@@ -4,6 +4,6 @@
 
 ### Future Wish List
 
--	Port the RPC wallet to run on Android along with the GUI wallet app.
 -	Proof-of-stake block mining.
--	Support for issuance and adminstration of private assets, including the rapid and massively scalable payment of income streams such as interest, dividends, and royalties.
+-	Support for issuance and adminstration of private assets, including prediction market tokens.
+-	Implement near instantaneous and massively scalable payments of income streams such as interest, dividends, and royalties.

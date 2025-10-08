@@ -21,7 +21,12 @@
 #define TRACE_CALCOID		0
 #define TRACE_SIGNING		0
 
+//!#define RTEST_CUZZ			(64-1)
 //#define TEST_SKIP_SIGS		1	// to bypass sigs when they are broken
+
+#ifndef RTEST_CUZZ
+#define RTEST_CUZZ			0	// don't test
+#endif
 
 #ifndef TEST_SKIP_SIGS
 #define TEST_SKIP_SIGS		0	// don't skip
@@ -63,31 +68,35 @@ BlockAux* Block::SetupAuxBuf(SmartBuf smartobj, bool from_tx_net)
 	return auxp;
 }
 
-#if 0 // use inline version
+static FastSpinLock prior_block_lock(__FILE__, __LINE__);
+
 SmartBuf Block::GetPriorBlock() const
 {
-	if (TRACE_BLOCK) BOOST_LOG_TRIVIAL(debug) << "Block::GetPriorBlock blockp " << (uintptr_t)this << " prior " << (uintptr_t)preamble.auxp[1];
-
 	lock_guard<FastSpinLock> lock(prior_block_lock);
 
-	return SmartBuf(preamble.auxp[1]);
-}
-#endif
+	if (RTEST_CUZZ) usleep(rand() & RTEST_CUZZ);
 
-FastSpinLock Block::prior_block_lock(__FILE__, __LINE__);
+	auto prior = SmartBuf(preamble.auxp[1]);
+
+	//if (TRACE_BLOCK) BOOST_LOG_TRIVIAL(debug) << "Block::GetPriorBlock blockp " << (uintptr_t)this << " prior " << (uintptr_t)preamble.auxp[1];
+
+	return prior;
+}
 
 void Block::SetPriorBlock(SmartBuf priorobj)
 {
-	if (TRACE_BLOCK) BOOST_LOG_TRIVIAL(debug) << "Block::SetPriorBlock blockp " << (uintptr_t)this << " was " << (uintptr_t)preamble.auxp[1] << " setting to " << (uintptr_t)priorobj.BasePtr();
-
-	auto curprior = preamble.auxp[1];
-	preamble.auxp[1] = priorobj.BasePtr();
-
-	priorobj.IncRef();
-
 	lock_guard<FastSpinLock> lock(prior_block_lock);
 
+	auto curprior = preamble.auxp[1];
+
+	if (TRACE_BLOCK) BOOST_LOG_TRIVIAL(debug) << "Block::SetPriorBlock blockp " << (uintptr_t)this << " was " << (uintptr_t)curprior << " setting to " << (uintptr_t)priorobj.BasePtr();
+
+	preamble.auxp[1] = priorobj.BasePtr();
+	priorobj.IncRef();
+
 	SmartBuf(curprior).DecRef(true);
+
+	if (RTEST_CUZZ) usleep(rand() & RTEST_CUZZ);
 }
 
 void Block::ChainToPriorBlock(SmartBuf priorobj)

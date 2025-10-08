@@ -66,6 +66,8 @@ public:
 		query_work_difficulty(0)
 	{ }
 
+	bool info_only;
+	bool relay_only;
 	int32_t  max_net_sec;
 	int32_t  max_block_sec;
 	uint64_t query_work_difficulty;
@@ -75,6 +77,7 @@ public:
 		tor_advertise = false;
 	}
 
+	void DumpExtraConfigTop() const;
 	void DumpExtraConfigBottom() const;
 
 	bool IsConnectedToNet() const;

@@ -47,6 +47,7 @@ public:
 
 	// Setup server
 	void Init(const boost::asio::ip::tcp::endpoint& endpoint, unsigned maxconns, unsigned maxincoming, unsigned backlog, const class ConnectionFactory& connfac);
+	void DeInit();
 
 	ConnectionManager& GetConnectionManager()
 	{

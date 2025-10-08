@@ -18,6 +18,12 @@
 
 #include <xtransaction.hpp>
 
+//!#define RTEST_CUZZ_WAIT				(1024-1)
+
+#ifndef RTEST_CUZZ_WAIT
+#define RTEST_CUZZ_WAIT					0	// don't test
+#endif
+
 #define TRACE_TRANSACTIONS	(g_params.trace_transactions)
 
 TxBuildList g_txbuildlist;
@@ -201,6 +207,8 @@ void TxBuildList::WaitForCompletion(DbConn *dbconn, TxBuildEntry *entry, Transac
 		{
 			if (g_shutdown)
 				throw txrpc_shutdown_error;
+
+			if (RTEST_CUZZ_WAIT) usleep(rand() & RTEST_CUZZ_WAIT);
 
 			m_done_condition_variable.wait(lock);
 		}
